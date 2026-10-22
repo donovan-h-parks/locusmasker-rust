@@ -8,46 +8,62 @@
 Input: a NEXUS alignment whose SETS block defines the loci, one charset per locus (read with
 Biopython's Bio.Nexus), or a FASTA / PHYLIP / NEXUS alignment without charsets plus a RAxML-style
 partition file ("DNA, locus1 = 1-100, 250-300" and "WAG, locus2 = 101-249\\3" forms; the model
-prefix is optional). A NEXUS file with charsets and a partition file together is an error: give
-one or the other. Sites are 1-based and inclusive. Data type is taken from the NEXUS file when
-it states one, otherwise inferred from the residues; DNA is analysed on A, C, G, T only (U read
-as T), protein on the 20 standard amino acids; everything else is missing. At least 3 loci and
-4 taxa are required.
+prefix is optional). Sites are 1-based and inclusive. Data type is taken from the NEXUS file when
+it states one, otherwise inferred; DNA is analysed on A, C, G, T only (U read as T), protein on
+the 20 standard amino acids; everything else is missing. This is a phylogenomic test: it
+requires at least 10 loci and 4 taxa.
 
-Method (--test z, the default). Every pair of taxa gets a measured divergence m: the median,
-across loci, of the pair's rate-normalised divergence — one vote per overlapping locus, so one
-bad locus cannot move its own baseline no matter how long it is. Each taxon is compared, locus by locus, with its
---n-comp closest comparators by m (odd, >= 3, auto-shrunk on tiny datasets). The expected
-divergence of a pair in a locus is m times a ratio curve: a running median of
-(locus divergence / m) against log10(m), flat outside its support (constant relative rate),
-capped at the locus's random-identity plateau. A pair fails when all three hold: its binomial z — observed
-mismatches against expected, with variance o*q*(1-q) on o shared sites — exceeds the locus
-median z by --k robust SDs of z (floored at 1); its divergence is at least --min-ratio times
-expected; and the absolute excess is at least --min-excess mismatches. A cell (taxon, locus)
-is masked when a majority of its comparators fail; cells with fewer comparators than requested
-that still fail a majority are reported as ambiguous and masked too. Masking blanks the cell's
-whole stretch of the locus, ambiguity codes included.
+Method (--test z, the default):
+  m         every taxon pair gets a divergence m: the site-weighted median across loci of the
+            pair's rate-normalised divergence (locus rates = median divergence relative to a
+            provisional m, rescaled to a typical rate of 1). Pairs overlapping in fewer than 5
+            loci fall back to pooled identity (warned when common). One bad locus cannot move
+            a pair's median.
+  compare   each taxon is compared, locus by locus, with its --n-comp closest taxa by m (odd,
+            auto-shrunk to the largest odd <= n-1) among those overlapping it by >=
+            min(--fit-overlap, its residues).
+  expect    expected divergence of a pair in a locus = m x the locus ratio curve: the running
+            median of (locus divergence / m) over the 10 x n-comp rank-nearest fit pairs,
+            interpolated, flat outside (constant relative rate), capped at the locus's
+            random-identity plateau. Loci with fewer fit pairs use their global median ratio.
+  test      with E = expected mismatches on o shared sites, a comparison fails the DIVERGENT
+            side when observed - E > max(--min-excess, k*sqrt(E), (--min-ratio - 1) * E): the
+            one-sided Pearson residual (Poisson score) test plus an absolute and a relative
+            effect floor (the relative floor is waived once observed divergence is within 10%
+            of the locus's random-identity plateau, where no larger effect is possible). The
+            SIMILAR side mirrors it: E - observed > max(--min-excess,
+            k*sqrt(E), E/2). k is the Bonferroni quantile of --alpha over all comparisons in
+            the run (both sides), so the bar scales with dataset size.
+  decide    a cell (taxon x locus) is DIVERGENT-masked when a majority of its comparators fail
+            the divergent side (fewer comparators than requested failing a majority = masked
+            as ambiguous). Any single similar-side pair flags a SIMILAR event; its direction
+            is attributed by a likelihood ratio over shared third parties (which party's
+            expectations fit the shared sequence): |2 ln LR| > 10 (Kass & Raftery "very
+            strong") masks the recipient, otherwise both cells. --mask-similar-only /
+            --mask-different-only restrict masking to one side; similar.tsv is written
+            regardless. Masking blanks the cell's whole stretch of the locus.
 
---test band is the legacy rule kept for comparison: residual = locus identity minus a trend of
-locus identity over alignment-wide identity; a pair fails when the residual is more than
-max(--min-band, --k robust SDs) below the locus median. It also keeps the legacy skip rule
-(a locus needs 2 x --bin-min testable cells).
+--test band is the legacy rule kept for comparison (trend of identity over alignment-wide
+identity; fail when the residual is more than max(--min-band, --k robust SDs) below the locus
+median; legacy skip rules; no similar side).
 
 Outputs (in --out; <stem> is the alignment file's name without extension)
-  <stem>.masked.<ext>  the alignment in its input format with every outlier cell replaced by gaps
-  masked.csv           every masked cell with the evidence
-  cells.tsv            every tested cell (flagged or not)
+  <stem>.masked.<ext>  the alignment in its input format with every masked cell blanked
+  masked.csv           one row per masked cell with the evidence and the side that masked it
+  cells.tsv            every tested cell
   pairs.tsv            every comparison
-  per_locus.tsv        one row per locus, including skipped loci (status column)
-  trends.tsv           the locus expectation on a grid, with the effect-size cutoff (z mode)
-  ani.npy, m.npy       taxon x taxon alignment-wide identity (%) and pair divergence m (points)
-  taxa.txt             the row order of the matrices
+  similar.tsv          every similar-side event: pair, deficit, lambda, donor/recipient call
+  per_locus.tsv        one row per locus, skipped loci included (status column)
+  trends.tsv           expectation and the min-ratio cutoff on a grid, for plotting
+  ani.npy, m.npy       alignment-wide identity (%) and pair divergence m (points); taxa.txt
 Options
-  --test z|band  --n-comp 5 (odd, >= 3)  --fit-overlap 20  --k 5  --min-ratio 2 --min-excess 4
-  --min-band 25 (band mode)  --bin 0.1  --bin-min 40  --seed 1
+  --test z|band  --n-comp 5 (odd >= 3)  --fit-overlap 20  --alpha 0.05  --min-ratio 2
+  --min-excess 4  --mask-similar-only  --mask-different-only  --seed 1
+  (band mode only: --k 5  --min-band 25  --bin 0.1  --bin-min 40)
 """
-import argparse, csv, os, re, sys, time
+import argparse, csv, math, os, re, sys, time
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 
 PROTEIN = "ACDEFGHIKLMNPQRSTVWY"
 DNA = "ACGT"
@@ -163,39 +179,6 @@ def write_masked(path, out_dir, fmt, names, seqs, nexus):
 
 
 # ------------------------------------------------------------------ shared machinery
-def trend_fit(xf, yf, width, nmin):
-    """running-median centres of yf along xf: windows of `width`, widened x1.5 until they hold
-    nmin points; returns (centres, medians); a single centre when windows cannot form"""
-    order = np.argsort(xf); xs, ys = xf[order], yf[order]
-    lo, hi = xs[0], xs[-1]
-    cx, cy = [], []
-    for c in np.arange(lo + width / 2, hi, width):
-        h = width / 2
-        while True:
-            sel = (xs >= c - h) & (xs <= c + h)
-            if sel.sum() >= nmin or h > (hi - lo): break
-            h *= 1.5
-        if sel.sum() >= max(5, nmin // 4): cx.append(c); cy.append(np.median(ys[sel]))
-    if not cx: cx, cy = [float(np.median(xs))], [float(np.median(ys))]
-    return np.array(cx), np.array(cy)
-
-
-def pair_median(vals, W, fit_overlap, fallback):
-    """weighted median of vals across loci (axis 0): weights are shared sites, but no locus may
-    carry more than ~a third of a pair's total weight (iterative cap), so a single bad locus can
-    never reach the median however long it is, while short noisy fragments still count little.
-    Pairs with fewer than 3 contributing loci get `fallback`."""
-    fin = np.isfinite(vals)
-    w = np.where(fin, W, 0.0)
-    t = 0.34 * w.sum(0)
-    for _ in range(8):
-        t = 0.34 * np.minimum(w, t[None, :]).sum(0)
-    w = np.minimum(w, t[None, :])
-    v = wmedian_stack(vals, w)
-    nl = (w > 0).sum(0)
-    return np.where(nl >= 3, v, fallback), nl
-
-
 def wmedian_stack(vals, wts):
     """weighted median of vals over axis 0, nan-aware; (L, P) -> (P,)"""
     ok = np.isfinite(vals) & (wts > 0)
@@ -206,6 +189,14 @@ def wmedian_stack(vals, wts):
     idx = np.minimum((cw < tot[None, :] / 2).sum(0), v.shape[0] - 1)
     out = np.take_along_axis(v_s, idx[None, :], 0)[0]
     return np.where(tot > 0, out, np.nan)
+
+
+def pair_median(vals, W, min_loci, fallback):
+    """site-weighted median of vals across loci (axis 0); pairs with fewer than min_loci
+    contributing loci get `fallback`; also returns the per-pair locus count"""
+    nl = (np.isfinite(vals) & (W > 0)).sum(0)
+    v = wmedian_stack(vals, W)
+    return np.where(nl >= min_loci, v, fallback), nl
 
 
 def top_comparators(score, kk, nres):
@@ -221,23 +212,68 @@ def flatten_pairs(idx, top, valid, kk):
     return gi[vi], ci[vi], rk[vi]
 
 
+def rolling_ratio(xf, yf, k):
+    """running median of yf over the k rank-nearest points along xf; None when too few points"""
+    if len(xf) < k: return None
+    order = np.argsort(xf); xs, ys = xf[order], yf[order]
+    med = np.median(sliding_window_view(ys, k), axis=1)
+    return xs[k // 2: k // 2 + len(med)], med
+
+
+def norm_quantile(p):
+    """inverse standard normal CDF, via bisection on erfc (no scipy)"""
+    lo, hi = 0.0, 50.0
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        if 0.5 * math.erfc(mid / math.sqrt(2)) > 1 - p: lo = mid
+        else: hi = mid
+    return (lo + hi) / 2
+
+
+def lbinom(m_, o_, q):
+    """binomial log-pmf, continuous in m_ (counts come in as float32 sums)"""
+    q = min(max(q, 1e-9), 1 - 1e-9)
+    return (math.lgamma(o_ + 1) - math.lgamma(m_ + 1) - math.lgamma(o_ - m_ + 1)
+            + m_ * math.log(q) + (o_ - m_) * math.log(1 - q))
+
+
+def trend_fit(xf, yf, width, nmin):
+    """legacy band-mode trend: running-median centres, windows widened until they hold nmin"""
+    order = np.argsort(xf); xs, ys = xf[order], yf[order]
+    lo, hi = xs[0], xs[-1]
+    cx, cy = [], []
+    for c in np.arange(lo + width / 2, hi, width):
+        h = width / 2
+        while True:
+            sel = (xs >= c - h) & (xs <= c + h)
+            if sel.sum() >= nmin or h > (hi - lo): break
+            h *= 1.5
+        if sel.sum() >= max(5, nmin // 4): cx.append(c); cy.append(np.median(ys[sel]))
+    if not cx: cx, cy = [float(np.median(xs))], [float(np.median(ys))]
+    return np.array(cx), np.array(cy)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--aln", required=True); ap.add_argument("--partitions"); ap.add_argument("--out", required=True)
     ap.add_argument("--test", choices=("z", "band"), default="z")
     ap.add_argument("--n-comp", type=int, default=5); ap.add_argument("--fit-overlap", type=int, default=20)
-    ap.add_argument("--k", type=float, default=5.0)
+    ap.add_argument("--alpha", type=float, default=0.05)
     ap.add_argument("--min-ratio", type=float, default=2.0); ap.add_argument("--min-excess", type=float, default=4.0)
+    ap.add_argument("--mask-similar-only", action="store_true"); ap.add_argument("--mask-different-only", action="store_true")
+    ap.add_argument("--k", type=float, default=5.0, help="band mode only")
     ap.add_argument("--min-band", type=float, default=25.0)
     ap.add_argument("--bin", type=float, default=0.1); ap.add_argument("--bin-min", type=int, default=40)
     ap.add_argument("--seed", type=int, default=1)
     a = ap.parse_args(); K = a.n_comp
     if K < 3 or K % 2 == 0: sys.exit("--n-comp must be an odd number of at least 3")
+    if a.mask_similar_only and a.mask_different_only:
+        sys.exit("--mask-similar-only and --mask-different-only are mutually exclusive")
     os.makedirs(a.out, exist_ok=True); t0 = time.time()
     names, seqs, loci, fmt, dtype, nexus = read_input(a.aln, a.partitions)
-    if len(loci) < 3:
-        sys.exit(f"only {len(loci)} locus defined: each locus is judged against the rest of the "
-                 f"alignment, which needs at least 3 loci to mean anything")
+    floor = 10 if a.test == "z" else 3
+    if len(loci) < floor:
+        sys.exit(f"only {len(loci)} loci defined: this is a phylogenomic test and needs at least {floor}")
     n, L = len(names), len(seqs[0]); alphabet = DNA if dtype == "dna" else PROTEIN
     if n < 4: sys.exit(f"only {n} taxa: the comparator test needs at least 4")
     K_eff = min(K, n - 1); K_eff -= 1 - K_eff % 2                    # largest odd <= min(K, n-1)
@@ -270,14 +306,13 @@ def main():
     np.fill_diagonal(ani, np.nan); np.save(f"{a.out}/ani.npy", ani)
     print(f"per-locus identities done, {time.time() - t0:.0f}s", file=sys.stderr)
 
-    # ---- pair divergence m: weighted median across loci of rate-normalised divergence
+    # ---- pair divergence m: site-weighted median across loci of rate-normalised divergence
     with np.errstate(invalid="ignore", divide="ignore"):
         Dv = np.where(W > 0, 100.0 * (1.0 - S / np.maximum(W, 1)), np.nan)
     Wm = W.copy()
     Wm[:, np.arange(n), np.arange(n)] = 0.0                            # self pairs carry no vote
     pooled = 100.0 - ani
-    m0, _ = pair_median(Dv.reshape(nloc, -1), Wm.reshape(nloc, -1), a.fit_overlap,
-                        pooled.reshape(-1))
+    m0, _ = pair_median(Dv.reshape(nloc, -1), Wm.reshape(nloc, -1), 5, pooled.reshape(-1))
     m0 = m0.reshape(n, n)
     iu = np.triu_indices(n, 1)
     m0c = np.maximum(m0[iu], 0.05)
@@ -294,24 +329,23 @@ def main():
     rr = np.where(ok_r, rate, np.nan)
     m, nl = pair_median((Dv / rr[:, None, None]).reshape(nloc, -1),
                         np.where(ok_r[:, None, None], Wm, 0.0).reshape(nloc, -1),
-                        a.fit_overlap, pooled.reshape(-1))
-    m = m.reshape(n, n); nl = nl.reshape(n, n)
+                        5, pooled.reshape(-1))
+    m = m.reshape(n, n)
     np.fill_diagonal(m, np.nan); np.save(f"{a.out}/m.npy", m)
-    fb = float((nl[np.triu_indices(n, 1)] < 3).mean())
+    fb = float((nl.reshape(n, n)[iu] < 5).mean())
     print(f"pair divergences done, {time.time() - t0:.0f}s"
-          + (f"; WARNING: {fb:.0%} of taxon pairs overlap in <3 loci and use pooled identity "
-             f"instead of the robust pair median — expectations for those pairs can be dragged "
-             f"by a bad locus" if fb > 0.05 else ""), file=sys.stderr)
+          + (f"; WARNING: {fb:.0%} of taxon pairs overlap in <5 loci and use pooled identity "
+             f"instead of the robust pair median" if fb > 0.05 else ""), file=sys.stderr)
 
     rng = np.random.default_rng(a.seed)
     jit = rng.random((n, n)) * 1e-9
-    masked = [bytearray(s.encode()) for s in seqs]; nmasked = 0
+    masked = [bytearray(s.encode()) for s in seqs]
     mcsv = open(f"{a.out}/masked.csv", "w", newline=""); mw = csv.writer(mcsv)
 
     if a.test == "z":
-        run_z(a, names, loci, X, S, W, m, plateaus, rate, jit, masked, mw, K_eff, M_eff, t0)
+        run_z(a, names, loci, X, S, W, m, plateaus, rate, jit, masked, mw, K_eff, M_eff)
     else:
-        run_band(a, names, loci, X, S, W, ani, jit, masked, mw, K_eff, M_eff, t0)
+        run_band(a, names, loci, X, S, W, ani, jit, masked, mw, K_eff, M_eff)
 
     mcsv.close()
     nmasked = sum(1 for _ in open(f"{a.out}/masked.csv")) - 1
@@ -319,31 +353,55 @@ def main():
     print(f"masked {nmasked} cells -> {out}\ndone {time.time() - t0:.0f}s", file=sys.stderr)
 
 
-# ------------------------------------------------------------------ the z test
-def run_z(a, names, loci, X, S, W, m, plateaus, rate, jit, masked, mw, K_eff, M_eff, t0):
-    n = len(names)
+# ------------------------------------------------------------------ the counting test
+def run_z(a, names, loci, X, S, W, m, plateaus, rate, jit, masked, mw, K_eff, M_eff):
+    n = len(names); nloc = len(loci)
     mj = np.where(np.isfinite(m), m, np.inf) + jit
-    pairs = open(f"{a.out}/pairs.tsv", "w")
-    pairs.write("locus\ttaxon\trank\tcomparator\tpair_div\toverlap\tidentity\texpected\tz\tratio\texcess\tfail\n")
-    cells = open(f"{a.out}/cells.tsv", "w")
-    cells.write("locus\ttaxon\tn_comp\tcomparator\tpair_div\tfocal_sites\toverlap\tidentity\texpected"
-                "\tz\tmedian_z\tmedian_ratio\tn_fail\tflag\tambiguous\n")
-    per = open(f"{a.out}/per_locus.tsv", "w")
-    per.write("locus\tsites\ttaxa\ttested\tpairs\trate\tplateau\tmed_z\ts_z\tcut\tflagged\t"
-              + "\t".join(f"fail{j}" for j in range(M_eff, K_eff + 1)) + "\tambiguous\tstatus\n")
-    trends = open(f"{a.out}/trends.tsv", "w"); trends.write("locus\tpair_div\ttrend\tcutoff\n")
-    mw.writerow(["locus", "taxon", "sites_masked", "n_comp", "n_fail", "median_z", "median_ratio",
-                 "ambiguous", "comparator", "pair_div", "overlap", "identity", "expected", "z"])
-    grid_m = np.logspace(np.log10(0.05), np.log10(80.0), 200)
-    for li, (name, sites) in enumerate(loci):
-        ov, sm = W[li], S[li]
+    mask_hi = not a.mask_similar_only
+    mask_lo = not a.mask_different_only
+
+    # pre-pass: count comparisons so the Bonferroni bar is known before any test runs
+    Npairs = 0; sel = []
+    for li in range(nloc):
+        ov = W[li]
         nres = ov.diagonal().astype(int)
         need = np.minimum(a.fit_overlap, nres)[:, None]
         score = np.where((ov >= need) & np.isfinite(mj), -mj, -np.inf)
         np.fill_diagonal(score, -np.inf)
-        skip = None
         top, valid, ncomp = top_comparators(score, K_eff, nres)
+        sel.append((top, valid, ncomp, nres))
+        Npairs += int(valid[ncomp > 0].sum())
+    kq = norm_quantile(1 - a.alpha / max(2 * Npairs, 1))              # two one-sided tests per pair
+    print(f"{Npairs} comparisons, two-sided; Bonferroni k = {kq:.2f} at alpha {a.alpha}", file=sys.stderr)
+
+    pairs = open(f"{a.out}/pairs.tsv", "w")
+    pairs.write("locus\ttaxon\trank\tcomparator\tpair_div\toverlap\tidentity\texpected\texcess\tfail\tfail_similar\n")
+    cells = open(f"{a.out}/cells.tsv", "w")
+    cells.write("locus\ttaxon\tn_comp\tcomparator\tpair_div\tfocal_sites\toverlap\tidentity\texpected"
+                "\texcess\tn_fail\tn_similar\tflag\tambiguous\n")
+    per = open(f"{a.out}/per_locus.tsv", "w")
+    per.write("locus\tsites\ttaxa\ttested\tpairs\trate\tplateau\tcut\tflagged\t"
+              + "\t".join(f"fail{j}" for j in range(M_eff, K_eff + 1)) + "\tambiguous\tsimilar\tstatus\n")
+    trends = open(f"{a.out}/trends.tsv", "w"); trends.write("locus\tpair_div\ttrend\tcutoff\n")
+    simf = open(f"{a.out}/similar.tsv", "w")
+    simf.write("locus\ttaxon_a\ttaxon_b\tpair_div\toverlap\tidentity\texpected\tdeficit\tlambda\tdonor\trecipient\tmasked\n")
+    mw.writerow(["locus", "taxon", "sites_masked", "side", "n_fail", "n_similar", "partner",
+                 "pair_div", "overlap", "identity", "expected", "lambda"])
+    grid_m = np.logspace(np.log10(0.05), np.log10(80.0), 200)
+    kwin = 10 * K_eff
+
+    def blank(g, sites):
+        row = masked[g]; cnt = 0
+        for site in sites:
+            if row[site] != ord("-"): cnt += 1
+            row[site] = ord("-")
+        return cnt
+
+    for li, (name, sites) in enumerate(loci):
+        ov, sm = W[li], S[li]
+        top, valid, ncomp, nres = sel[li]
         idx = np.flatnonzero(ncomp > 0)
+        skip = None
         if len(idx) == 0:
             skip = "skipped-no-cells"
         else:
@@ -354,62 +412,114 @@ def run_z(a, names, loci, X, S, W, m, plateaus, rate, jit, masked, mw, K_eff, M_
             fit = o >= a.fit_overlap
             if fit.sum() < 8: skip = f"skipped-few-fit-pairs({int(fit.sum())})"
         if skip:
-            per.write(f"{name}\t{len(sites)}\t{int((ov.diagonal() > 0).sum())}\t0\t0\t"
-                      f"{rate[li] if np.isfinite(rate[li]) else float('nan'):.3f}\t{plateaus[li]:.1f}"
-                      f"\tnan\tnan\tnan\t0\t" + "\t".join("0" for _ in range(M_eff, K_eff + 1))
-                      + f"\t0\t{skip}\n")
+            per.write(f"{name}\t{len(sites)}\t{int((nres > 0).sum())}\t0\t0\t"
+                      f"{rate[li]:.3f}\t{plateaus[li]:.1f}\t{kq:.2f}\t0\t"
+                      + "\t".join("0" for _ in range(M_eff, K_eff + 1)) + f"\t0\t0\t{skip}\n")
             print(f"{name}: {skip}", file=sys.stderr); continue
-        nmin_eff = int(np.clip(fit.sum() // 10, 8, a.bin_min))
+
         mpc = np.maximum(mp, 0.05)
-        rho = (dob + 50.0 / o) / (mpc + 50.0 / o)          # locus-vs-pair divergence ratio, stabilised
-        cx, cy = trend_fit(np.log10(mpc[fit]), rho[fit], a.bin, nmin_eff)
-        cy = np.maximum(cy, 1e-3)
-        rho_hat = np.interp(np.log10(mpc), cx, cy)          # flat outside support = constant ratio
-        dhat = np.minimum(np.maximum(rho_hat * mpc, 1e-3), plateaus[li])
-        with np.errstate(invalid="ignore", divide="ignore"):
-            q = np.clip(dhat / 100.0, 0.5 / np.maximum(o, 1), 0.99)
-            z = (mis - o * q) / np.sqrt(o * q * (1 - q))
-            ratio = (dob + 50.0 / o) / (dhat + 50.0 / o)
-        excess = mis - o * q
-        med_z = float(np.median(z[fit])); s_z = max(1.4826 * float(np.median(np.abs(z[fit] - med_z))), 1.0)
-        cut = med_z + a.k * s_z
-        fail = (z > cut) & (ratio >= a.min_ratio) & (excess >= a.min_excess)
+        rho = (dob + 50.0 / o) / (mpc + 50.0 / o)
+        roll = rolling_ratio(np.log10(mpc[fit]), rho[fit], kwin)
+        if roll is None:
+            cxs, meds = np.array([0.0]), np.array([max(float(np.median(rho[fit])), 1e-3)])
+        else:
+            cxs, meds = roll[0], np.maximum(roll[1], 1e-3)
+
+        def expect(mv):
+            mvc = np.maximum(np.asarray(mv, float), 0.05)
+            rh = np.interp(np.log10(mvc), cxs, meds)
+            return np.minimum(np.maximum(rh * mvc, 1e-3), plateaus[li])
+
+        dhat = expect(mp)
+        E = o * dhat / 100.0
+        excess = mis - E
+        kE = kq * np.sqrt(E)
+        # effect floor, waived near saturation: observed divergence cannot exceed the plateau,
+        # so once it is within 10% of it the doubling demand is capped at that gap
+        floor_hi = np.minimum((a.min_ratio - 1) * E, np.maximum(0.9 * o * plateaus[li] / 100.0 - E, 0.0))
+        fail_hi = (excess > a.min_excess) & (excess > kE) & (excess > floor_hi)
+        defi = -excess
+        fail_lo = (defi > a.min_excess) & (defi > kE) & (defi > 0.5 * E)
+
         for j in range(len(gi)):
             pairs.write(f"{name}\t{names[gi[j]]}\t{rk[j] + 1}\t{names[ci[j]]}\t{mp[j]:.3f}\t{int(o[j])}"
-                        f"\t{ident[j]:.2f}\t{100 - dhat[j]:.2f}\t{z[j]:.2f}\t{ratio[j]:.2f}\t{excess[j]:.1f}\t{int(fail[j])}\n")
+                        f"\t{ident[j]:.2f}\t{100 - dhat[j]:.2f}\t{excess[j]:.1f}\t{int(fail_hi[j])}\t{int(fail_lo[j])}\n")
+
+        # ---- divergent side: majority over comparators
         starts = np.r_[0, np.cumsum(ncomp[idx])[:-1]]
-        fcount = {j: 0 for j in range(M_eff, K_eff + 1)}; namb = 0; nres_i = nres
+        fcount = {j: 0 for j in range(M_eff, K_eff + 1)}; namb = 0
         for g, s0, kc in zip(idx, starts, ncomp[idx]):
-            sl = slice(s0, s0 + kc)
-            mz = float(np.median(z[sl])); mr = float(np.median(ratio[sl])); nf = int(fail[sl].sum())
+            slc = slice(s0, s0 + kc)
+            nf = int(fail_hi[slc].sum()); nsim = int(fail_lo[slc].sum())
             flag = int(kc >= K_eff and nf >= M_eff)
             amb = int(kc < K_eff and nf >= kc // 2 + 1)
             if flag: fcount[min(nf, K_eff)] += 1
             namb += amb
-            cells.write(f"{name}\t{names[g]}\t{kc}\t{names[ci[s0]]}\t{mp[s0]:.3f}\t{nres_i[g]}\t{int(o[s0])}"
-                        f"\t{ident[s0]:.2f}\t{100 - dhat[s0]:.2f}\t{z[s0]:.2f}\t{mz:.2f}\t{mr:.2f}\t{nf}\t{flag}\t{amb}\n")
-            if flag or amb:
-                row = masked[g]; cnt = 0
-                for site in sites:
-                    if row[site] != ord("-"): cnt += 1
-                    row[site] = ord("-")
-                mw.writerow([name, names[g], cnt, kc, nf, f"{mz:.2f}", f"{mr:.2f}", amb, names[ci[s0]],
-                             f"{mp[s0]:.3f}", int(o[s0]), f"{ident[s0]:.2f}", f"{100 - dhat[s0]:.2f}", f"{z[s0]:.2f}"])
-        gd = np.minimum(np.maximum(np.interp(np.log10(grid_m), cx, cy) * grid_m, 1e-3), plateaus[li])
+            cells.write(f"{name}\t{names[g]}\t{kc}\t{names[ci[s0]]}\t{mp[s0]:.3f}\t{nres[g]}\t{int(o[s0])}"
+                        f"\t{ident[s0]:.2f}\t{100 - dhat[s0]:.2f}\t{excess[s0]:.1f}\t{nf}\t{nsim}\t{flag}\t{amb}\n")
+            if (flag or amb) and mask_hi:
+                cnt = blank(g, sites)
+                mw.writerow([name, names[g], cnt, "divergent", nf, nsim, names[ci[s0]],
+                             f"{mp[s0]:.3f}", int(o[s0]), f"{ident[s0]:.2f}", f"{100 - dhat[s0]:.2f}", ""])
+
+        # ---- similar side: any failing pair; LR direction attribution (Kass & Raftery > 10)
+        simpairs = {}
+        for j in np.flatnonzero(fail_lo):
+            key = (int(min(gi[j], ci[j])), int(max(gi[j], ci[j])))
+            simpairs.setdefault(key, j)
+        for (A, B), j in sorted(simpairs.items()):
+            lam, donor, recip = attribute(A, B, li, m, W, S, expect, a.fit_overlap)
+            o_ab = float(ov[A, B]); id_ab = 100.0 * sm[A, B] / max(o_ab, 1.0)
+            exp_ab = float(expect(m[A, B]))
+            targets = ([recip] if recip is not None else [A, B]) if mask_lo else []
+            side = ("both" if recip is None else names[recip]) if mask_lo else "none"
+            for g in targets:
+                cnt = blank(g, sites)
+                mw.writerow([name, names[g], cnt, "similar", "", "", names[B if g == A else A],
+                             f"{m[A, B]:.3f}", int(o_ab), f"{id_ab:.2f}", f"{100 - exp_ab:.2f}", f"{lam:.1f}"])
+            simf.write(f"{name}\t{names[A]}\t{names[B]}\t{m[A, B]:.3f}\t{int(o_ab)}\t{id_ab:.2f}"
+                       f"\t{100 - exp_ab:.2f}\t{o_ab * exp_ab / 100 - (o_ab - sm[A, B]):.1f}\t{lam:.1f}"
+                       f"\t{names[donor] if donor is not None else 'NA'}"
+                       f"\t{names[recip] if recip is not None else 'NA'}\t{side}\n")
+
+        gd = expect(grid_m)
         for gm, gdv in zip(grid_m, gd):
             trends.write(f"{name}\t{gm:.3f}\t{100 - gdv:.2f}\t{100 - min(a.min_ratio * gdv, plateaus[li]):.2f}\n")
         nflag = sum(fcount.values()); fstr = "/".join(str(fcount[j]) for j in range(M_eff, K_eff + 1))
-        per.write(f"{name}\t{len(sites)}\t{int((nres_i > 0).sum())}\t{len(idx)}\t{len(gi)}\t"
-                  f"{rate[li] if np.isfinite(rate[li]) else float('nan'):.3f}\t{plateaus[li]:.1f}"
-                  f"\t{med_z:.2f}\t{s_z:.2f}\t{cut:.2f}\t{nflag}\t"
-                  + "\t".join(str(fcount[j]) for j in range(M_eff, K_eff + 1)) + f"\t{namb}\ttested\n")
-        print(f"{name}: {len(idx)} cells, {len(gi)} pairs, cut z {cut:.1f}, flagged {nflag} "
-              f"(fails {M_eff}..{K_eff} of {K_eff}: {fstr}), ambiguous {namb}", file=sys.stderr)
-    for fh in (pairs, cells, per, trends): fh.close()
+        per.write(f"{name}\t{len(sites)}\t{int((nres > 0).sum())}\t{len(idx)}\t{len(gi)}\t"
+                  f"{rate[li]:.3f}\t{plateaus[li]:.1f}\t{kq:.2f}\t{nflag}\t"
+                  + "\t".join(str(fcount[j]) for j in range(M_eff, K_eff + 1))
+                  + f"\t{namb}\t{len(simpairs)}\ttested\n")
+        print(f"{name}: {len(idx)} cells, {len(gi)} pairs, flagged {nflag} "
+              f"(fails {M_eff}..{K_eff} of {K_eff}: {fstr}), ambiguous {namb}, similar {len(simpairs)}", file=sys.stderr)
+    for fh in (pairs, cells, per, trends, simf): fh.close()
+
+
+def attribute(A, B, li, m, W, S, expect, fit_overlap, nthird=10):
+    """direction of a similar pair: likelihood ratio over shared third parties — the shared
+    sequence should fit the DONOR's expectations. |2 ln LR| > 10 (Kass & Raftery, 'very
+    strong') attributes; returns (lambda, donor, recipient), (lam, None, None) otherwise."""
+    mA, mB = m[A], m[B]
+    cand = np.flatnonzero(np.isfinite(mA) & np.isfinite(mB)
+                          & (W[li][A] >= fit_overlap) & (W[li][B] >= fit_overlap))
+    cand = cand[(cand != A) & (cand != B)]
+    if len(cand) < 3: return 0.0, None, None
+    cand = cand[np.argsort(np.minimum(mA[cand], mB[cand]))[:nthird]]
+    LL = {}
+    for Xi in (A, B):
+        s = 0.0
+        for C in cand:
+            o_ = float(W[li][Xi, C]); mis_ = float(o_ - S[li][Xi, C])
+            q_ = float(expect(m[Xi, C])) / 100.0
+            s += lbinom(mis_, o_, q_)
+        LL[Xi] = s
+    lam = 2.0 * (LL[A] - LL[B])
+    if abs(lam) <= 10.0: return lam, None, None
+    return (lam, A, B) if lam > 0 else (lam, B, A)
 
 
 # ------------------------------------------------------------------ the legacy band test
-def run_band(a, names, loci, X, S, W, ani, jit, masked, mw, K_eff, M_eff, t0):
+def run_band(a, names, loci, X, S, W, ani, jit, masked, mw, K_eff, M_eff):
     n = len(names)
     ani_j = np.where(np.isnan(ani), -np.inf, ani + jit * 1e3)
     lg = lambda v: np.log10(np.maximum(100.0 - v, 0.05))
