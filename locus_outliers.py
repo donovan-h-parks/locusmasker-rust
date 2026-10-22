@@ -14,9 +14,9 @@ it states one, otherwise inferred from the residues; DNA is analysed on A, C, G,
 as T), protein on the 20 standard amino acids; everything else is missing. At least 3 loci and
 4 taxa are required.
 
-Method (--test z, the default). Every pair of taxa gets a measured divergence m: the weighted
-median, across loci, of the pair's rate-normalised divergence (weights = shared sites), so one
-bad locus cannot move its own baseline. Each taxon is compared, locus by locus, with its
+Method (--test z, the default). Every pair of taxa gets a measured divergence m: the median,
+across loci, of the pair's rate-normalised divergence — one vote per overlapping locus, so one
+bad locus cannot move its own baseline no matter how long it is. Each taxon is compared, locus by locus, with its
 --n-comp closest comparators by m (odd, >= 3, auto-shrunk on tiny datasets). The expected
 divergence of a pair in a locus is m times a ratio curve: a running median of
 (locus divergence / m) against log10(m), flat outside its support (constant relative rate),
@@ -180,6 +180,22 @@ def trend_fit(xf, yf, width, nmin):
     return np.array(cx), np.array(cy)
 
 
+def pair_median(vals, W, fit_overlap, fallback):
+    """weighted median of vals across loci (axis 0): weights are shared sites, but no locus may
+    carry more than ~a third of a pair's total weight (iterative cap), so a single bad locus can
+    never reach the median however long it is, while short noisy fragments still count little.
+    Pairs with fewer than 3 contributing loci get `fallback`."""
+    fin = np.isfinite(vals)
+    w = np.where(fin, W, 0.0)
+    t = 0.34 * w.sum(0)
+    for _ in range(8):
+        t = 0.34 * np.minimum(w, t[None, :]).sum(0)
+    w = np.minimum(w, t[None, :])
+    v = wmedian_stack(vals, w)
+    nl = (w > 0).sum(0)
+    return np.where(nl >= 3, v, fallback), nl
+
+
 def wmedian_stack(vals, wts):
     """weighted median of vals over axis 0, nan-aware; (L, P) -> (P,)"""
     ok = np.isfinite(vals) & (wts > 0)
@@ -259,7 +275,10 @@ def main():
         Dv = np.where(W > 0, 100.0 * (1.0 - S / np.maximum(W, 1)), np.nan)
     Wm = W.copy()
     Wm[:, np.arange(n), np.arange(n)] = 0.0                            # self pairs carry no vote
-    m0 = wmedian_stack(Dv.reshape(nloc, -1), Wm.reshape(nloc, -1)).reshape(n, n)
+    pooled = 100.0 - ani
+    m0, _ = pair_median(Dv.reshape(nloc, -1), Wm.reshape(nloc, -1), a.fit_overlap,
+                        pooled.reshape(-1))
+    m0 = m0.reshape(n, n)
     iu = np.triu_indices(n, 1)
     m0c = np.maximum(m0[iu], 0.05)
     rate = np.full(nloc, np.nan)
@@ -273,10 +292,10 @@ def main():
         scale = wmedian_stack(rate[ok_r, None], lsites[ok_r, None])[0]
         rate = rate / max(scale, 1e-6)
     rr = np.where(ok_r, rate, np.nan)
-    m = wmedian_stack((Dv / rr[:, None, None]).reshape(nloc, -1),
-                      np.where(ok_r[:, None, None], Wm, 0.0).reshape(nloc, -1)).reshape(n, n)
-    nl = ((Wm > 0) & np.isfinite(Dv) & ok_r[:, None, None]).sum(0)
-    m = np.where(nl >= 3, m, 100.0 - ani)                              # too few loci: pooled fallback
+    m, _ = pair_median((Dv / rr[:, None, None]).reshape(nloc, -1),
+                       np.where(ok_r[:, None, None], Wm, 0.0).reshape(nloc, -1),
+                       a.fit_overlap, pooled.reshape(-1))
+    m = m.reshape(n, n)
     np.fill_diagonal(m, np.nan); np.save(f"{a.out}/m.npy", m)
     print(f"pair divergences done, {time.time() - t0:.0f}s", file=sys.stderr)
 
