@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 scan/
 *.npy
+notes/
+test_data/

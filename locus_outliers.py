@@ -13,12 +13,13 @@ one or the other. Sites are 1-based and inclusive. Data type is taken from the N
 it states one, otherwise inferred from the residues; DNA is analysed on A, C, G, T only (U read
 as T), protein on the 20 standard amino acids; everything else is missing.
 
-Method (README.md): every taxon is compared, locus by locus, with its five closest comparators
-(closest by alignment-wide identity). Each pair gives a residual, the pair's locus identity minus
-the identity the locus trend predicts at the pair's alignment-wide identity. A cell (taxon,
-locus) is an outlier when the median residual over its comparators is below the band, i.e. it
-fails against at least three of five. Cells with fewer than five comparators that fail against
-the ones they have are reported as ambiguous and masked too.
+Method (README.md): every taxon is compared, locus by locus, with its --n-comp closest
+comparators (odd, at least 3, default 5; closest by alignment-wide identity). Each pair gives a
+residual, the pair's locus identity minus the identity the locus trend predicts at the pair's
+alignment-wide identity. A cell (taxon, locus) is an outlier when the median residual over its
+comparators is below the band, i.e. it fails against a majority of them. Cells with fewer than
+--n-comp comparators that fail against the ones they have are reported as ambiguous and masked
+too. Masking blanks the cell's whole stretch of the locus, ambiguity codes included.
 
 Outputs (in --out; <stem> is the alignment file's name without extension)
   <stem>.masked.<ext>  the alignment in its input format with every outlier cell replaced by gaps
@@ -28,12 +29,12 @@ Outputs (in --out; <stem> is the alignment file's name without extension)
   cells.tsv            every tested cell (same columns plus flag, for unmasked cells too)
   pairs.tsv            every comparison: locus, taxon, rank, comparator, ani, overlap, identity,
                        expected, residual, fail
-  per_locus.tsv        per locus: sites, taxa, tested, pairs, rate, spread, band, flagged,
-                       fail3, fail4, fail5, ambiguous
+  per_locus.tsv        per locus: sites, taxa, tested, pairs, rate, med, spread, band, flagged,
+                       fail<j> for j = majority .. n_comp, ambiguous
   trends.tsv           the locus trend on a grid, for plotting
   ani.npy, taxa.txt    taxon x taxon alignment-wide identity (%), and the row order
 Options
-  --n-comp 5  --fit-overlap 20  --min-band 25  --k 5  --bin 0.1  --bin-min 40  --seed 1
+  --n-comp 5 (odd, >= 3)  --fit-overlap 20  --min-band 25  --k 5  --bin 0.1  --bin-min 40  --seed 1
 """
 import argparse, csv, os, re, sys, time
 import numpy as np
@@ -177,8 +178,13 @@ def main():
     ap.add_argument("--bin", type=float, default=0.1); ap.add_argument("--bin-min", type=int, default=40)
     ap.add_argument("--seed", type=int, default=1)
     a = ap.parse_args(); K = a.n_comp
+    if K < 3 or K % 2 == 0: sys.exit("--n-comp must be an odd number of at least 3")
+    M = (K + 1) // 2                                   # fails that force the median below: a majority
     os.makedirs(a.out, exist_ok=True); t0 = time.time()
     names, seqs, loci, fmt, dtype, nexus = read_input(a.aln, a.partitions)
+    if len(loci) < 3:
+        sys.exit(f"only {len(loci)} locus defined: each locus is judged against the rest of the "
+                 f"alignment, which needs at least 3 loci to mean anything")
     n, L = len(names), len(seqs[0]); alphabet = DNA if dtype == "dna" else PROTEIN
     print(f"{n} taxa, {L} sites, {len(loci)} loci, {dtype}, {fmt}", file=sys.stderr)
     open(f"{a.out}/taxa.txt", "w").write("\n".join(names) + "\n")
@@ -202,7 +208,9 @@ def main():
     CELL = "locus\ttaxon\tn_comp\tcomparator\tani\tfocal_sites\toverlap\tidentity\texpected\tresidual\tmedian_residual\tn_fail\tflag\tambiguous\n"
     pairs = open(f"{a.out}/pairs.tsv", "w"); pairs.write("locus\ttaxon\trank\tcomparator\tani\toverlap\tidentity\texpected\tresidual\tfail\n")
     cells = open(f"{a.out}/cells.tsv", "w"); cells.write(CELL)
-    per = open(f"{a.out}/per_locus.tsv", "w"); per.write("locus\tsites\ttaxa\ttested\tpairs\trate\tspread\tband\tflagged\tfail3\tfail4\tfail5\tambiguous\n")
+    per = open(f"{a.out}/per_locus.tsv", "w")
+    per.write("locus\tsites\ttaxa\ttested\tpairs\trate\tmed\tspread\tband\tflagged\t"
+              + "\t".join(f"fail{j}" for j in range(M, K + 1)) + "\tambiguous\n")
     trends = open(f"{a.out}/trends.tsv", "w"); trends.write("locus\tani\ttrend\n")
     mcsv = open(f"{a.out}/masked.csv", "w", newline=""); mw = csv.writer(mcsv)
     mw.writerow(["locus", "taxon", "sites_masked", "n_comp", "n_fail", "median_residual", "ambiguous", "comparator", "ani", "overlap", "identity", "expected", "residual"])
@@ -234,25 +242,27 @@ def main():
         for j in range(len(gi)):
             pairs.write(f"{name}\t{names[gi[j]]}\t{rk[j] + 1}\t{names[ci[j]]}\t{an[j]:.2f}\t{o[j]}\t{ident[j]:.1f}\t{expected[j]:.1f}\t{resid[j]:.1f}\t{int(fail[j])}\n")
         starts = np.r_[0, np.cumsum(ncomp[idx])[:-1]]
-        n3 = n4 = n5 = namb = 0
+        fcount = {j: 0 for j in range(M, K + 1)}; namb = 0
         for g, s0, kc in zip(idx, starts, ncomp[idx]):
             r = resid[s0:s0 + kc]; mres = float(np.median(r)); nf = int(fail[s0:s0 + kc].sum())
             below = mres < med - band
             flag = int(below and kc >= K); amb = int(below and kc < K)
-            if flag: n3 += nf == 3; n4 += nf == 4; n5 += nf == 5
+            if flag: fcount[nf] += 1
             namb += amb
             cells.write(f"{name}\t{names[g]}\t{kc}\t{names[ci[s0]]}\t{an[s0]:.2f}\t{nres[g]}\t{o[s0]}\t{ident[s0]:.1f}\t{expected[s0]:.1f}\t{resid[s0]:.1f}"
                         f"\t{mres:.1f}\t{nf}\t{flag}\t{amb}\n")
             if flag or amb:
                 row = masked[g]; cnt = 0
                 for site in sites:
-                    if X[g, site] >= 0: row[site] = ord("-"); cnt += 1
+                    if row[site] != ord("-"): cnt += 1
+                    row[site] = ord("-")
                 nmasked += 1
                 mw.writerow([name, names[g], cnt, kc, nf, f"{mres:.1f}", amb, names[ci[s0]], f"{an[s0]:.2f}", o[s0], f"{ident[s0]:.1f}", f"{expected[s0]:.1f}", f"{resid[s0]:.1f}"])
         for gx, gy in zip(grid, trend(lg(an[fit]), ident[fit], lg(grid), a.bin, a.bin_min)): trends.write(f"{name}\t{gx:.2f}\t{gy:.2f}\n")
-        nflag = n3 + n4 + n5
-        per.write(f"{name}\t{len(sites)}\t{int((nres > 0).sum())}\t{len(idx)}\t{len(gi)}\t{rate:.3f}\t{spread:.2f}\t{band:.1f}\t{nflag}\t{n3}\t{n4}\t{n5}\t{namb}\n")
-        print(f"{name}: {len(idx)} cells, {len(gi)} pairs, band {band:.0f}, flagged {nflag} (3/4/5: {n3}/{n4}/{n5}), ambiguous {namb}", file=sys.stderr)
+        nflag = sum(fcount.values()); fstr = "/".join(str(fcount[j]) for j in range(M, K + 1))
+        per.write(f"{name}\t{len(sites)}\t{int((nres > 0).sum())}\t{len(idx)}\t{len(gi)}\t{rate:.3f}\t{med:.2f}\t{spread:.2f}\t{band:.1f}\t{nflag}\t"
+                  + "\t".join(str(fcount[j]) for j in range(M, K + 1)) + f"\t{namb}\n")
+        print(f"{name}: {len(idx)} cells, {len(gi)} pairs, band {band:.0f}, flagged {nflag} (fails {M}..{K} of {K}: {fstr}), ambiguous {namb}", file=sys.stderr)
     for fh in (pairs, cells, per, trends, mcsv): fh.close()
     out = write_masked(a.aln, a.out, fmt, names, [m.decode() for m in masked], nexus)
     print(f"masked {nmasked} cells -> {out}\ndone {time.time() - t0:.0f}s", file=sys.stderr)
