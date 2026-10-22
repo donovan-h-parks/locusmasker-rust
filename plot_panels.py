@@ -28,9 +28,12 @@ if bad: raise SystemExit(f"unknown plot(s): {bad}; choose from log, linear, per_
 per = {r["locus"]: r for r in csv.DictReader(open(f"{a.dir}/per_locus.tsv"), delimiter="\t")}
 cells = collections.defaultdict(list); trends = collections.defaultdict(list)
 for r in csv.DictReader(open(f"{a.dir}/cells.tsv"), delimiter="\t"):
-    cells[r["locus"]].append((float(r["ani"]), float(r["identity"]), int(r["n_fail"]), int(r["flag"]), int(r["ambiguous"])))
-for r in csv.DictReader(open(f"{a.dir}/trends.tsv"), delimiter="\t"): trends[r["locus"]].append((float(r["ani"]), float(r["trend"])))
-order = sorted(per, key=lambda m: (-(int(per[m]["flagged"]) + int(per[m]["ambiguous"])), m))
+    x = float(r["ani"]) if "ani" in r else 100.0 - float(r["pair_div"])
+    cells[r["locus"]].append((x, float(r["identity"]), int(r["n_fail"]), int(r["flag"]), int(r["ambiguous"])))
+for r in csv.DictReader(open(f"{a.dir}/trends.tsv"), delimiter="\t"):
+    x = float(r["ani"]) if "ani" in r else 100.0 - float(r["pair_div"])
+    trends[r["locus"]].append((x, float(r["trend"]), float(r["cutoff"]) if "cutoff" in r else float("nan")))
+order = sorted((m for m in per if m in cells), key=lambda m: (-(int(per[m]["flagged"]) + int(per[m]["ambiguous"])), m))
 INK, MUTED, GRID, LINE, AMB = "#0b0b0b", "#52514e", "#e1e0d9", "#2a78d6", "#b0171f"
 FAILS = sorted(int(k[4:]) for k in (next(iter(per.values())) if per else {}) if re.match(r"fail\d+$", k)) or [3, 4, 5]
 NC, LOW = FAILS[-1], FAILS[0]            # comparators requested, and the fails that make a majority
@@ -45,7 +48,7 @@ def panels(LOG):
     ncol = min(a.cols, len(order)); nrow = math.ceil(len(order) / ncol)
     fig, axs = plt.subplots(nrow, ncol, figsize=(2.2 * ncol + 0.5, 2.05 * nrow + 0.8), dpi=110, sharex=True, sharey=True, squeeze=False)
     for ax, m in zip(axs.ravel(), order):
-        d = np.array(cells[m]); p = per[m]; band = float(p["band"]); med = float(p["med"])
+        d = np.array(cells[m]); p = per[m]
         x, y, nf, fl, amb = d[:, 0], d[:, 1], d[:, 2].astype(int), d[:, 3] == 1, d[:, 4] == 1
         plain = ~fl & ~amb
         for k, c in GREYS.items():
@@ -54,10 +57,12 @@ def panels(LOG):
             s = fl & (nf == k); ax.scatter(T(x[s]), T(y[s]), s=5, color=c, alpha=0.95, linewidths=0, zorder=4)
         ax.scatter(T(x[amb]), T(y[amb]), s=9, facecolors="none", edgecolors=AMB, linewidths=0.7, zorder=5)
         t = np.array(trends[m]); t = t[t[:, 0] <= 99.6]
-        ax.plot(T(t[:, 0]), T(t[:, 1]), color=LINE, lw=1.0, zorder=3); ax.plot(T(t[:, 0]), T(t[:, 1] + med - band), color=LINE, lw=0.9, ls=(0, (3, 2)), zorder=3)
+        dash = t[:, 2] if np.isfinite(t[0, 2]) else t[:, 1] + float(p["med"]) - float(p["band"])
+        ax.plot(T(t[:, 0]), T(t[:, 1]), color=LINE, lw=1.0, zorder=3); ax.plot(T(t[:, 0]), T(dash), color=LINE, lw=0.9, ls=(0, (3, 2)), zorder=3)
         nfl = int(p["flagged"]); namb = int(p["ambiguous"]); hot = nfl + namb >= a.highlight
         ax.set_title(m, fontsize=8.5, color=REDS[5] if hot else INK, fontweight="bold" if hot else "normal", pad=3)
-        txt = f"{nfl} flagged  ({LOW}..{NC} of {NC}: " + "/".join(p[f"fail{j}"] for j in FAILS) + ")" + (f", {namb} ambiguous" if namb else "") + f"\nband {band:.0f} pts · n {p['tested']}"
+        scale = f"band {float(p['band']):.0f} pts" if "band" in p else f"cut z {float(p['cut']):.1f}"
+        txt = f"{nfl} flagged  ({LOW}..{NC} of {NC}: " + "/".join(p[f"fail{j}"] for j in FAILS) + ")" + (f", {namb} ambiguous" if namb else "") + f"\n{scale} · n {p['tested']}"
         ax.text(0.03, 0.90 if LOG else 0.04, txt, transform=ax.transAxes, fontsize=6.0, color=INK if nfl + namb else MUTED, va="top" if LOG else "bottom")
         if LOG:
             ax.set_xscale("log"); ax.set_yscale("log"); ax.set_xlim(45, 0.08); ax.set_ylim(110, 0.08)
