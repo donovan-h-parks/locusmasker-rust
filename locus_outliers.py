@@ -292,12 +292,16 @@ def main():
         scale = wmedian_stack(rate[ok_r, None], lsites[ok_r, None])[0]
         rate = rate / max(scale, 1e-6)
     rr = np.where(ok_r, rate, np.nan)
-    m, _ = pair_median((Dv / rr[:, None, None]).reshape(nloc, -1),
-                       np.where(ok_r[:, None, None], Wm, 0.0).reshape(nloc, -1),
-                       a.fit_overlap, pooled.reshape(-1))
-    m = m.reshape(n, n)
+    m, nl = pair_median((Dv / rr[:, None, None]).reshape(nloc, -1),
+                        np.where(ok_r[:, None, None], Wm, 0.0).reshape(nloc, -1),
+                        a.fit_overlap, pooled.reshape(-1))
+    m = m.reshape(n, n); nl = nl.reshape(n, n)
     np.fill_diagonal(m, np.nan); np.save(f"{a.out}/m.npy", m)
-    print(f"pair divergences done, {time.time() - t0:.0f}s", file=sys.stderr)
+    fb = float((nl[np.triu_indices(n, 1)] < 3).mean())
+    print(f"pair divergences done, {time.time() - t0:.0f}s"
+          + (f"; WARNING: {fb:.0%} of taxon pairs overlap in <3 loci and use pooled identity "
+             f"instead of the robust pair median — expectations for those pairs can be dragged "
+             f"by a bad locus" if fb > 0.05 else ""), file=sys.stderr)
 
     rng = np.random.default_rng(a.seed)
     jit = rng.random((n, n)) * 1e-9
