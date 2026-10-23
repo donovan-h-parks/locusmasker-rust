@@ -96,8 +96,8 @@ def panels(by, free=False):
         zx, zy = bool((px <= 0).any()), bool((py <= 0).any())
         def rng(v, z):
             v = v[v > 0]
-            lo_ = np.percentile(v, 1) / 1.5 if len(v) else 0.01; hi_ = max(np.percentile(v, 99.9) * 1.4 if len(v) else 1.0, lo_ * 3)
-            f = lo_ / (2.5 if z else 1.0); return lo_, hi_, f
+            lo_ = np.percentile(v, 1) / 1.12 if len(v) else 0.01; hi_ = max(np.percentile(v, 99.9) * 1.12 if len(v) else 1.0, lo_ * 2)
+            f = lo_ / (2.0 if z else 1.0); return lo_, hi_, f
         if free:
             xlo, xhi, fx = rng(px, zx); ylo, yhi, fy = rng(py, zy)
         else:
@@ -118,9 +118,9 @@ def panels(by, free=False):
         ax.set_title(title, fontsize=fs, color=INK, fontweight="bold" if hot else "normal", pad=12, linespacing=0.95)
         ax.text(0.5, 1.012, f"{nm} of {n} masked" + (f" · {int((~inf).sum())} with no differences" if (~inf).sum() else ""), transform=ax.transAxes,
                 fontsize=6.3, color=INK if nm else FAINT, ha="center", va="bottom")
-        ax.set_xscale("log"); ax.set_yscale("log"); ax.set_xlim(fx / 1.2, xhi); ax.set_ylim(fy / 1.2, yhi)
+        ax.set_xscale("log"); ax.set_yscale("log"); ax.set_xlim(fx / 1.1, xhi); ax.set_ylim(fy / 1.1, yhi)
         if not free: ax.set_aspect("equal")
-        tx = log_ticks(xlo, xhi / 1.4); ty = log_ticks(ylo, yhi / 1.4)
+        tx = log_ticks(xlo, xhi); ty = log_ticks(ylo, yhi)
         ax.set_xticks(tx + ([fx] if zx else [])); ax.set_xticklabels([f"{v:g}" for v in tx] + (["0"] if zx else []))
         ax.set_yticks(ty + ([fy] if zy else [])); ax.set_yticklabels([f"{v:g}" for v in ty] + (["0"] if zy else []))
         for axis in (ax.xaxis, ax.yaxis): axis.set_minor_formatter(matplotlib.ticker.NullFormatter()); axis.set_minor_locator(matplotlib.ticker.NullLocator())
