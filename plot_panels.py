@@ -92,17 +92,15 @@ def panels(by, free=False):
         idx = np.array(groups[k]); inf = INF[idx]
         # the panel's own range: the central 99.8% of its informative values with a margin, the same on
         # both axes so the diagonal stays at 45 degrees; cells with a zero sit on a floor tick labelled 0
+        # the axes are scaled by matplotlib from the plotted points alone (free: x and y separately;
+        # otherwise one square range); a zero divergence cannot sit on a log axis, so such cells go
+        # on a floor at half the smallest positive value, ticked 0
         px, py = EXP[idx][inf], OBS[idx][inf]
         zx, zy = bool((px <= 0).any()), bool((py <= 0).any())
-        def rng(v, z):
-            v = v[v > 0]
-            lo_ = np.percentile(v, 1) / 1.12 if len(v) else 0.01; hi_ = max(np.percentile(v, 99.9) * 1.12 if len(v) else 1.0, lo_ * 2)
-            f = lo_ / (2.0 if z else 1.0); return lo_, hi_, f
-        if free:
-            xlo, xhi, fx = rng(px, zx); ylo, yhi, fy = rng(py, zy)
-        else:
-            lo_d, hi, fx = rng(np.concatenate([px, py]), zx or zy); xlo = ylo = lo_d; xhi = yhi = hi; fy = fx
-        X = np.where(EXP > 0, np.clip(EXP, xlo, xhi / 1.05), fx); Y = np.where(OBS > 0, np.clip(OBS, ylo, yhi / 1.05), fy)
+        fx = (px[px > 0].min() / 2 if (px > 0).any() else 0.01); fy = (py[py > 0].min() / 2 if (py > 0).any() else 0.01)
+        if not free: fx = fy = min(fx, fy)
+        X = np.where(EXP > 0, EXP, fx); Y = np.where(OBS > 0, OBS, fy)
+        ax.set_xscale("log"); ax.set_yscale("log"); ax.margins(0.04)
         def draw(sel, marker, color, size, hollow=False, edge=None, z=3):
             s = idx[sel & inf]
             if len(s): ax.scatter(X[s], Y[s], s=size, marker=marker, facecolors="none" if hollow else color, edgecolors=edge or (SURF if not hollow else color),
@@ -111,6 +109,10 @@ def panels(by, free=False):
         draw(AMB[idx] & ~FLAG[idx], "^", REDS[LOW], 26, z=5)
         for j, c in REDS.items(): draw(FLAG[idx] & (NF[idx] == j), "^", c, 26, z=5)
         for j, c in BLUES.items(): draw(SMK[idx] & (np.minimum(NS[idx], 3) == j), "v", c, 26, z=6)
+        ax.autoscale_view()                                           # from the scatters' data limits (relim would drop collections)
+        (xlo, xhi), (ylo, yhi) = ax.get_xlim(), ax.get_ylim()
+        if not free: xlo = ylo = min(xlo, ylo); xhi = yhi = max(xhi, yhi)
+        ax.set_autoscale_on(False)
         g = np.array([min(xlo, ylo) / 10, max(xhi, yhi) * 10])
         ax.plot(g, g, color=MODEL, lw=1.1, zorder=1); ax.plot(g, 2 * g, color=FLOOR, lw=0.8, ls=(0, (3, 2)), zorder=1); ax.plot(g, g / 3, color=FLOOR, lw=0.8, ls=(0, (3, 2)), zorder=1)
         nm = int(MASKED[idx].sum()); n = len(idx); hot = nm >= 40
@@ -118,7 +120,7 @@ def panels(by, free=False):
         ax.set_title(title, fontsize=fs, color=INK, fontweight="bold" if hot else "normal", pad=12, linespacing=0.95)
         ax.text(0.5, 1.012, f"{nm} of {n} masked" + (f" · {int((~inf).sum())} with no differences" if (~inf).sum() else ""), transform=ax.transAxes,
                 fontsize=6.3, color=INK if nm else FAINT, ha="center", va="bottom")
-        ax.set_xscale("log"); ax.set_yscale("log"); ax.set_xlim(fx / 1.1, xhi); ax.set_ylim(fy / 1.1, yhi)
+        ax.set_xlim(xlo, xhi); ax.set_ylim(ylo, yhi)
         if not free: ax.set_aspect("equal")
         tx = log_ticks(xlo, xhi); ty = log_ticks(ylo, yhi)
         ax.set_xticks(tx + ([fx] if zx else [])); ax.set_xticklabels([f"{v:g}" for v in tx] + (["0"] if zx else []))
