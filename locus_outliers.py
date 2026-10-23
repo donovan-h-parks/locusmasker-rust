@@ -65,7 +65,7 @@ Outputs (in --out; <stem> is the alignment file's name without extension)
   pairs.tsv            every comparison
   similar.tsv          every similar-side event: pair, deficit, lambda, donor/recipient call
   per_locus.tsv        one row per locus, skipped loci included (status column)
-  trends.tsv           expectation and the min-ratio cutoff on a grid, for plotting
+  trends.tsv           expectation and both effect floors (too divergent / too similar) on a grid
   ani.npy, m.npy       alignment-wide identity (%) and pair divergence m (points); taxa.txt
 Options
   --datatype dna|aa (required)  --test z|band  --n-comp 5 (odd >= 3)  --fit-overlap 20
@@ -439,7 +439,7 @@ def run_z(a, names, loci, X, S, W, m, plateaus, rate, tie, masked, K_eff, M_eff)
     per = open(f"{a.out}/per_locus.tsv", "w")
     per.write("locus\tsites\ttaxa\ttested\tpairs\trate\tplateau\tcut\tflagged\t"
               + "\t".join(f"fail{j}" for j in range(M_eff, K_eff + 1)) + "\tambiguous\tsimilar\tstatus\n")
-    trends = open(f"{a.out}/trends.tsv", "w"); trends.write("locus\tpair_div\ttrend\tcutoff\n")
+    trends = open(f"{a.out}/trends.tsv", "w"); trends.write("locus\tpair_div\ttrend\tcutoff\tcutoff_hi\n")
     simf = open(f"{a.out}/similar.tsv", "w")
     simf.write("locus\ttaxon_a\ttaxon_b\tpair_div\toverlap\tidentity\texpected\tdeficit\tlambda\tdonor\trecipient\tmasked\n")
     grid_m = np.logspace(np.log10(0.05), np.log10(80.0), 200)
@@ -543,7 +543,7 @@ def run_z(a, names, loci, X, S, W, m, plateaus, rate, tie, masked, K_eff, M_eff)
                        f"\t{names[recip] if recip is not None else 'NA'}\t{side}\n")
 
         gd = expect(grid_m)
-        trends.writelines(f"{name}\t{gm:.3f}\t{100 - gdv:.2f}\t{100 - min(a.min_ratio * gdv, plateaus[li]):.2f}\n"
+        trends.writelines(f"{name}\t{gm:.3f}\t{100 - gdv:.2f}\t{100 - min(a.min_ratio * gdv, plateaus[li]):.2f}\t{100 - gdv / 3:.2f}\n"
                           for gm, gdv in zip(grid_m, gd))
         nflag = sum(fcount.values()); fstr = "/".join(str(fcount[j]) for j in range(M_eff, K_eff + 1))
         per.write(f"{name}\t{len(sites)}\t{int((nres > 0).sum())}\t{len(idx)}\t{len(gi)}\t"

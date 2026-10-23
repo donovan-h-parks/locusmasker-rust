@@ -31,13 +31,18 @@ if bad: raise SystemExit(f"unknown plot(s): {bad}; choose from log, linear, per_
 per = {r["locus"]: r for r in csv.DictReader(open(f"{a.dir}/per_locus.tsv"), delimiter="\t")}
 cells = collections.defaultdict(list); trends = collections.defaultdict(list)
 ZMODE = "pair_div" in open(f"{a.dir}/cells.tsv").readline()
+SIMMASK = set()
+if os.path.exists(f"{a.dir}/masked.csv"):
+    for r in csv.DictReader(open(f"{a.dir}/masked.csv")):
+        if r.get("side") in ("similar", "both"): SIMMASK.add((r["locus"], r["taxon"]))
 for r in csv.DictReader(open(f"{a.dir}/cells.tsv"), delimiter="\t"):
     x = float(r["ani"]) if "ani" in r else 100.0 - float(r["pair_div"])
     cells[r["locus"]].append((x, float(r["identity"]), int(r["n_fail"]), int(r["flag"]), int(r["ambiguous"]),
-                              int(r.get("n_similar", 0))))
+                              int(r.get("n_similar", 0)), int((r["locus"], r["taxon"]) in SIMMASK)))
 for r in csv.DictReader(open(f"{a.dir}/trends.tsv"), delimiter="\t"):
     x = float(r["ani"]) if "ani" in r else 100.0 - float(r["pair_div"])
-    trends[r["locus"]].append((x, float(r["trend"]), float(r["cutoff"]) if "cutoff" in r else float("nan")))
+    trends[r["locus"]].append((x, float(r["trend"]), float(r["cutoff"]) if "cutoff" in r else float("nan"),
+                               float(r["cutoff_hi"]) if "cutoff_hi" in r else float("nan")))
 order = sorted((m for m in per if m in cells), key=lambda m: (-(int(per[m]["flagged"]) + int(per[m]["ambiguous"])), m))
 if not order: raise SystemExit("nothing to plot: no locus was tested")
 NTOT = len(order)
@@ -49,6 +54,7 @@ def _ramp(c0, c1, n):
     u, v = np.array(matplotlib.colors.to_rgb(c0)), np.array(matplotlib.colors.to_rgb(c1))
     return [matplotlib.colors.to_hex(u + (v - u) * (i / max(n - 1, 1))) for i in range(n)]
 GREYS = dict(zip(range(LOW), _ramp("#c9c7c1", "#55534e", LOW)))
+BLUES = {1: "#9ec3ee", 2: "#5a9ae0", 3: "#1f5fb8"}
 REDS = dict(zip(FAILS, _ramp("#f2a19f", "#b0171f", len(FAILS))))
 
 def panels(LOG):
@@ -57,17 +63,21 @@ def panels(LOG):
     fig, axs = plt.subplots(nrow, ncol, figsize=(2.2 * ncol + 0.5, 2.05 * nrow + 0.8), dpi=110, sharex=True, sharey=True, squeeze=False)
     for ax, m in zip(axs.ravel(), order):
         d = np.array(cells[m]); p = per[m]
-        x, y, nf, fl, amb, sim = d[:, 0], d[:, 1], d[:, 2].astype(int), d[:, 3] == 1, d[:, 4] == 1, d[:, 5] > 0
+        x, y, nf, fl, amb, sim, smk = d[:, 0], d[:, 1], d[:, 2].astype(int), d[:, 3] == 1, d[:, 4] == 1, d[:, 5] > 0, d[:, 6] == 1
+        nsim = d[:, 5].astype(int)
         plain = ~fl & ~amb
         for k, c in GREYS.items():
             s = plain & (nf == k); ax.scatter(T(x[s]), T(y[s]), s=1.5, color=c, alpha=0.5 if k == 0 else 0.9, linewidths=0, rasterized=True, zorder=2)
         for k, c in REDS.items():
             s = fl & (nf == k); ax.scatter(T(x[s]), T(y[s]), s=5, color=c, alpha=0.95, linewidths=0, zorder=4)
         ax.scatter(T(x[amb]), T(y[amb]), s=9, facecolors="none", edgecolors=AMB, linewidths=0.7, zorder=5)
-        ax.scatter(T(x[sim]), T(y[sim]), s=12, facecolors="none", edgecolors=LINE, linewidths=0.7, zorder=5)
+        ax.scatter(T(x[sim & ~smk]), T(y[sim & ~smk]), s=12, facecolors="none", edgecolors=LINE, linewidths=0.7, zorder=5)
+        for k, c in BLUES.items():                                  # similar-side masked cells: shades of blue
+            s = smk & (np.minimum(nsim, 3) == k); ax.scatter(T(x[s]), T(y[s]), s=6, color=c, alpha=0.95, linewidths=0, zorder=6)
         t = np.array(trends[m]); t = t[t[:, 0] <= 99.6]
         dash = t[:, 2] if np.isfinite(t[0, 2]) else t[:, 1] + float(p["med"]) - float(p["band"])
         ax.plot(T(t[:, 0]), T(t[:, 1]), color=LINE, lw=1.0, zorder=3); ax.plot(T(t[:, 0]), T(dash), color=LINE, lw=0.9, ls=(0, (3, 2)), zorder=3)
+        if np.isfinite(t[0, 3]): ax.plot(T(t[:, 0]), T(t[:, 3]), color=LINE, lw=0.9, ls=(0, (3, 2)), zorder=3)   # similar-side floor, above
         nfl = int(p["flagged"]); namb = int(p["ambiguous"]); hot = nfl + namb >= a.highlight
         ax.set_title(m if len(m) <= 30 else m[:29] + "…", fontsize=8.5, color=REDS[NC] if hot else INK,
                      fontweight="bold" if hot else "normal", pad=3)
@@ -89,12 +99,13 @@ def panels(LOG):
     for ax in axs[-1]: ax.set_xlabel(xlab, fontsize=7.5, color=MUTED)
     for ax in axs[:, 0]: ax.set_ylabel("locus identity (%)", fontsize=7.5, color=MUTED)
     tot = sum(int(p["flagged"]) for p in per.values()); tamb = sum(int(p["ambiguous"]) for p in per.values()); tested = sum(int(p["tested"]) for p in per.values())
-    fig.suptitle(f"{tot:,} of {tested:,} cells flagged" + (f", {tamb} ambiguous" if tamb else "") + " · one point = taxon vs its closest comparator · solid = locus trend, dashed = cutoff"
+    fig.suptitle(f"{tot:,} of {tested:,} cells flagged" + (f", {tamb} ambiguous" if tamb else "") + " · one point = taxon vs its closest comparator · solid = expected, dashed = effect floors (below: too divergent; above: too similar)"
                  + (" · log axes on 100 − identity, labelled as identity" if LOG else ""), fontsize=11, color=INK, x=0.01, ha="left", y=0.996)
     handles = [Line2D([], [], marker="o", ls="", color=c, ms=4, label=f"fails {k} of {NC}") for k, c in GREYS.items()] + \
               [Line2D([], [], marker="o", ls="", color=c, ms=5, label=f"flagged, fails {k} of {NC}") for k, c in REDS.items()] + \
               [Line2D([], [], marker="o", ls="", mfc="none", mec=AMB, ms=6, label=f"ambiguous: < {NC} comparators, fails those it has")] + \
-              ([Line2D([], [], marker="o", ls="", mfc="none", mec=LINE, ms=6, label="in a similar-side event")] if ZMODE else [])
+              ([Line2D([], [], marker="o", ls="", color=BLUES[k], ms=5, label=f"masked too-similar, {k}{'+' if k == 3 else ''} pair{'s' if k > 1 else ''}") for k in (1, 2, 3)]
+               + [Line2D([], [], marker="o", ls="", mfc="none", mec=LINE, ms=6, label="in a similar-side event, not masked")] if ZMODE else [])
     fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.005, 0.988), ncol=7, frameon=False, fontsize=7.5, handletextpad=0.3, columnspacing=1.2)
     fig.tight_layout(rect=(0, 0, 1, 0.968), h_pad=0.9, w_pad=0.6)
     return fig
