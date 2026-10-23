@@ -6,7 +6,7 @@
 Pages
   loci   one panel per locus: every tested cell of the locus (a taxon) as one point
   taxa   one panel per taxon: every tested cell of the taxon (a locus) as one point
-  bars   one bar per locus: cells masked, too divergent (reds) then too similar (blues)
+  bars   one bar per locus with a masked cell (all of them, whatever --top): too divergent (reds) then too similar (blues)
 
 In the panels a point is a cell, placed at the median over its comparators of the divergence the
 locus expects for the pair (x) and of the divergence observed (y) — the two numbers the cell
@@ -18,7 +18,8 @@ masked with fewer comparators than requested, takes the lightest red), blues by 
 pairs (1, 2, 3+). Cells with no difference expected or seen sit on the
 axis floor marked 0. Loci and taxa are ordered by cells masked; --top N (default 100) shows the N
 most masked on each page, --all shows every locus and every taxon (a page per panel row of 7, so
-a dataset with thousands of loci or taxa makes a very large PDF)."""
+a dataset with thousands of loci or taxa makes a very large PDF). The bars page always lists every
+locus that has a masked cell."""
 import argparse, csv, collections, math, os, re, numpy as np, matplotlib
 matplotlib.use("Agg"); import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
@@ -149,8 +150,7 @@ def panels(by, free=False):
 
 def bars():
     counts = collections.Counter(LOC[MASKED])
-    order = sorted(counts, key=lambda k: (-counts[k], k)); NTOT = len(set(LOC))      # loci with at least one masked cell
-    if not a.all: order = order[:a.top]
+    order = sorted(counts, key=lambda k: (-counts[k], k)); NTOT = len(set(LOC))      # every locus with at least one masked cell
     if not order: order = sorted(set(LOC))[:1]
     n = len(order); ys = np.arange(n)[::-1]
     lab_in = min(0.048 * max(len(l) for l in order) + 0.4, 4.5)
@@ -167,7 +167,7 @@ def bars():
     ax.set_xlim(0, top * 1.12)
     ax.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
     ax.set_xlabel("cells masked", fontsize=7.5, color=MUTED)
-    ax.set_title(f"{NAME}  ·  {int(MASKED.sum()):,} cells masked, by locus  ·  {n} loci with masked cells" + (f" (the {n} most masked)" if n < len(counts) else "") + f" of {NTOT}", fontsize=9, color=INK, loc="left", fontweight="bold", pad=8)
+    ax.set_title(f"{NAME}  ·  {int(MASKED.sum()):,} cells masked, by locus  ·  {n} of {NTOT} loci have a masked cell", fontsize=9, color=INK, loc="left", fontweight="bold", pad=8)
     handles = [Patch(facecolor=c, edgecolor=SURF, label=("too divergent · " if lab.startswith(f"fails {LOW}") else "") + lab) for lab, c, _ in right] + \
               [Patch(facecolor=c, edgecolor=SURF, label=("too similar · " if lab.startswith("1 ") else "") + lab) for lab, c, _ in left]
     ax.legend(handles=handles, frameon=False, fontsize=6.5, loc="lower right", labelcolor=INK, ncol=2)
