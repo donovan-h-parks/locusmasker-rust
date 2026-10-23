@@ -32,8 +32,10 @@ Method (--test z, the default):
             frequencies), the expected corrected locus distance of a pair is r x c(m), where r
             is the median over the locus's pairs of c(d)/c(m); back-transformed to an expected
             mismatch fraction for the count test. A straight line through the origin in
-            corrected-distance space, fitted by the median: one parameter per locus, 50%
-            breakdown over all the locus's pairs, nothing to overfit.
+            corrected-distance space, fitted by a weighted median in which each pair votes in
+            proportion to the differences it contains (o x m), with half a mismatch added to
+            both sides so that near-identical pairs vote "ratio 1": one parameter per locus,
+            50% breakdown, nothing to overfit.
   test      with E = expected mismatches on o shared sites, a comparison fails the DIVERGENT
             side when observed - E > max(4, k*sqrt(E), (--min-ratio - 1) * E): the one-sided
             Pearson residual (Poisson score) test plus an absolute floor of 4 mismatches (the
@@ -228,6 +230,12 @@ def wmedian_stack(vals, wts):
     idx = np.minimum((cw < tot[None, :] / 2).sum(0), v.shape[0] - 1)
     out = np.take_along_axis(v_s, idx[None, :], 0)[0]
     return np.where(tot > 0, out, np.nan)
+
+
+def wmedian1(v, w):
+    """weighted median of a 1-D array"""
+    o = np.argsort(v); v, w = v[o], w[o]
+    cw = np.cumsum(w); return float(v[min(int((cw < cw[-1] / 2).sum()), len(v) - 1)]) if cw[-1] > 0 else float(np.median(v))
 
 
 def pair_median(vals, W, min_loci, fallback):
@@ -474,8 +482,9 @@ def run_z(a, names, loci, X, S, W, m, plateaus, rate, tie, masked, K_eff, M_eff)
         P_ = plateaus[li]
         corr = lambda p: -P_ * np.log(1.0 - np.minimum(np.asarray(p, float), 0.98 * P_) / P_)
         mpc = np.maximum(mp, 0.05)
-        rho = (corr(dob + 50.0 / o) + 0.05) / (corr(mpc) + 0.05)
-        rate_c = max(float(np.median(rho[fit])), 1e-3)
+        pc = 50.0 / o                                               # half a mismatch, applied to BOTH sides:
+        rho = corr(dob + pc) / corr(mpc + pc)                       # an uninformative pair votes ratio ~ 1
+        rate_c = max(wmedian1(rho[fit], o[fit] * mpc[fit]), 1e-3)   # votes weighted by differences contained
 
         def expect(mv):
             mvc = np.maximum(np.asarray(mv, float), 0.05)
