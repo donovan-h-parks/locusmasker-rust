@@ -27,10 +27,13 @@ Method (--test z, the default):
             auto-shrunk to the largest odd <= n-1) among those overlapping it by >=
             min(--fit-overlap, its residues). Ties are broken by pooled identity, then taxon
             order, so runs are reproducible.
-  expect    expected divergence of a pair in a locus = m x the locus ratio curve: the running
-            median of (locus divergence / m) over the 10 x n-comp rank-nearest fit pairs,
-            interpolated, flat outside (constant relative rate), capped at the locus's
-            random-identity plateau. Loci with fewer fit pairs use their global median ratio.
+  expect    one rate per locus, on distances corrected for multiple hits: with c(p) =
+            -P ln(1 - p/P) (P = the locus's random-identity plateau from its residue
+            frequencies), the expected corrected locus distance of a pair is r x c(m), where r
+            is the median over the locus's pairs of c(d)/c(m); back-transformed to an expected
+            mismatch fraction for the count test. A straight line through the origin in
+            corrected-distance space, fitted by the median: one parameter per locus, 50%
+            breakdown over all the locus's pairs, nothing to overfit.
   test      with E = expected mismatches on o shared sites, a comparison fails the DIVERGENT
             side when observed - E > max(4, k*sqrt(E), (--min-ratio - 1) * E): the one-sided
             Pearson residual (Poisson score) test plus an absolute floor of 4 mismatches (the
@@ -74,7 +77,6 @@ Options
 """
 import argparse, collections, csv, math, os, re, sys, time, warnings
 import numpy as np
-from numpy.lib.stride_tricks import sliding_window_view
 
 PROTEIN = "ACDEFGHIKLMNPQRSTVWY"
 DNA = "ACGT"
@@ -256,14 +258,6 @@ def flatten_pairs(idx, top, valid, kk):
     return gi[vi], ci[vi], rk[vi]
 
 
-def rolling_ratio(xf, yf, k):
-    """running median of yf over the k rank-nearest points along xf; None when too few points"""
-    if len(xf) < k: return None
-    order = np.argsort(xf); xs, ys = xf[order], yf[order]
-    med = np.median(sliding_window_view(ys, k), axis=1)
-    return xs[k // 2: k // 2 + len(med)], med
-
-
 def norm_quantile(p):
     """inverse standard normal CDF, via bisection on erfc (no scipy)"""
     lo, hi = 0.0, 50.0
@@ -443,7 +437,6 @@ def run_z(a, names, loci, X, S, W, m, plateaus, rate, tie, masked, K_eff, M_eff)
     simf = open(f"{a.out}/similar.tsv", "w")
     simf.write("locus\ttaxon_a\ttaxon_b\tpair_div\toverlap\tidentity\texpected\tdeficit\tlambda\tdonor\trecipient\tmasked\n")
     grid_m = np.logspace(np.log10(0.05), np.log10(80.0), 200)
-    kwin = 10 * K_eff
     mrows = {}                                                        # (locus, taxon) -> masked.csv row
 
     def mask_cell(name, g, sites, side, evidence):
@@ -474,18 +467,19 @@ def run_z(a, names, loci, X, S, W, m, plateaus, rate, tie, masked, K_eff, M_eff)
                       + "\t".join("0" for _ in range(M_eff, K_eff + 1)) + f"\t0\t0\t{skip}\n")
             print(f"{name}: {skip}", file=sys.stderr); continue
 
+        # one rate per locus on multiple-hit-corrected distances (F81-style, with the locus's own
+        # random-identity plateau P): corrected distance c(p) = -P ln(1 - p/P); the locus's expected
+        # corrected distance is r x c(m); r = median over fit pairs of c(d)/c(m) (50% breakdown over
+        # ALL the locus's pairs, no windows, nothing to overfit); back-transformed for the count test
+        P_ = plateaus[li]
+        corr = lambda p: -P_ * np.log(1.0 - np.minimum(np.asarray(p, float), 0.98 * P_) / P_)
         mpc = np.maximum(mp, 0.05)
-        rho = (dob + 50.0 / o) / (mpc + 50.0 / o)
-        roll = rolling_ratio(np.log10(mpc[fit]), rho[fit], kwin)
-        if roll is None:
-            cxs, meds = np.array([0.0]), np.array([max(float(np.median(rho[fit])), 1e-3)])
-        else:
-            cxs, meds = roll[0], np.maximum(roll[1], 1e-3)
+        rho = (corr(dob + 50.0 / o) + 0.05) / (corr(mpc) + 0.05)
+        rate_c = max(float(np.median(rho[fit])), 1e-3)
 
         def expect(mv):
             mvc = np.maximum(np.asarray(mv, float), 0.05)
-            rh = np.interp(np.log10(mvc), cxs, meds)
-            return np.minimum(np.maximum(rh * mvc, 1e-3), plateaus[li])
+            return np.maximum(P_ * (1.0 - np.exp(-rate_c * corr(mvc) / P_)), 1e-3)
 
         dhat = expect(mp)
         E = o * dhat / 100.0
