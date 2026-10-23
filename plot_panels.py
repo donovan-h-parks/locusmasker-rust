@@ -25,7 +25,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
-ap = argparse.ArgumentParser(); ap.add_argument("dir"); ap.add_argument("--plots", default="loci,taxa,bars")
+ap = argparse.ArgumentParser(); ap.add_argument("dir"); ap.add_argument("--plots", default="taxa,loci,bars")
 ap.add_argument("--out"); ap.add_argument("--png", action="store_true"); ap.add_argument("--cols", type=int, default=7)
 ap.add_argument("--top", type=int, default=100, help="panels per page: the N loci / taxa with the most masked cells")
 ap.add_argument("--all", action="store_true", help="plot every locus and every taxon, however many (overrides --top)")
@@ -74,13 +74,13 @@ def fit_title(name, width_in, fs=7.5):
     return "\n".join(lines), fs if longest <= cap else max(5.5, fs * cap / longest)
 
 def log_ticks(lo, hi):
-    cand = [100, 50, 20, 10, 5, 2, 1, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001]
+    cand = [100, 70, 50, 30, 20, 15, 10, 7, 5, 3, 2, 1.5, 1, 0.7, 0.5, 0.3, 0.2, 0.15, 0.1, 0.07, 0.05, 0.03, 0.02, 0.015, 0.01, 0.005, 0.002, 0.001]
     t = [v for v in cand if lo <= v <= hi]
-    while len(t) > 5: t = t[::2]
+    while len(t) > 3: t = t[::2]
     return t
 
-def panels(by):
-    """one panel per locus (by='locus') or per taxon (by='taxon')"""
+def panels(by, free=False):
+    """one panel per locus (by='locus') or per taxon (by='taxon'); free = x and y ranged separately"""
     key = LOC if by == "locus" else TAX
     counts = collections.Counter(key[MASKED]); groups = collections.defaultdict(list)
     for i, k in enumerate(key): groups[k].append(i)
@@ -92,11 +92,17 @@ def panels(by):
         idx = np.array(groups[k]); inf = INF[idx]
         # the panel's own range: the central 99.8% of its informative values with a margin, the same on
         # both axes so the diagonal stays at 45 degrees; cells with a zero sit on a floor tick labelled 0
-        px, py = EXP[idx][inf], OBS[idx][inf]; pos = np.concatenate([px[px > 0], py[py > 0]])
+        px, py = EXP[idx][inf], OBS[idx][inf]
         zx, zy = bool((px <= 0).any()), bool((py <= 0).any())
-        lo_d = np.percentile(pos, 1) / 1.5 if len(pos) else 0.01; hi = max(np.percentile(pos, 99.9) * 1.4 if len(pos) else 1.0, lo_d * 4)
-        fx = fy = lo_d / (2.5 if (zx or zy) else 1.0); lo = fx / 1.2
-        X = np.where(EXP > 0, np.clip(EXP, lo_d, hi / 1.05), fx); Y = np.where(OBS > 0, np.clip(OBS, lo_d, hi / 1.05), fy)
+        def rng(v, z):
+            v = v[v > 0]
+            lo_ = np.percentile(v, 1) / 1.5 if len(v) else 0.01; hi_ = max(np.percentile(v, 99.9) * 1.4 if len(v) else 1.0, lo_ * 3)
+            f = lo_ / (2.5 if z else 1.0); return lo_, hi_, f
+        if free:
+            xlo, xhi, fx = rng(px, zx); ylo, yhi, fy = rng(py, zy)
+        else:
+            lo_d, hi, fx = rng(np.concatenate([px, py]), zx or zy); xlo = ylo = lo_d; xhi = yhi = hi; fy = fx
+        X = np.where(EXP > 0, np.clip(EXP, xlo, xhi / 1.05), fx); Y = np.where(OBS > 0, np.clip(OBS, ylo, yhi / 1.05), fy)
         def draw(sel, marker, color, size, hollow=False, edge=None, z=3):
             s = idx[sel & inf]
             if len(s): ax.scatter(X[s], Y[s], s=size, marker=marker, facecolors="none" if hollow else color, edgecolors=edge or (SURF if not hollow else color),
@@ -105,18 +111,18 @@ def panels(by):
         draw(AMB[idx] & ~FLAG[idx], "^", REDS[LOW], 26, z=5)
         for j, c in REDS.items(): draw(FLAG[idx] & (NF[idx] == j), "^", c, 26, z=5)
         for j, c in BLUES.items(): draw(SMK[idx] & (np.minimum(NS[idx], 3) == j), "v", c, 26, z=6)
-        g = np.array([lo, hi])
+        g = np.array([min(xlo, ylo) / 10, max(xhi, yhi) * 10])
         ax.plot(g, g, color=MODEL, lw=1.1, zorder=1); ax.plot(g, 2 * g, color=FLOOR, lw=0.8, ls=(0, (3, 2)), zorder=1); ax.plot(g, g / 3, color=FLOOR, lw=0.8, ls=(0, (3, 2)), zorder=1)
         nm = int(MASKED[idx].sum()); n = len(idx); hot = nm >= 40
         title, fs = fit_title(k, pw - 0.25)
         ax.set_title(title, fontsize=fs, color=INK, fontweight="bold" if hot else "normal", pad=12, linespacing=0.95)
         ax.text(0.5, 1.012, f"{nm} of {n} masked" + (f" · {int((~inf).sum())} with no differences" if (~inf).sum() else ""), transform=ax.transAxes,
                 fontsize=6.3, color=INK if nm else FAINT, ha="center", va="bottom")
-        ax.set_xscale("log"); ax.set_yscale("log"); ax.set_xlim(lo, hi); ax.set_ylim(lo, hi); ax.set_aspect("equal")
-        tx = log_ticks(lo_d, hi / 1.4)
-        while len(tx) > 3: tx = tx[::2]
+        ax.set_xscale("log"); ax.set_yscale("log"); ax.set_xlim(fx / 1.2, xhi); ax.set_ylim(fy / 1.2, yhi)
+        if not free: ax.set_aspect("equal")
+        tx = log_ticks(xlo, xhi / 1.4); ty = log_ticks(ylo, yhi / 1.4)
         ax.set_xticks(tx + ([fx] if zx else [])); ax.set_xticklabels([f"{v:g}" for v in tx] + (["0"] if zx else []))
-        ax.set_yticks(tx + ([fy] if zy else [])); ax.set_yticklabels([f"{v:g}" for v in tx] + (["0"] if zy else []))
+        ax.set_yticks(ty + ([fy] if zy else [])); ax.set_yticklabels([f"{v:g}" for v in ty] + (["0"] if zy else []))
         for axis in (ax.xaxis, ax.yaxis): axis.set_minor_formatter(matplotlib.ticker.NullFormatter()); axis.set_minor_locator(matplotlib.ticker.NullLocator())
         for s_ in ("top", "right"): ax.spines[s_].set_visible(False)
         for s_ in ("left", "bottom"): ax.spines[s_].set_color(SPINE); ax.spines[s_].set_linewidth(0.6)
@@ -128,7 +134,7 @@ def panels(by):
     unit = "loci" if by == "locus" else "taxa"
     head = f"{NAME}  ·  {int(MASKED.sum()):,} of {len(R):,} cells masked ({int(DMK.sum()):,} too divergent, {int(SMK.sum()):,} too similar)" + (f"  ·  {len(order)} of {NTOT} {unit} shown" if len(order) < NTOT else f"  ·  one panel per {by}")
     sub = ("one point = a cell (" + ("a taxon at this locus" if by == "locus" else "a locus of this taxon") + "), at the median over its comparators of expected and observed divergence  ·  "
-           "diagonal = expected  ·  dashed = effect floors (2x above, 1/3 below)  ·  shape = verdict, colour grades it")
+           "diagonal = each cell's own expectation  ·  dashed = the effect floors applied to each cell (2x above, 1/3 below)  ·  no line is fitted to a panel  ·  shape = verdict, colour grades it")
     fig.text(0.01, 1 - 0.14 / H, head, fontsize=11, color=INK, fontweight="bold", ha="left", va="top")
     fig.text(0.01, 1 - 0.36 / H, sub, fontsize=7.5, color=MUTED, ha="left", va="top")
     handles = [Line2D([], [], marker="o", ls="", color=c, ms=4.5, label=("passes · " if j == 0 else "") + f"fails {j} of {NC}") for j, c in GREYS.items()] + \
@@ -168,7 +174,7 @@ def bars():
     fig.tight_layout()
     return fig
 
-makers = {"loci": lambda: panels("locus"), "taxa": lambda: panels("taxon"), "bars": bars}
+makers = {"loci": lambda: panels("locus", free=True), "taxa": lambda: panels("taxon"), "bars": bars}
 with PdfPages(out) as pdf:
     for name in wanted:
         fig = makers[name]()
