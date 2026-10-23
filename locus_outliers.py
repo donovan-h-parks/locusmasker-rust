@@ -374,7 +374,7 @@ def main():
     rate = np.full(nloc, np.nan)
     for li in range(nloc):
         d, w = Dv[li][iu], W[li][iu]
-        val = np.isfinite(d) & (w >= a.fit_overlap)
+        val = np.isfinite(d) & (w >= a.fit_overlap) & np.isfinite(m0c)    # pairs without m cannot vote
         if val.sum() >= MIN_FIT_PAIRS: rate[li] = float(np.median(d[val] / m0c[val]))
     lsites = np.array([len(s) for _, s in loci], dtype=float)
     ok_r = np.isfinite(rate) & (rate > 0)
@@ -546,7 +546,7 @@ def run_z(a, names, loci, X, S, W, m, plateaus, rate, tie, masked, K_eff, M_eff)
                        f"\t{names[recip] if recip is not None else 'NA'}\t{side}\n")
 
         gd = expect(grid_m)
-        trends.writelines(f"{name}\t{gm:.3f}\t{100 - gdv:.2f}\t{100 - min(a.min_ratio * gdv, plateaus[li]):.2f}\t{100 - gdv / 3:.2f}\n"
+        trends.writelines(f"{name}\t{gm:.4f}\t{100 - gdv:.4f}\t{100 - min(a.min_ratio * gdv, plateaus[li]):.4f}\t{100 - gdv / 3:.4f}\n"
                           for gm, gdv in zip(grid_m, gd))
         nflag = sum(fcount.values()); fstr = "/".join(str(fcount[j]) for j in range(M_eff, K_eff + 1))
         per.write(f"{name}\t{len(sites)}\t{int((nres > 0).sum())}\t{len(idx)}\t{len(gi)}\t"
