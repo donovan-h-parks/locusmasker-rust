@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Figures from locus_outliers.py output, written to one PDF (and PNGs with --png).
 
-    python plot_panels.py DIR [--plots loci,taxa,bars] [--top 98] [--cols 7] [--out DIR/plots.pdf] [--png] [--title NAME]
+    python plot_panels.py DIR [--plots loci,taxa,bars] [--top 100 | --all] [--cols 7] [--out DIR/plots.pdf] [--png] [--title NAME]
 
 Pages
   loci   one panel per locus: every tested cell of the locus (a taxon) as one point
@@ -16,7 +16,9 @@ divergent, triangles pointing down as too similar. Colour repeats the verdict an
 greys by comparators failed (0, 1, 2), reds by comparators failed (3, 4, 5; an ambiguous cell,
 masked with fewer comparators than requested, takes the lightest red), blues by too-similar
 pairs (1, 2, 3+). Cells with no difference expected or seen sit on the
-axis floor marked 0. Loci and taxa are ordered by cells masked; --top N shows the N most masked."""
+axis floor marked 0. Loci and taxa are ordered by cells masked; --top N (default 100) shows the N
+most masked on each page, --all shows every locus and every taxon (a page per panel row of 7, so
+a dataset with thousands of loci or taxa makes a very large PDF)."""
 import argparse, csv, collections, math, os, re, numpy as np, matplotlib
 matplotlib.use("Agg"); import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
@@ -25,7 +27,8 @@ from matplotlib.patches import Patch
 
 ap = argparse.ArgumentParser(); ap.add_argument("dir"); ap.add_argument("--plots", default="loci,taxa,bars")
 ap.add_argument("--out"); ap.add_argument("--png", action="store_true"); ap.add_argument("--cols", type=int, default=7)
-ap.add_argument("--top", type=int, default=98, help="panels per page: the N loci / taxa with the most masked cells (0 = all)")
+ap.add_argument("--top", type=int, default=100, help="panels per page: the N loci / taxa with the most masked cells")
+ap.add_argument("--all", action="store_true", help="plot every locus and every taxon, however many (overrides --top)")
 ap.add_argument("--title", help="dataset name for the page headers (default: the directory name)")
 a = ap.parse_args(); out = a.out or f"{a.dir}/plots.pdf"
 NAME = a.title or os.path.basename(os.path.normpath(a.dir))
@@ -82,7 +85,7 @@ def panels(by):
     counts = collections.Counter(key[MASKED]); groups = collections.defaultdict(list)
     for i, k in enumerate(key): groups[k].append(i)
     order = sorted(groups, key=lambda k: (-counts[k], k)); NTOT = len(order)
-    if a.top: order = order[:a.top]
+    if not a.all: order = order[:a.top]
     ncol = min(a.cols, len(order)); nrow = math.ceil(len(order) / ncol); pw, ph = 2.3, 2.25
     fig, axs = plt.subplots(nrow, ncol, figsize=(pw * ncol + 0.7, ph * nrow + 1.35), dpi=110, squeeze=False)
     for ax, k in zip(axs.ravel(), order):
@@ -139,7 +142,7 @@ def panels(by):
 def bars():
     counts = collections.Counter(LOC[MASKED])
     order = sorted(counts, key=lambda k: (-counts[k], k)); NTOT = len(set(LOC))      # loci with at least one masked cell
-    if a.top: order = order[:a.top]
+    if not a.all: order = order[:a.top]
     if not order: order = sorted(set(LOC))[:1]
     n = len(order); ys = np.arange(n)[::-1]
     lab_in = min(0.048 * max(len(l) for l in order) + 0.4, 4.5)
