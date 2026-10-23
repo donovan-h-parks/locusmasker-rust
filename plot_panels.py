@@ -6,7 +6,7 @@
 Pages
   loci   one panel per locus: every tested cell of the locus (a taxon) as one point
   taxa   one panel per taxon: every tested cell of the taxon (a locus) as one point
-  bars   one bar per locus, cells masked as too similar to the left and too divergent to the right
+  bars   one bar per locus: cells masked, too divergent (reds) then too similar (blues)
 
 In the panels a point is a cell, placed at the median over its comparators of the divergence the
 locus expects for the pair (x) and of the divergence observed (y) — the two numbers the cell
@@ -84,18 +84,16 @@ def panels(by):
     order = sorted(groups, key=lambda k: (-counts[k], k)); NTOT = len(order)
     if a.top: order = order[:a.top]
     ncol = min(a.cols, len(order)); nrow = math.ceil(len(order) / ncol); pw, ph = 2.3, 2.25
-    fig, axs = plt.subplots(nrow, ncol, figsize=(pw * ncol + 0.7, ph * nrow + 1.35), dpi=110, sharex=True, sharey=True, squeeze=False)
-    # shared axes from the dataset: log divergence, zeros on a floor marked 0
-    # shared range: the central 99.8% of the dataset's informative values, with a margin; the few cells
-    # beyond it are drawn at the frame edge; cells with a zero sit on a floor tick labelled 0
-    px, py = EXP[INF], OBS[INF]; pos = np.concatenate([px[px > 0], py[py > 0]])
-    zx, zy = bool((px <= 0).any()), bool((py <= 0).any())
-    lo_d = np.percentile(pos, 1) / 1.5 if len(pos) else 0.01; hi = np.percentile(pos, 99.9) * 1.4 if len(pos) else 100.0
-    fx = fy = lo_d / (2.5 if (zx or zy) else 1.0); lo = fx / 1.2
-    X = np.clip(np.where(EXP > 0, EXP, fx), lo_d, hi / 1.05); Y = np.clip(np.where(OBS > 0, OBS, fy), lo_d, hi / 1.05)
-    X = np.where(EXP > 0, X, fx); Y = np.where(OBS > 0, Y, fy)
+    fig, axs = plt.subplots(nrow, ncol, figsize=(pw * ncol + 0.7, ph * nrow + 1.35), dpi=110, squeeze=False)
     for ax, k in zip(axs.ravel(), order):
         idx = np.array(groups[k]); inf = INF[idx]
+        # the panel's own range: the central 99.8% of its informative values with a margin, the same on
+        # both axes so the diagonal stays at 45 degrees; cells with a zero sit on a floor tick labelled 0
+        px, py = EXP[idx][inf], OBS[idx][inf]; pos = np.concatenate([px[px > 0], py[py > 0]])
+        zx, zy = bool((px <= 0).any()), bool((py <= 0).any())
+        lo_d = np.percentile(pos, 1) / 1.5 if len(pos) else 0.01; hi = max(np.percentile(pos, 99.9) * 1.4 if len(pos) else 1.0, lo_d * 4)
+        fx = fy = lo_d / (2.5 if (zx or zy) else 1.0); lo = fx / 1.2
+        X = np.where(EXP > 0, np.clip(EXP, lo_d, hi / 1.05), fx); Y = np.where(OBS > 0, np.clip(OBS, lo_d, hi / 1.05), fy)
         def draw(sel, marker, color, size, hollow=False, edge=None, z=3):
             s = idx[sel & inf]
             if len(s): ax.scatter(X[s], Y[s], s=size, marker=marker, facecolors="none" if hollow else color, edgecolors=edge or (SURF if not hollow else color),
@@ -113,12 +111,13 @@ def panels(by):
                 fontsize=6.3, color=INK if nm else FAINT, ha="center", va="bottom")
         ax.set_xscale("log"); ax.set_yscale("log"); ax.set_xlim(lo, hi); ax.set_ylim(lo, hi); ax.set_aspect("equal")
         tx = log_ticks(lo_d, hi / 1.4)
+        while len(tx) > 3: tx = tx[::2]
         ax.set_xticks(tx + ([fx] if zx else [])); ax.set_xticklabels([f"{v:g}" for v in tx] + (["0"] if zx else []))
         ax.set_yticks(tx + ([fy] if zy else [])); ax.set_yticklabels([f"{v:g}" for v in tx] + (["0"] if zy else []))
         for axis in (ax.xaxis, ax.yaxis): axis.set_minor_formatter(matplotlib.ticker.NullFormatter()); axis.set_minor_locator(matplotlib.ticker.NullLocator())
         for s_ in ("top", "right"): ax.spines[s_].set_visible(False)
         for s_ in ("left", "bottom"): ax.spines[s_].set_color(SPINE); ax.spines[s_].set_linewidth(0.6)
-        ax.tick_params(colors=MUTED, labelsize=6.5, length=0, pad=2); ax.grid(True, color=GRID, lw=0.5); ax.set_axisbelow(True)
+        ax.tick_params(colors=MUTED, labelsize=6, length=0, pad=1.5); ax.grid(True, color=GRID, lw=0.5); ax.set_axisbelow(True)
     for ax in axs.ravel()[len(order):]: ax.axis("off")
     fig.supxlabel("expected divergence of the cell, median over its comparators (%)", fontsize=8, color=MUTED, y=0.004)
     fig.supylabel("observed divergence of the cell, median over its comparators (%)", fontsize=8, color=MUTED, x=0.004)
@@ -148,23 +147,18 @@ def bars():
     right = [(f"fails {j} of {NC}", REDS[j], np.array([int(((LOC == k) & ((FLAG & (NF == j)) | ((AMB & ~FLAG) if j == LOW else False))).sum()) for k in order])) for j in FAILS]
     left = [(f"{j}{'+' if j == 3 else ''} pair{'s' if j > 1 else ''}", BLUES[j], np.array([int(((LOC == k) & SMK & (np.minimum(NS, 3) == j)).sum()) for k in order])) for j in (1, 2, 3)]
     base = np.zeros(n)
-    for lab, c, v in right:
+    for lab, c, v in right + left:                                   # one stacked bar: too divergent first, then too similar
         nz = v > 0; ax.barh(ys[nz], v[nz], left=base[nz], color=c, edgecolor=SURF, linewidth=0.8, height=0.72); base += v
-    rtot = base.copy(); base = np.zeros(n)
-    for lab, c, v in left:
-        nz = v > 0; ax.barh(ys[nz], -v[nz], left=-base[nz], color=c, edgecolor=SURF, linewidth=0.8, height=0.72); base += v
-    ltot = base.copy(); top = max(rtot.max(), ltot.max(), 1)
-    for y, r_, l_ in zip(ys, rtot, ltot):
-        if r_: ax.text(r_ + top * 0.012, y, f"{int(r_):,}", va="center", ha="left", fontsize=6, color=MUTED)
-        if l_: ax.text(-l_ - top * 0.012, y, f"{int(l_):,}", va="center", ha="right", fontsize=6, color=MUTED)
-    ax.axvline(0, color=SPINE, lw=0.8)
+    top = max(base.max(), 1)
+    for y, t_ in zip(ys, base):
+        if t_: ax.text(t_ + top * 0.012, y, f"{int(t_):,}", va="center", ha="left", fontsize=6, color=MUTED)
     ax.set_yticks(ys); ax.set_yticklabels(order, fontsize=6); ax.set_ylim(-0.7, n - 0.3)
-    ax.set_xlim(-max(ltot.max(), 0.2 * top) * 1.2, top * 1.15)
-    ax.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True)); ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{abs(int(v)):,}"))
-    ax.set_xlabel("cells masked   ◀ too similar   |   too divergent ▶", fontsize=7.5, color=MUTED)
+    ax.set_xlim(0, top * 1.12)
+    ax.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
+    ax.set_xlabel("cells masked", fontsize=7.5, color=MUTED)
     ax.set_title(f"{NAME}  ·  {int(MASKED.sum()):,} cells masked, by locus  ·  {n} loci with masked cells" + (f" (the {n} most masked)" if n < len(counts) else "") + f" of {NTOT}", fontsize=9, color=INK, loc="left", fontweight="bold", pad=8)
-    handles = [Patch(facecolor=c, edgecolor=SURF, label=("too similar · " if lab.startswith("1 ") else "") + lab) for lab, c, _ in left] + \
-              [Patch(facecolor=c, edgecolor=SURF, label=("too divergent · " if lab.startswith(f"fails {LOW}") else "") + lab) for lab, c, _ in right]
+    handles = [Patch(facecolor=c, edgecolor=SURF, label=("too divergent · " if lab.startswith(f"fails {LOW}") else "") + lab) for lab, c, _ in right] + \
+              [Patch(facecolor=c, edgecolor=SURF, label=("too similar · " if lab.startswith("1 ") else "") + lab) for lab, c, _ in left]
     ax.legend(handles=handles, frameon=False, fontsize=6.5, loc="lower right", labelcolor=INK, ncol=2)
     for s_ in ("top", "right", "left"): ax.spines[s_].set_visible(False)
     ax.spines["bottom"].set_color(SPINE); ax.tick_params(colors=MUTED, length=0, labelsize=6.5); ax.xaxis.grid(True, color=GRID, lw=0.5); ax.set_axisbelow(True)
