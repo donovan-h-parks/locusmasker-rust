@@ -11,16 +11,18 @@ names with punctuation), or a FASTA / PHYLIP / NEXUS alignment without charsets 
 RAxML-style partition file ("DNA, locus1 = 1-100, 250-300" and "WAG, locus2 = 101-249\\3"
 forms; the model prefix is optional). Sites are 1-based and inclusive; a site may belong to one
 locus only. --datatype is required: dna is analysed on A, C, G, T (U read as T), aa on the 20
-standard amino acids; everything else is missing. This is a phylogenomic test: it requires at
-least 10 loci and 5 taxa.
+standard amino acids; everything else is missing. This is a phylogenomic test, and one number — 10 — sets its
+scope: the alignment must have at least 10 loci, and a taxon is only considered (tested, or
+used as a comparator) when it has at least 10 loci with >= --fit-overlap residues; taxa below
+that are left untouched in the output and listed in excluded_taxa.txt. At least 5 taxa.
 
 Method (--test z, the default):
   m         every taxon pair gets a divergence m: the site-weighted median across loci of the
             pair's rate-normalised divergence (locus rates = median divergence relative to a
             provisional m, rescaled to a typical rate of 1). No locus may carry more weight
             than the pair's median contributing locus, so one locus — however long — cannot
-            move a pair's median. Pairs overlapping in fewer than 5 loci fall back to pooled
-            identity (warned when common).
+            move a pair's median. Pairs overlapping in fewer than 5 loci have no m and are
+            never compared (there is no pooled-identity fallback: it self-contaminates).
   compare   each taxon is compared, locus by locus, with its --n-comp closest taxa by m (odd,
             auto-shrunk to the largest odd <= n-1) among those overlapping it by >=
             min(--fit-overlap, its residues). Ties are broken by pooled identity, then taxon
@@ -78,7 +80,8 @@ PROTEIN = "ACDEFGHIKLMNPQRSTVWY"
 DNA = "ACGT"
 MIN_EXCESS = 4.0        # absolute floor on excess/deficit mismatches: guards E < ~1 where the
                         # normal approximation to the count tail is poor (Cochran's rule)
-MIN_LOCI_FOR_M = 5      # pairs overlapping in fewer loci use pooled identity instead of m
+MIN_LOCI_FOR_M = 5      # pairs overlapping in fewer loci have no m and are never compared
+MIN_LOCI_PER_TAXON = 10 # a taxon needs this many loci with >= fit-overlap residues to take part
 MIN_FIT_PAIRS = 8       # a locus needs this many fit pairs to be tested (or to get a rate)
 LR_BAR = 10.0           # |2 ln LR| above which a similar event's direction is attributed
 
@@ -343,6 +346,13 @@ def main():
         cnt = np.bincount(Xm[Xm >= 0], minlength=len(alphabet)).astype(float)
         f = cnt / max(cnt.sum(), 1.0)
         plateaus[li] = max(100.0 * (1.0 - float((f ** 2).sum())), 1.0)
+    present = np.stack([W[li].diagonal() >= a.fit_overlap for li in range(nloc)]).sum(0)
+    thin = np.flatnonzero(present < MIN_LOCI_PER_TAXON)
+    open(f"{a.out}/excluded_taxa.txt", "w").write("".join(f"{names[i]}\t{int(present[i])}\n" for i in thin))
+    if len(thin):
+        S[:, thin, :] = 0; S[:, :, thin] = 0; W[:, thin, :] = 0; W[:, :, thin] = 0   # out of the test entirely
+        print(f"{len(thin)} taxa with fewer than {MIN_LOCI_PER_TAXON} loci present are excluded from the test "
+              f"(listed in excluded_taxa.txt, left unmasked)", file=sys.stderr)
     tot_same = S.sum(0, dtype=np.float64); tot_shared = W.sum(0, dtype=np.float64)
     with np.errstate(invalid="ignore", divide="ignore"):
         ani = np.where(tot_shared > 0, 100.0 * tot_same / tot_shared, np.nan)
@@ -354,8 +364,8 @@ def main():
         Dv = np.where(W > 0, 100.0 * (1.0 - S / np.maximum(W, 1)), np.nan)
     Wm = W.copy()
     Wm[:, np.arange(n), np.arange(n)] = 0.0                            # self pairs carry no vote
-    pooled = 100.0 - ani
-    m0, _ = pair_median(Dv.reshape(nloc, -1), Wm.reshape(nloc, -1), MIN_LOCI_FOR_M, pooled.reshape(-1))
+    nan_fb = np.full(n * n, np.nan)
+    m0, _ = pair_median(Dv.reshape(nloc, -1), Wm.reshape(nloc, -1), MIN_LOCI_FOR_M, nan_fb)
     m0 = m0.reshape(n, n)
     iu = np.triu_indices(n, 1)
     m0c = np.maximum(m0[iu], 0.05)
@@ -372,17 +382,19 @@ def main():
     rr = np.where(ok_r, rate, np.nan)
     m, nl = pair_median((Dv / rr[:, None, None]).reshape(nloc, -1),
                         np.where(ok_r[:, None, None], Wm, 0.0).reshape(nloc, -1),
-                        MIN_LOCI_FOR_M, pooled.reshape(-1))
+                        MIN_LOCI_FOR_M, nan_fb)
     m = m.reshape(n, n)
     np.fill_diagonal(m, np.nan); np.save(f"{a.out}/m.npy", m)
-    fb = float((nl.reshape(n, n)[iu] < MIN_LOCI_FOR_M).mean())
+    keep = np.ones(n, bool); keep[thin] = False
+    nlk = nl.reshape(n, n)[np.ix_(keep, keep)][np.triu_indices(int(keep.sum()), 1)]
+    fb = float((nlk < MIN_LOCI_FOR_M).mean()) if len(nlk) else 0.0
     print(f"pair divergences done, {time.time() - t0:.0f}s"
-          + (f"; WARNING: {fb:.0%} of taxon pairs overlap in <{MIN_LOCI_FOR_M} loci and use pooled "
-             f"identity instead of the robust pair median" if fb > 0.05 else ""), file=sys.stderr)
+          + (f"; note: {fb:.0%} of taxon pairs overlap in <{MIN_LOCI_FOR_M} loci and are never compared"
+             if fb > 0.05 else ""), file=sys.stderr)
     del Dv, Wm
 
     # deterministic tie-break for comparator ranking: pooled divergence, then taxon order
-    tie = np.nan_to_num(pooled, nan=100.0) * 1e-9 + np.arange(n)[None, :] * 1e-12
+    tie = np.nan_to_num(100.0 - ani, nan=100.0) * 1e-9 + np.arange(n)[None, :] * 1e-12
     masked = [bytearray(s.encode()) for s in seqs]
 
     if a.test == "z":
