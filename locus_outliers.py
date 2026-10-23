@@ -18,24 +18,40 @@ that are left untouched in the output and listed in excluded_taxa.txt. At least 
 
 Method (--test z, the default):
   m         every taxon pair gets a divergence m: the site-weighted median across loci of the
-            pair's rate-normalised divergence (locus rates = median divergence relative to a
-            provisional m, rescaled to a typical rate of 1). No locus may carry more weight
-            than the pair's median contributing locus, so one locus — however long — cannot
-            move a pair's median. Pairs overlapping in fewer than 5 loci have no m and are
-            never compared (there is no pooled-identity fallback: it self-contaminates).
+            pair's rate-normalised divergence. No locus may carry more weight than the pair's
+            median contributing locus, so one locus — however long — cannot move a pair's
+            median. Pairs overlapping in fewer than 5 loci have no m and are never compared
+            (there is no pooled-identity fallback: it self-contaminates).
+  floor     a pair's divergence is known only to the resolution of its loci: a locus with
+            zero differences over n shared sites cannot exclude a divergence of about 1/n.
+            Each pair therefore also gets a resolution floor m_res, the same site-weighted
+            median over its loci of half a mismatch per locus (rate-normalised). A pair whose
+            m is at or below its floor is "unresolved": it never votes on a locus rate, and
+            on the too-divergent side its expectation is evaluated at m_res rather than m (the
+            too-similar side uses m: a pair cannot be more similar than its loci allow). For
+            a pair with abundant sequence the floor is negligible and nothing changes.
+  rates     a locus rate is the median, over a set of taxon pairs, one equal vote per pair,
+            of c(d + half a mismatch) / c(m), where d is the pair's mismatch fraction at the
+            locus, c(p) = -P ln(1 - p/P) the multiple-hit correction with P the locus's
+            random-identity plateau (from its residue frequencies), and m the pair's
+            divergence (or its floor); rates are rescaled so the median locus has rate 1.
+            Rates are estimated twice. Before m exists, each taxon's --n-comp nearest
+            neighbours by the raw site-weighted median of locus divergences vote; these
+            provisional rates normalise the loci when m is computed. In the test, each
+            taxon's --n-comp closest comparators by m vote; that rate gives the expectation.
+            Nearest-neighbour pairs are used because the test only ever compares close
+            relatives, and a median over all pairs is a median over the deep branches of
+            the tree, where a locus's rate can differ several-fold from its rate near the
+            tips.
   compare   each taxon is compared, locus by locus, with its --n-comp closest taxa by m (odd,
             auto-shrunk to the largest odd <= n-1) among those overlapping it by >=
             min(--fit-overlap, its residues). Ties are broken by pooled identity, then taxon
             order, so runs are reproducible.
-  expect    one rate per locus, on distances corrected for multiple hits: with c(p) =
-            -P ln(1 - p/P) (P = the locus's random-identity plateau from its residue
-            frequencies), the expected corrected locus distance of a pair is r x c(m), where r
-            is the median over the locus's pairs of c(d)/c(m); back-transformed to an expected
-            mismatch fraction for the count test. A straight line through the origin in
-            corrected-distance space, fitted by a weighted median in which each pair votes in
-            proportion to the differences it contains (o x m), with half a mismatch added to
-            both sides so that near-identical pairs vote "ratio 1": one parameter per locus,
-            50% breakdown, nothing to overfit.
+  expect    the expected corrected locus distance of a pair is r x c(max(m, m_res)), r the
+            locus's test-stage rate; back-transformed through the saturation curve to an
+            expected mismatch fraction for the count test. A straight line through the
+            origin in corrected-distance space, one parameter per locus, 50% breakdown over
+            the comparator pairs, nothing to overfit.
   test      with E = expected mismatches on o shared sites, a comparison fails the DIVERGENT
             side when observed - E > max(4, k*sqrt(E), (--min-ratio - 1) * E): the one-sided
             Pearson residual (Poisson score) test plus an absolute floor of 4 mismatches (the
@@ -71,7 +87,10 @@ Outputs (in --out; <stem> is the alignment file's name without extension)
   similar.tsv          every similar-side event: pair, deficit, lambda, donor/recipient call
   per_locus.tsv        one row per locus, skipped loci included (status column)
   trends.tsv           expectation and both effect floors (too divergent / too similar) on a grid
-  ani.npy, m.npy       alignment-wide identity (%) and pair divergence m (points); taxa.txt
+  ani.npy, m.npy       alignment-wide identity (%) and pair divergence m (points); m_hi.npy is
+                       max(m, m_res), the divergence the too-divergent test is evaluated at
+                       (pair_div in pairs.tsv, cells.tsv and masked.csv reports this value);
+                       taxa.txt
 Options
   --datatype dna|aa (required)  --test z|band  --n-comp 5 (odd >= 3)  --fit-overlap 20
   --alpha 0.05  --min-ratio 2  --mask-similar-only  --mask-different-only
@@ -367,15 +386,31 @@ def main():
     Wm = W.copy()
     Wm[:, np.arange(n), np.arange(n)] = 0.0                            # self pairs carry no vote
     nan_fb = np.full(n * n, np.nan)
+    # ONE rate per locus, estimated once and used everywhere (to normalise loci inside m and as the
+    # expectation in the test). It is estimated where the test looks: each taxon's nearest neighbours
+    # by the provisional pair divergence m0 (the raw site-weighted median over loci, available before rates exist), one equal
+    # vote per neighbour pair resolved beyond its floor, of the multiple-hit-corrected ratio
+    # c(d + half a mismatch) / c(m0), m0 the provisional pair divergence (raw site-weighted median).
+    Wfl = 50.0 / np.maximum(W, 1.0)                                  # half a mismatch per locus: resolution floor
     m0, _ = pair_median(Dv.reshape(nloc, -1), Wm.reshape(nloc, -1), MIN_LOCI_FOR_M, nan_fb)
-    m0 = m0.reshape(n, n)
-    iu = np.triu_indices(n, 1)
-    m0c = np.maximum(m0[iu], 0.05)
+    m0_fl, _ = pair_median(Wfl.reshape(nloc, -1), Wm.reshape(nloc, -1), MIN_LOCI_FOR_M, nan_fb)
+    m0, m0_fl = m0.reshape(n, n), m0_fl.reshape(n, n)
+    m0_hi = np.maximum(m0, m0_fl); res0 = m0 > m0_fl
+    dist = np.where(np.isfinite(m0), m0, np.inf); np.fill_diagonal(dist, np.inf)   # neighbours by the provisional pair divergence (a median over loci, not swayed by one long fast locus)
+    Kn = min(K_eff, n - 1)
+    nb = np.argsort(dist, axis=1)[:, :Kn]
+    gi0 = np.repeat(np.arange(n), Kn); ci0 = nb.ravel()
+    okn = np.isfinite(dist[gi0, ci0]) & res0[gi0, ci0]
+    gi0, ci0 = gi0[okn], ci0[okn]
+    m0n = m0_hi[gi0, ci0]
     rate = np.full(nloc, np.nan)
     for li in range(nloc):
-        d, w = Dv[li][iu], W[li][iu]
-        val = np.isfinite(d) & (w >= a.fit_overlap) & np.isfinite(m0c)    # pairs without m cannot vote
-        if val.sum() >= MIN_FIT_PAIRS: rate[li] = float(np.median(d[val] / m0c[val]))
+        o_, d_ = W[li][gi0, ci0], Dv[li][gi0, ci0]
+        val = np.isfinite(d_) & (o_ >= a.fit_overlap)
+        if val.sum() < MIN_FIT_PAIRS: continue
+        P_ = plateaus[li]
+        corr = lambda p: -P_ * np.log(1.0 - np.minimum(p, 0.98 * P_) / P_)
+        rate[li] = float(np.median(corr(d_[val] + 50.0 / o_[val]) / corr(m0n[val])))
     lsites = np.array([len(s) for _, s in loci], dtype=float)
     ok_r = np.isfinite(rate) & (rate > 0)
     if ok_r.sum() >= 3:
@@ -387,20 +422,27 @@ def main():
                         MIN_LOCI_FOR_M, nan_fb)
     m = m.reshape(n, n)
     np.fill_diagonal(m, np.nan); np.save(f"{a.out}/m.npy", m)
+    # resolution floor of the pair: the median over its loci of half a mismatch per locus (rate-normalised);
+    # the divergence used on the too-divergent side is the larger of the measured median and this floor
+    m_fl, _ = pair_median(((50.0 / np.maximum(W, 1.0)) / rr[:, None, None]).reshape(nloc, -1),
+                          np.where(ok_r[:, None, None], Wm, 0.0).reshape(nloc, -1), MIN_LOCI_FOR_M, nan_fb)
+    m_fl = m_fl.reshape(n, n)
+    m_hi = np.maximum(m, m_fl); np.fill_diagonal(m_hi, np.nan); np.save(f"{a.out}/m_hi.npy", m_hi)
+    m_xs = np.maximum(m - m_fl, 0.0)                                  # divergence resolved beyond the floor: the rate-vote weight
     keep = np.ones(n, bool); keep[thin] = False
     nlk = nl.reshape(n, n)[np.ix_(keep, keep)][np.triu_indices(int(keep.sum()), 1)]
     fb = float((nlk < MIN_LOCI_FOR_M).mean()) if len(nlk) else 0.0
     print(f"pair divergences done, {time.time() - t0:.0f}s"
           + (f"; note: {fb:.0%} of taxon pairs overlap in <{MIN_LOCI_FOR_M} loci and are never compared"
              if fb > 0.05 else ""), file=sys.stderr)
-    del Dv, Wm
+    del Dv, Wfl, Wm
 
     # deterministic tie-break for comparator ranking: pooled divergence, then taxon order
     tie = np.nan_to_num(100.0 - ani, nan=100.0) * 1e-9 + np.arange(n)[None, :] * 1e-12
     masked = [bytearray(s.encode()) for s in seqs]
 
     if a.test == "z":
-        nmasked = run_z(a, names, loci, X, S, W, m, plateaus, rate, tie, masked, K_eff, M_eff)
+        nmasked = run_z(a, names, loci, X, S, W, m, m_hi, m_xs, plateaus, rate, tie, masked, K_eff, M_eff)
     else:
         nmasked = run_band(a, names, loci, S, W, ani, tie, masked, K_eff, M_eff)
 
@@ -409,7 +451,7 @@ def main():
 
 
 # ------------------------------------------------------------------ the counting test
-def run_z(a, names, loci, X, S, W, m, plateaus, rate, tie, masked, K_eff, M_eff):
+def run_z(a, names, loci, X, S, W, m, m_hi, m_xs, plateaus, rate, tie, masked, K_eff, M_eff):
     n = len(names); nloc = len(loci)
     mj = np.where(np.isfinite(m), m, np.inf) + tie
     mask_hi = not a.mask_similar_only
@@ -466,9 +508,9 @@ def run_z(a, names, loci, X, S, W, m, plateaus, rate, tie, masked, K_eff, M_eff)
             gi, ci, rk = flatten_pairs(idx, top, valid, K_eff)
             o = ov[gi, ci]; same = sm[gi, ci]; mis = o - same
             ident = 100.0 * same / o; dob = 100.0 - ident
-            mp = m[gi, ci]
-            fit = o >= a.fit_overlap
-            if fit.sum() < MIN_FIT_PAIRS: skip = f"skipped-few-fit-pairs({int(fit.sum())})"
+            mp = m[gi, ci]; mph = m_hi[gi, ci]; mpx = m_xs[gi, ci]
+            fit = (o >= a.fit_overlap) & (mpx > 0)                    # only pairs resolved beyond their floor vote on the rate
+            if fit.sum() < MIN_FIT_PAIRS: skip = f"skipped-few-resolved-pairs({int(fit.sum())})"
         if skip:
             per.write(f"{name}\t{len(sites)}\t{int((nres > 0).sum())}\t0\t0\t"
                       f"{rate[li]:.3f}\t{plateaus[li]:.1f}\t{kq:.2f}\t0\t"
@@ -481,27 +523,28 @@ def run_z(a, names, loci, X, S, W, m, plateaus, rate, tie, masked, K_eff, M_eff)
         # ALL the locus's pairs, no windows, nothing to overfit); back-transformed for the count test
         P_ = plateaus[li]
         corr = lambda p: -P_ * np.log(1.0 - np.minimum(np.asarray(p, float), 0.98 * P_) / P_)
-        mpc = np.maximum(mp, 0.05)
-        pc = 50.0 / o                                               # half a mismatch, applied to BOTH sides:
-        rho = corr(dob + pc) / corr(mpc + pc)                       # an uninformative pair votes ratio ~ 1
-        rate_c = max(wmedian1(rho[fit], o[fit] * mpc[fit]), 1e-3)   # votes weighted by differences contained
+        pc = 50.0 / o                                               # half a mismatch on the locus side too
+        rho = corr(dob + pc) / corr(mph)
+        rate_c = max(float(np.median(rho[fit])), 1e-3)               # one equal vote per resolved comparator pair (depth-neutral)
 
         def expect(mv):
-            mvc = np.maximum(np.asarray(mv, float), 0.05)
-            return np.maximum(P_ * (1.0 - np.exp(-rate_c * corr(mvc) / P_)), 1e-3)
+            mvc = np.maximum(np.asarray(mv, float), 1e-4)
+            return np.maximum(P_ * (1.0 - np.exp(-rate_c * corr(mvc) / P_)), 1e-4)
 
-        dhat = expect(mp)
+        dhat = expect(mph)                                          # divergent side: the divergence we cannot exclude
+        dlo = expect(mp)                                            # similar side: the divergence we can
         E = o * dhat / 100.0
+        E_lo = o * dlo / 100.0
         excess = mis - E
         kE = kq * np.sqrt(E)
         # relative effect floor, waived near saturation: observed divergence cannot exceed the
         # plateau, so once it is within 10% of it the doubling demand is capped at that gap
         floor_hi = np.minimum((a.min_ratio - 1) * E, np.maximum(0.9 * o * plateaus[li] / 100.0 - E, 0.0))
         fail_hi = (excess > MIN_EXCESS) & (excess > kE) & (excess > floor_hi)
-        defi = -excess
-        fail_lo = (defi > MIN_EXCESS) & (defi > kE) & (defi > (2.0 / 3.0) * E)
+        defi = E_lo - mis
+        fail_lo = (defi > MIN_EXCESS) & (defi > kq * np.sqrt(E_lo)) & (defi > (2.0 / 3.0) * E_lo)
 
-        pairs.writelines(f"{name}\t{names[gi[j]]}\t{rk[j] + 1}\t{names[ci[j]]}\t{mp[j]:.3f}\t{int(o[j])}"
+        pairs.writelines(f"{name}\t{names[gi[j]]}\t{rk[j] + 1}\t{names[ci[j]]}\t{mph[j]:.3f}\t{int(o[j])}"
                          f"\t{ident[j]:.2f}\t{100 - dhat[j]:.2f}\t{excess[j]:.1f}\t{int(fail_hi[j])}\t{int(fail_lo[j])}\n"
                          for j in range(len(gi)))
 
@@ -517,12 +560,12 @@ def run_z(a, names, loci, X, S, W, m, plateaus, rate, tie, masked, K_eff, M_eff)
             if flag: fcount[nf] += 1
             namb += amb
             med_i = float(np.median(ident[slc])); med_e = float(np.median(100 - dhat[slc])); med_x = float(np.median(excess[slc]))
-            crow.append(f"{name}\t{names[g]}\t{kc}\t{names[ci[s0]]}\t{mp[s0]:.3f}\t{nres[g]}\t{int(o[s0])}"
+            crow.append(f"{name}\t{names[g]}\t{kc}\t{names[ci[s0]]}\t{mph[s0]:.3f}\t{nres[g]}\t{int(o[s0])}"
                         f"\t{ident[s0]:.2f}\t{100 - dhat[s0]:.2f}\t{excess[s0]:.1f}\t{med_i:.2f}\t{med_e:.2f}\t{med_x:.1f}"
                         f"\t{nf}\t{nsim}\t{flag}\t{amb}\n")
             if (flag or amb) and mask_hi:
                 mask_cell(name, g, sites, "divergent",
-                          [nf, nsim, names[ci[s0]], f"{mp[s0]:.3f}", f"{med_i:.2f}", f"{med_e:.2f}", f"{med_x:.1f}", ""])
+                          [nf, nsim, names[ci[s0]], f"{mph[s0]:.3f}", f"{med_i:.2f}", f"{med_e:.2f}", f"{med_x:.1f}", ""])
         cells.writelines(crow)
 
         # ---- similar side: any failing pair; LR direction attribution on shared sites
