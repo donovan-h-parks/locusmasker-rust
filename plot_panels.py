@@ -9,7 +9,7 @@ Pages (default all three, in this order; choose any subset with --plots):
   per_locus a bar per locus of the cells flagged, split by how many comparators they failed
 
 One point is one cell: the taxon's sequence at the locus against its closest comparator (x = that
-pair's divergence shown as identity: 100 - m in z mode, alignment-wide identity in band mode).
+pair's divergence shown as identity, 100 - m).
 Greys: cells that pass (darker the more comparators they fail against). Reds: cells masked on the
 divergent side (a majority up to all comparators failed, light to dark). Blues: cells masked on
 the similar side (by number of too-similar pairs). Hollow red: ambiguous (fewer comparators than
@@ -37,19 +37,16 @@ if bad: raise SystemExit(f"unknown plot(s): {bad}; choose from log, linear, per_
 # ---- data
 per = {r["locus"]: r for r in csv.DictReader(open(f"{a.dir}/per_locus.tsv"), delimiter="\t")}
 cells = collections.defaultdict(list); trends = collections.defaultdict(list)
-ZMODE = "pair_div" in open(f"{a.dir}/cells.tsv").readline()
 SIMMASK = set()
 if os.path.exists(f"{a.dir}/masked.csv"):
     for r in csv.DictReader(open(f"{a.dir}/masked.csv")):
         if r.get("side") in ("similar", "both"): SIMMASK.add((r["locus"], r["taxon"]))
 for r in csv.DictReader(open(f"{a.dir}/cells.tsv"), delimiter="\t"):
-    x = float(r["ani"]) if "ani" in r else 100.0 - float(r["pair_div"])
+    x = 100.0 - float(r["pair_div"])
     cells[r["locus"]].append((x, float(r["identity"]), int(r["n_fail"]), int(r["flag"]), int(r["ambiguous"]),
                               int(r.get("n_similar", 0)), int((r["locus"], r["taxon"]) in SIMMASK)))
 for r in csv.DictReader(open(f"{a.dir}/trends.tsv"), delimiter="\t"):
-    x = float(r["ani"]) if "ani" in r else 100.0 - float(r["pair_div"])
-    trends[r["locus"]].append((x, float(r["trend"]), float(r["cutoff"]) if "cutoff" in r else float("nan"),
-                               float(r["cutoff_hi"]) if "cutoff_hi" in r else float("nan")))
+    trends[r["locus"]].append((100.0 - float(r["pair_div"]), float(r["trend"]), float(r["cutoff"]), float(r["cutoff_hi"])))
 order = sorted((m for m in per if m in cells), key=lambda m: (-(int(per[m]["flagged"]) + int(per[m]["ambiguous"])), m))
 if not order: raise SystemExit("nothing to plot: no locus was tested")
 NTOT = len(order)
@@ -138,11 +135,11 @@ def panels(LOG):
             if hi - lo < 1.0: lo -= 0.5; hi += 0.5
             xs = np.sort(np.concatenate([[lo], g[(g > lo) & (g < hi)], [hi]]))
             col = lambda j: np.interp(xs, g, t[:, j]); px = xs
-        dash = col(2) if np.isfinite(t[0, 2]) else col(1) + float(p["med"]) - float(p["band"])
+        dash = col(2)
         clip = (lambda v: np.where(v > fy, v, np.nan)) if LOG else (lambda v: v)
         ax.plot(px, col(1), color=MODEL, lw=1.3, solid_capstyle="round", zorder=3)
         ax.plot(px, clip(dash), color=FLOOR, lw=0.9, ls=(0, (3, 2)), zorder=3)
-        if np.isfinite(t[0, 3]): ax.plot(px, clip(col(3)), color=FLOOR, lw=0.9, ls=(0, (3, 2)), zorder=3)
+        ax.plot(px, clip(col(3)), color=FLOOR, lw=0.9, ls=(0, (3, 2)), zorder=3)
         nfl = int(p["flagged"]); namb = int(p["ambiguous"]); hot = nfl + namb >= a.highlight
         title, fs = fit_title(m, pw - 0.25, 7.5)
         note = f"{nfl} of {p['tested']} flagged" + (f" · {namb} ambiguous" if namb else "")
@@ -161,7 +158,7 @@ def panels(LOG):
         for s in ("left", "bottom"): ax.spines[s].set_color(SPINE); ax.spines[s].set_linewidth(0.6)
         ax.tick_params(colors=MUTED, labelsize=6.5, length=0, pad=2); ax.grid(True, color=GRID, lw=0.5); ax.set_axisbelow(True)
     for ax in axs.ravel()[len(order):]: ax.axis("off")
-    xlab = "identity to closest comparator, 100 − m (%)" if ZMODE else "alignment-wide identity to closest comparator (%)"
+    xlab = "identity to closest comparator, 100 − m (%)"
     fig.supxlabel(xlab, fontsize=8, color=MUTED, y=0.004); fig.supylabel("locus identity (%)", fontsize=8, color=MUTED, x=0.004)
     tot = sum(int(p["flagged"]) for p in per.values()); tamb = sum(int(p["ambiguous"]) for p in per.values()); tested = sum(int(p["tested"]) for p in per.values())
     head = f"{NAME}  ·  {tot:,} of {tested:,} cells flagged" + (f", {tamb:,} ambiguous" if tamb else "") + (f"  ·  {len(order)} of {NTOT} loci shown" if len(order) < NTOT else "")
@@ -174,7 +171,7 @@ def panels(LOG):
               [Line2D([], [], marker="o", ls="", color=c, mec=SURF, ms=5.5, label=("masked, too divergent · " if k == LOW else "") + f"fails {k} of {NC}") for k, c in REDS.items()] + \
               [Line2D([], [], marker="o", ls="", mfc="none", mec=AMB, ms=6, label=f"ambiguous: < {NC} comparators, fails those it has")] + \
               ([Line2D([], [], marker="o", ls="", color=BLUES[k], mec=SURF, ms=5.5, label=("masked, too similar · " if k == 1 else "") + f"{k}{'+' if k == 3 else ''} pair{'s' if k > 1 else ''}") for k in (1, 2, 3)]
-               + [Line2D([], [], marker="o", ls="", mfc="none", mec=SIMRING, ms=6, label="in a similar-side event, not masked")] if ZMODE else [])
+               + [Line2D([], [], marker="o", ls="", mfc="none", mec=SIMRING, ms=6, label="in a similar-side event, not masked")])
     fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.005, 1 - 0.52 / H), ncol=min(len(handles), max(4, int((pw * ncol + 0.7) / 1.45))),
                frameon=False, fontsize=7, handletextpad=0.3, columnspacing=1.2, labelcolor=INK)
     fig.tight_layout(rect=(0.012, 0.012, 1, 1 - 0.98 / H), h_pad=1.0, w_pad=0.5)
