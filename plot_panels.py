@@ -148,10 +148,17 @@ def panels(by, free=False):
     fig.tight_layout(rect=(0.012, 0.012, 1, 1 - 1.0 / H), h_pad=1.0, w_pad=0.5)
     return fig
 
+ROWS_PER_PAGE = 150
+
 def bars():
+    """every locus with a masked cell, most masked first, ROWS_PER_PAGE rows per page"""
     counts = collections.Counter(LOC[MASKED])
-    order = sorted(counts, key=lambda k: (-counts[k], k)); NTOT = len(set(LOC))      # every locus with at least one masked cell
+    order = sorted(counts, key=lambda k: (-counts[k], k)); NTOT = len(set(LOC))
     if not order: order = sorted(set(LOC))[:1]
+    pages = [order[i:i + ROWS_PER_PAGE] for i in range(0, len(order), ROWS_PER_PAGE)]
+    return [bars_page(chunk, i + 1, len(pages), len(order), NTOT) for i, chunk in enumerate(pages)]
+
+def bars_page(order, page, npages, nloci, NTOT):
     n = len(order); ys = np.arange(n)[::-1]
     lab_in = min(0.048 * max(len(l) for l in order) + 0.4, 4.5)
     fig, ax = plt.subplots(figsize=(7.0 + lab_in, 0.17 * n + 1.6), dpi=200)
@@ -167,7 +174,8 @@ def bars():
     ax.set_xlim(0, top * 1.12)
     ax.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
     ax.set_xlabel("cells masked", fontsize=7.5, color=MUTED)
-    ax.set_title(f"{NAME}  ·  {int(MASKED.sum()):,} cells masked, by locus  ·  {n} of {NTOT} loci have a masked cell", fontsize=9, color=INK, loc="left", fontweight="bold", pad=8)
+    ax.set_title(f"{NAME}  ·  {int(MASKED.sum()):,} cells masked, by locus  ·  {nloci} of {NTOT} loci have a masked cell" + (f"  ·  page {page} of {npages}" if npages > 1 else ""),
+                 fontsize=9, color=INK, loc="left", fontweight="bold", pad=8)
     handles = [Patch(facecolor=c, edgecolor=SURF, label=("too divergent · " if lab.startswith(f"fails {LOW}") else "") + lab) for lab, c, _ in right] + \
               [Patch(facecolor=c, edgecolor=SURF, label=("too similar · " if lab.startswith("1 ") else "") + lab) for lab, c, _ in left]
     ax.legend(handles=handles, frameon=False, fontsize=6.5, loc="lower right", labelcolor=INK, ncol=2)
@@ -176,11 +184,13 @@ def bars():
     fig.tight_layout()
     return fig
 
-makers = {"loci": lambda: panels("locus", free=True), "taxa": lambda: panels("taxon"), "bars": bars}
+makers = {"loci": lambda: [panels("locus", free=True)], "taxa": lambda: [panels("taxon")], "bars": bars}
 with PdfPages(out) as pdf:
     for name in wanted:
-        fig = makers[name]()
-        pdf.savefig(fig, bbox_inches="tight")
-        if a.png: fig.savefig(f"{os.path.splitext(out)[0]}_{name}.png", bbox_inches="tight")
-        plt.close(fig); print("page", name)
+        figs = makers[name]()
+        for i, fig in enumerate(figs):
+            pdf.savefig(fig, bbox_inches="tight")
+            if a.png: fig.savefig(f"{os.path.splitext(out)[0]}_{name}{'' if len(figs) == 1 else f'_{i + 1}'}.png", bbox_inches="tight")
+            plt.close(fig)
+        print("page", name, f"({len(figs)} pages)" if len(figs) > 1 else "")
 print("wrote", out)
