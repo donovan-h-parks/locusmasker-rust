@@ -23,6 +23,7 @@ from matplotlib.lines import Line2D
 ap = argparse.ArgumentParser(); ap.add_argument("dir"); ap.add_argument("--plots", default="log,linear,per_locus")
 ap.add_argument("--out"); ap.add_argument("--png", action="store_true"); ap.add_argument("--cols", type=int, default=7)
 ap.add_argument("--highlight", type=int, default=40, help="loci with at least this many flags get a red title")
+ap.add_argument("--top", type=int, default=0, help="plot only the N loci with the most masked cells (0 = all)")
 a = ap.parse_args(); out = a.out or f"{a.dir}/plots.pdf"
 wanted = [p.strip() for p in a.plots.split(",") if p.strip()]
 bad = [p for p in wanted if p not in ("log", "linear", "per_locus")]
@@ -39,6 +40,8 @@ for r in csv.DictReader(open(f"{a.dir}/trends.tsv"), delimiter="\t"):
     trends[r["locus"]].append((x, float(r["trend"]), float(r["cutoff"]) if "cutoff" in r else float("nan")))
 order = sorted((m for m in per if m in cells), key=lambda m: (-(int(per[m]["flagged"]) + int(per[m]["ambiguous"])), m))
 if not order: raise SystemExit("nothing to plot: no locus was tested")
+NTOT = len(order)
+if a.top: order = order[:a.top]
 INK, MUTED, GRID, LINE, AMB = "#0b0b0b", "#52514e", "#e1e0d9", "#2a78d6", "#b0171f"
 FAILS = sorted(int(k[4:]) for k in (next(iter(per.values())) if per else {}) if re.match(r"fail\d+$", k)) or [3, 4, 5]
 NC, LOW = FAILS[-1], FAILS[0]            # comparators requested, and the fails that make a majority
