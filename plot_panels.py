@@ -69,7 +69,8 @@ def panels(LOG):
         dash = t[:, 2] if np.isfinite(t[0, 2]) else t[:, 1] + float(p["med"]) - float(p["band"])
         ax.plot(T(t[:, 0]), T(t[:, 1]), color=LINE, lw=1.0, zorder=3); ax.plot(T(t[:, 0]), T(dash), color=LINE, lw=0.9, ls=(0, (3, 2)), zorder=3)
         nfl = int(p["flagged"]); namb = int(p["ambiguous"]); hot = nfl + namb >= a.highlight
-        ax.set_title(m, fontsize=8.5, color=REDS[NC] if hot else INK, fontweight="bold" if hot else "normal", pad=3)
+        ax.set_title(m if len(m) <= 30 else m[:29] + "…", fontsize=8.5, color=REDS[NC] if hot else INK,
+                     fontweight="bold" if hot else "normal", pad=3)
         scale = f"band {float(p['band']):.0f} pts" if "band" in p else f"cut z {float(p['cut']):.1f}"
         txt = f"{nfl} flagged  ({LOW}..{NC} of {NC}: " + "/".join(p[f"fail{j}"] for j in FAILS) + ")" + (f", {namb} ambiguous" if namb else "") + f"\n{scale} · n {p['tested']}"
         ax.text(0.03, 0.90 if LOG else 0.04, txt, transform=ax.transAxes, fontsize=6.0, color=INK if nfl + namb else MUTED, va="top" if LOG else "bottom")
@@ -107,7 +108,7 @@ def per_locus():
     top = max(left.max(), 1)
     for y, tot in zip(ys, left):
         if tot: ax.text(tot + top * 0.01, y, f"{int(tot)}", va="center", fontsize=6, color=MUTED)
-    ax.set_yticks(ys); ax.set_yticklabels([r["locus"] for r in rows], fontsize=5.8)
+    ax.set_yticks(ys); ax.set_yticklabels([r["locus"] if len(r["locus"]) <= 36 else r["locus"][:35] + "…" for r in rows], fontsize=5.8)
     ax.set_xlabel("cells flagged", fontsize=8, color=MUTED); ax.set_xlim(0, top * 1.1)
     ax.set_title(f"{int(left.sum()):,} flagged cells by locus", fontsize=9.5, color=INK, loc="left", fontweight="bold")
     ax.legend(frameon=False, fontsize=7, loc="lower right")
