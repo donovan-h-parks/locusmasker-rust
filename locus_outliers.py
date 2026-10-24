@@ -563,7 +563,7 @@ def pair_divergences(S, W, n, iu, rr=None, ok_r=None, chunk_bytes=256 << 20, thr
     nloc, npair = S.shape                                               # the pairs are the upper triangle, diagonal included
     m = np.full(npair, np.nan); m_fl = np.full(npair, np.nan); nl = np.zeros(npair, dtype=np.int64)
     diag = np.flatnonzero(iu[0] == iu[1])
-    chunk = max(int(chunk_bytes // (8 * 8 * max(nloc, 1))), 1)
+    chunk = max(int(chunk_bytes // (8 * 8 * max(nloc, 1) * max(threads, 1))), 1)   # the budget is shared by the threads' chunks
     if threads > 1: chunk = max(min(chunk, -(-npair // (4 * threads))), 1)      # enough chunks to keep the workers busy
     def do_chunk(c0):
         c1 = min(c0 + chunk, npair)
