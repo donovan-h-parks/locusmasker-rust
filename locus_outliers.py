@@ -249,14 +249,15 @@ def write_masked(path, out_dir, fmt, names, seqs, nexus):
 
 # ------------------------------------------------------------------ shared machinery
 def wmedian_stack(vals, wts):
-    """weighted median of vals over axis 0, nan-aware; (L, P) -> (P,)"""
+    """weighted median of vals over axis 0, nan-aware; (L, P) -> (P,). The work is done with the loci as
+    the last (contiguous) axis, one row per pair, which sorts and sums far faster than along axis 0."""
     ok = np.isfinite(vals) & (wts > 0)
-    v = np.where(ok, vals, np.inf); w = np.where(ok, wts, 0.0)
-    order = np.argsort(v, axis=0)
-    v_s = np.take_along_axis(v, order, 0); w_s = np.take_along_axis(w, order, 0)
-    cw = np.cumsum(w_s, axis=0, dtype=np.float64); tot = cw[-1]
-    idx = np.minimum((cw < tot[None, :] / 2).sum(0), v.shape[0] - 1)
-    out = np.take_along_axis(v_s, idx[None, :], 0)[0]
+    v = np.where(ok, vals, np.inf).T.copy(); w = np.where(ok, wts, 0.0).T.copy()      # (P, L)
+    order = np.argsort(v, axis=1)
+    v_s = np.take_along_axis(v, order, 1); w_s = np.take_along_axis(w, order, 1)
+    cw = np.cumsum(w_s, axis=1, dtype=np.float64); tot = cw[:, -1]
+    idx = np.minimum((cw < tot[:, None] / 2).sum(1), v.shape[1] - 1)
+    out = v_s[np.arange(len(idx)), idx]
     return np.where(tot > 0, out, np.nan)
 
 
@@ -301,6 +302,36 @@ def pair_median(vals, W, min_loci, fallback):
     nl = ok.sum(0)
     v = wmedian_stack(vals, np.where(ok, W, 0.0))
     return np.where(nl >= min_loci, v, fallback), nl
+
+
+def pair_divergences(S, W, n, rr=None, ok_r=None, chunk_bytes=256 << 20):
+    """for every taxon pair (flattened n*n): the site-weighted median over loci of the pair's divergence
+    (rate-normalised by rr when given), the same median of the resolution floor (half a mismatch per locus),
+    and the number of loci contributing; pairs with fewer than MIN_LOCI_FOR_M loci get NaN. Self pairs carry
+    no vote; loci without a rate (ok_r False) carry none either. Computed in chunks of pairs straight from
+    the per-locus counts, so the peak memory is a few chunk-sized temporaries rather than several copies of
+    the whole loci x pairs matrix; the per-pair arithmetic is exactly that of pair_median."""
+    nloc = S.shape[0]; npair = n * n
+    S2 = S.reshape(nloc, npair); W2 = W.reshape(nloc, npair)
+    m = np.full(npair, np.nan); m_fl = np.full(npair, np.nan); nl = np.zeros(npair, dtype=np.int64)
+    diag = np.arange(n) * (n + 1)
+    chunk = max(int(chunk_bytes // (8 * 8 * max(nloc, 1))), 1)
+    for c0 in range(0, npair, chunk):
+        c1 = min(c0 + chunk, npair)
+        Sc = S2[:, c0:c1]; Wc = W2[:, c0:c1]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            Dv = np.where(Wc > 0, 100.0 * (1.0 - Sc / np.maximum(Wc, 1)), np.nan)
+        Wfl = 100.0 * HALF / np.maximum(Wc, 1.0)
+        Wm = Wc.copy()
+        d = diag[(diag >= c0) & (diag < c1)] - c0
+        Wm[:, d] = 0.0
+        if rr is not None:
+            Dv = Dv / rr[:, None]; Wfl = Wfl / rr[:, None]
+            Wm = np.where(ok_r[:, None], Wm, 0.0)
+        nan_fb = np.full(c1 - c0, np.nan)
+        m[c0:c1], nl[c0:c1] = pair_median(Dv, Wm, MIN_LOCI_FOR_M, nan_fb)
+        m_fl[c0:c1], _ = pair_median(Wfl, Wm, MIN_LOCI_FOR_M, nan_fb)
+    return m, m_fl, nl
 
 
 def top_comparators(score, kk, nres):
@@ -391,19 +422,12 @@ def main():
     print(f"per-locus identities done, {time.time() - t0:.0f}s", file=sys.stderr)
 
     # ---- pair divergence m: capped site-weighted median across loci of rate-normalised divergence
-    with np.errstate(invalid="ignore", divide="ignore"):
-        Dv = np.where(W > 0, 100.0 * (1.0 - S / np.maximum(W, 1)), np.nan)
-    Wm = W.copy()
-    Wm[:, np.arange(n), np.arange(n)] = 0.0                            # self pairs carry no vote
-    nan_fb = np.full(n * n, np.nan)
     # ONE rate per locus, estimated once and used everywhere (to normalise loci inside m and as the
     # expectation in the test). It is estimated where the test looks: each taxon's nearest neighbours
     # by the provisional pair divergence m0 (the raw site-weighted median over loci, available before rates exist), one equal
     # vote per neighbour pair resolved beyond its floor, of the multiple-hit-corrected ratio
     # c(d + half a mismatch) / c(m0), m0 the provisional pair divergence (raw site-weighted median).
-    Wfl = 100.0 * HALF / np.maximum(W, 1.0)                          # the imputed mismatches per locus, as a percentage: the resolution floor
-    m0, _ = pair_median(Dv.reshape(nloc, -1), Wm.reshape(nloc, -1), MIN_LOCI_FOR_M, nan_fb)
-    m0_fl, _ = pair_median(Wfl.reshape(nloc, -1), Wm.reshape(nloc, -1), MIN_LOCI_FOR_M, nan_fb)
+    m0, m0_fl, _ = pair_divergences(S, W, n)                          # the floor: the imputed half mismatch per locus, as a percentage
     m0, m0_fl = m0.reshape(n, n), m0_fl.reshape(n, n)
     m0_hi = np.maximum(m0, m0_fl); res0 = m0 > m0_fl
     dist = np.where(np.isfinite(m0), m0, np.inf); np.fill_diagonal(dist, np.inf)   # neighbours by the provisional pair divergence (a median over loci, not swayed by one long fast locus)
@@ -415,7 +439,9 @@ def main():
     m0n = m0_hi[gi0, ci0]
     rate = np.full(nloc, np.nan)
     for li in range(nloc):
-        o_, d_ = W[li][gi0, ci0], Dv[li][gi0, ci0]
+        o_, s_ = W[li][gi0, ci0], S[li][gi0, ci0]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            d_ = np.where(o_ > 0, 100.0 * (1.0 - s_ / np.maximum(o_, 1)), np.nan)
         val = np.isfinite(d_) & (o_ >= a.fit_overlap)
         if val.sum() < MIN_FIT_PAIRS: continue
         P_ = plateaus[li]
@@ -427,15 +453,11 @@ def main():
         scale = wmedian_stack(rate[ok_r, None], lsites[ok_r, None])[0]
         rate = rate / max(scale, 1e-6)
     rr = np.where(ok_r, rate, np.nan)
-    m, nl = pair_median((Dv / rr[:, None, None]).reshape(nloc, -1),
-                        np.where(ok_r[:, None, None], Wm, 0.0).reshape(nloc, -1),
-                        MIN_LOCI_FOR_M, nan_fb)
+    m, m_fl, nl = pair_divergences(S, W, n, rr, ok_r)
     m = m.reshape(n, n)
     np.fill_diagonal(m, np.nan); np.save(f"{a.out}/m.npy", m)
     # resolution floor of the pair: the median over its loci of half a mismatch per locus (rate-normalised);
     # the divergence used on the too-divergent side is the larger of the measured median and this floor
-    m_fl, _ = pair_median((Wfl / rr[:, None, None]).reshape(nloc, -1),
-                          np.where(ok_r[:, None, None], Wm, 0.0).reshape(nloc, -1), MIN_LOCI_FOR_M, nan_fb)
     m_fl = m_fl.reshape(n, n)
     m_hi = np.maximum(m, m_fl); np.fill_diagonal(m_hi, np.nan); np.save(f"{a.out}/m_hi.npy", m_hi)
     m_xs = np.maximum(m - m_fl, 0.0)                                  # divergence resolved beyond the floor: the rate-vote weight
@@ -445,7 +467,6 @@ def main():
     print(f"pair divergences done, {time.time() - t0:.0f}s"
           + (f"; note: {fb:.0%} of taxon pairs overlap in <{MIN_LOCI_FOR_M} loci and are never compared"
              if fb > 0.05 else ""), file=sys.stderr)
-    del Dv, Wfl, Wm
 
     # deterministic tie-break for comparator ranking: pooled divergence, then taxon order
     tie = np.nan_to_num(100.0 - ani, nan=100.0) * 1e-9 + np.arange(n)[None, :] * 1e-12
