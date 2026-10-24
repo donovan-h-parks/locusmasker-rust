@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Figures from locus_outliers.py output, written to one PDF (and PNGs with --png).
 
-    python plot_panels.py DIR [--plots taxa,loci,bars,residuals_taxa,residuals_loci] [--top 100 | --all] [--cols 7] [--out DIR/plots.pdf] [--png] [--title NAME]
+    python plot_panels.py DIR [--plots taxa,loci,bars,matches,residuals_taxa,residuals_loci] [--top 100 | --all] [--cols 7] [--out DIR/plots.pdf] [--png] [--title NAME]
+                          [--alignment ALN [--partitions FILE] [--datatype dna|aa] [--match-taxa 10]]
 
 Pages
   taxa            one panel per taxon: every tested cell of the taxon (a locus) as one point
@@ -11,6 +12,16 @@ Pages
                   width 1 on small datasets); each bar is coloured by the mix of mask kinds among those units'
                   masks; a facet's x axis is broken when empty bins separate a few far units, and its y axis
                   when the zero bar dwarfs the rest (both marked)
+  matches         for the 10 taxa with the most masked sequences (--match-taxa): one panel each, a sorted bar chart
+                  of the masked sequences by the taxon each matches best at its locus; needs the alignment
+                  (--alignment). Identity is counted over the masked sequence's own sites and a site the other
+                  taxon lacks counts as a mismatch (so a fragmentary taxon cannot win by lacking the bad part);
+                  ties go to the closest relative genome-wide. Bars are stacked by mask kind; the black tick is
+                  the count expected if the masked sequences matched like the taxon's unmasked ones; the names
+                  of the 5 closest relatives genome-wide are bold. Masked sequences that match the same taxa as
+                  the unmasked ones (bars on their ticks) are damaged copies of the right sequence, such as a
+                  wrong exon in a gene model; bars shifted onto a taxon that is not a close relative point to
+                  contamination from it, or to a shared paralogue.
   residuals_taxa  one strip per taxon: every cell's extra divergence beyond expectation, as corrected distance in
                   units of m (a typical locus's divergence), on an inverse-hyperbolic-sine axis (linear near 0,
                   logarithmic far out, no joint); masked cells as triangles, the rest grey; cells identical to their
@@ -38,16 +49,22 @@ from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
-ap = argparse.ArgumentParser(); ap.add_argument("dir"); ap.add_argument("--plots", default="taxa,loci,bars,residuals_taxa,residuals_loci")
+ap = argparse.ArgumentParser(); ap.add_argument("dir"); ap.add_argument("--plots", default="taxa,loci,bars,matches,residuals_taxa,residuals_loci")
 ap.add_argument("--out"); ap.add_argument("--png", action="store_true"); ap.add_argument("--cols", type=int, default=7)
 ap.add_argument("--top", type=int, default=100, help="panels per page: the N loci / taxa with the most masked sequences")
 ap.add_argument("--all", action="store_true", help="plot every locus and every taxon, however many (overrides --top)")
 ap.add_argument("--title", help="dataset name for the page headers (default: the directory name)")
+ap.add_argument("--alignment", help="the alignment the run was made from (NEXUS, FASTA or PHYLIP); needed for the matches page")
+ap.add_argument("--partitions", help="RAxML-style partition file, as given to the tool, when the alignment has no charsets")
+ap.add_argument("--datatype", choices=["dna", "aa"], help="as given to the tool, when the alignment does not declare it")
+ap.add_argument("--match-taxa", type=int, default=10, help="matches page: the N taxa with the most masked sequences")
 a = ap.parse_args(); out = a.out or f"{a.dir}/plots.pdf"
 NAME = a.title or os.path.basename(os.path.normpath(a.dir))
 wanted = [p.strip() for p in a.plots.split(",") if p.strip()]
-bad = [p for p in wanted if p not in ("loci", "taxa", "bars", "residuals_taxa", "residuals_loci")]
-if bad: raise SystemExit(f"unknown plot(s): {bad}; choose from taxa, loci, bars, residuals_taxa, residuals_loci")
+bad = [p for p in wanted if p not in ("loci", "taxa", "bars", "matches", "residuals_taxa", "residuals_loci")]
+if bad: raise SystemExit(f"unknown plot(s): {bad}; choose from taxa, loci, bars, matches, residuals_taxa, residuals_loci")
+if "matches" in wanted and not a.alignment:
+    print("page matches skipped: it needs the alignment (--alignment, and --partitions if the alignment has no charsets)"); wanted.remove("matches")
 
 # ---- data: one record per tested cell
 side = {}
@@ -317,7 +334,101 @@ def residual_page(by, order, page, npages, NTOT, ok):
     fig.tight_layout()
     return fig
 
-makers = {"loci": lambda: [panels("locus")], "taxa": lambda: [panels("taxon")], "bars": bars,
+def load_alignment():
+    """the alignment as the tool encodes it: state index per site, -1 for anything outside the alphabet"""
+    import locus_outliers as lo
+    names, seqs, loci, fmt, declared, nexus = lo.read_input(a.alignment, a.partitions)
+    dtype = a.datatype or declared
+    if dtype is None:
+        probe = "".join(seqs)[:200000].upper(); letters = [c for c in probe if c.isalpha()]
+        dtype = "dna" if letters and sum(c in "ACGTUN" for c in letters) / len(letters) >= 0.95 else "aa"
+    alphabet = lo.DNA if dtype == "dna" else lo.PROTEIN
+    lut = np.full(256, -1, dtype=np.int8)
+    for i, c in enumerate(alphabet): lut[ord(c)] = i; lut[ord(c.lower())] = i
+    if dtype == "dna": lut[ord("U")] = lut[ord("u")] = alphabet.index("T")
+    X = lut[np.frombuffer("".join(seqs).encode(), dtype=np.uint8).reshape(len(names), len(seqs[0]))]
+    return names, X, dict(loci)
+
+def best_matches(names, X, sites_of, taxon, min_sites=30):
+    """for every tested cell of the taxon: the taxon it matches best at that locus, and the identity.
+    Identity over the focal sequence's sites, a site the other taxon lacks counting as a mismatch; ties go to
+    the closest relative genome-wide."""
+    ix = {t: i for i, t in enumerate(names)}; ti = ix[taxon]
+    m = np.load(f"{a.dir}/m.npy"); mt = open(f"{a.dir}/taxa.txt").read().split(); mi = {t: i for i, t in enumerate(mt)}
+    mrow = np.array([m[mi[t], mi[taxon]] if t in mi and t != taxon else np.nan for t in names])
+    order = np.argsort(np.where(np.isnan(mrow), np.inf, mrow)); rank = np.empty(len(names), int); rank[order] = np.arange(len(names))
+    close = [names[i] for i in order[:min(5, len(names) - 1)] if not np.isnan(mrow[i])]
+    idx = np.flatnonzero(TAX == taxon); best = np.full(len(idx), "", dtype=object); ident = np.full(len(idx), np.nan)
+    for k, i in enumerate(idx):
+        sites = sites_of.get(LOC[i])
+        if sites is None: continue
+        Y = X[:, sites]; f = Y[ti]; fp = f >= 0; nf = int(fp.sum())
+        if nf < min_sites: continue
+        mism = nf - ((Y == f[None, :]) & fp[None, :]).sum(1); mism[ti] = nf + 1
+        lo_ = mism.min(); tied = np.flatnonzero(mism == lo_); j = int(tied[np.argmin(rank[tied])])
+        best[k] = names[j]; ident[k] = 100.0 * (1 - lo_ / nf)
+    return idx, best, ident, close
+
+def matches():
+    """one panel per taxon among the most masked: its masked sequences by the taxon they match best"""
+    counts = collections.Counter(TAX[MASKED]); order = [t for t, _ in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))][:a.match_taxa]
+    if not order: return []
+    names, X, sites_of = load_alignment()
+    order = [t for t in order if t in names]
+    MAXBARS = 20; ncol = 2 if len(order) > 1 else 1; nrow = math.ceil(len(order) / ncol); pw, ph = 6.4, 2.75
+    fig, axs = plt.subplots(nrow, ncol, figsize=(pw * ncol + 0.8, ph * nrow + 1.9), dpi=110, squeeze=False); H = ph * nrow + 1.9
+    cats = [(REDS[j], lambda s, j=j: DMK[s] & (np.minimum(np.maximum(NF[s], LOW), NC) == j)) for j in FAILS] + \
+           [(BLUES[j], lambda s, j=j: SMK[s] & (np.minimum(NS[s], 3) == j)) for j in (1, 2, 3)]
+    for ax, t in zip(axs.ravel(), order):
+        idx, best, ident, close = best_matches(names, X, sites_of, t)
+        ok = best != ""; mk = MASKED[idx] & ok; um = ~MASKED[idx] & ok
+        cm = collections.Counter(best[mk]); cu = collections.Counter(best[um]); nm, nu = int(mk.sum()), int(um.sum())
+        taxa_sorted = [u for u, _ in cm.most_common()]
+        if len(taxa_sorted) > MAXBARS:
+            rest = taxa_sorted[MAXBARS - 1:]; taxa_sorted = taxa_sorted[:MAXBARS - 1] + [f"other ({len(rest)} taxa)"]
+            cm[taxa_sorted[-1]] = sum(cm[u] for u in rest); cu[taxa_sorted[-1]] = sum(cu[u] for u in rest)
+            for u in rest: best[mk & (best == u)] = taxa_sorted[-1]
+        xs = np.arange(len(taxa_sorted)); bottom = np.zeros(len(xs))
+        for c, f in cats:
+            h = np.array([float((mk & f(idx) & (best == u)).sum()) for u in taxa_sorted])
+            if h.any(): ax.bar(xs, h, bottom=bottom, width=0.82, color=c, edgecolor=SURF, lw=0.4)
+            bottom += h
+        expd = np.array([cu[u] / max(nu, 1) * nm for u in taxa_sorted])
+        ax.hlines(expd, xs - 0.41, xs + 0.41, color=INK, lw=1.1, zorder=4)
+        top = max(bottom.max(), expd.max(), 1)
+        for x_, o_ in zip(xs, bottom): ax.text(x_, o_ + top * 0.015, f"{int(o_)}", ha="center", va="bottom", fontsize=5.8, color=INK)
+        ax.set_xticks(xs); ax.set_xticklabels(taxa_sorted, rotation=90, fontsize=5.8, color=INK)
+        for lab, u in zip(ax.get_xticklabels(), taxa_sorted):
+            if u in close: lab.set_fontweight("bold")
+        ax.set_xlim(-0.7, max(len(xs) - 0.3, 0.7)); ax.set_ylim(0, top * 1.18)
+        n_all = int(ok.sum()); pm = 100 * np.mean([u in close for u in best[mk]]) if nm else 0; pu = 100 * np.mean([u in close for u in best[um]]) if nu else 0
+        title, fs = fit_title(t, pw - 0.5, 8)
+        ax.set_title(title, fontsize=fs, color=INK, pad=22, linespacing=0.95)
+        ax.text(0.5, 1.065, f"{nm} of {n_all} sequences masked ({100 * nm / max(n_all, 1):.1f}%)", transform=ax.transAxes, fontsize=6.3, color=INK, ha="center", va="bottom")
+        ax.text(0.5, 1.012, f"best match is one of the 5 closest relatives for {pm:.0f}% of masked and {pu:.0f}% of unmasked sequences  ·  "
+                            f"identity to it: masked {np.nanmedian(ident[mk]) if nm else float('nan'):.1f}%, unmasked {np.nanmedian(ident[um]) if nu else float('nan'):.1f}%",
+                transform=ax.transAxes, fontsize=5.8, color=MUTED, ha="center", va="bottom")
+        ax.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True, nbins=5))
+        for s_ in ("top", "right"): ax.spines[s_].set_visible(False)
+        for s_ in ("left", "bottom"): ax.spines[s_].set_color(SPINE); ax.spines[s_].set_linewidth(0.6)
+        ax.tick_params(colors=MUTED, labelsize=6, length=0, pad=1.5); ax.grid(axis="y", color=GRID, lw=0.5); ax.set_axisbelow(True)
+        ax.set_ylabel("masked sequences", fontsize=6.5, color=MUTED)
+    for ax in axs.ravel()[len(order):]: ax.axis("off")
+    head = f"{NAME}  ·  Best match of each masked sequence"
+    sub = f"{int(MASKED.sum()):,} of {len(R):,} sequences masked ({100 * MASKED.sum() / len(R):.1f}%)"
+    note = (f"the {len(order)} most masked taxa; each masked sequence is matched against every other taxon at its locus (identity over the masked sequence's sites, a site the other taxon lacks counting as a mismatch; "
+            "ties to the closest relative genome-wide); bars count masked sequences by the taxon they match best; the tick is the count expected if they matched like the taxon's unmasked sequences; bold: the 5 closest relatives genome-wide")
+    fig.text(0.01, 1 - 0.14 / H, head, fontsize=11, color=INK, fontweight="bold", ha="left", va="top")
+    fig.text(0.01, 1 - 0.36 / H, sub, fontsize=9, color=INK, ha="left", va="top")
+    fig.text(0.01, 1 - 0.55 / H, note, fontsize=7.2, color=MUTED, ha="left", va="top", wrap=True)
+    handles = [Patch(facecolor=c, edgecolor=SURF, label=f"masked, too divergent · fails {j} of {NC}") for j, c in REDS.items()] + \
+              [Patch(facecolor=BLUES[j], edgecolor=SURF, label=f"masked, too similar · {j}{'+' if j == 3 else ''} pair{'s' if j > 1 else ''}") for j in (1, 2, 3)] + \
+              [Line2D([], [], color=INK, lw=1.1, label="count expected if the masked sequences matched like the unmasked ones")]
+    fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.005, 1 - 0.78 / H), ncol=3, frameon=False, fontsize=7, handletextpad=0.5, columnspacing=2.0, labelcolor=INK)
+    fig.tight_layout(rect=(0.012, 0.012, 1, 1 - 1.5 / H), h_pad=2.2, w_pad=1.0)
+    return [fig]
+
+makers = {"loci": lambda: [panels("locus")], "taxa": lambda: [panels("taxon")], "bars": bars, "matches": matches,
           "residuals_taxa": lambda: residuals("taxon"), "residuals_loci": lambda: residuals("locus")}
 with PdfPages(out) as pdf:
     for name in wanted:
