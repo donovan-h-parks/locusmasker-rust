@@ -566,7 +566,7 @@ def pair_divergences(S, W, n, iu, rr=None, ok_r=None, chunk_bytes=256 << 20, thr
     if threads > 1: chunk = max(min(chunk, -(-npair // (4 * threads))), 1)      # enough chunks to keep the workers busy
     def do_chunk(c0):
         c1 = min(c0 + chunk, npair)
-        Sc = S[:, c0:c1]; Wc = W[:, c0:c1]
+        Sc = S[:, c0:c1].astype(np.float32); Wc = W[:, c0:c1].astype(np.float32)
         with np.errstate(invalid="ignore", divide="ignore"):
             Dv = np.where(Wc > 0, 100.0 * (1.0 - Sc / np.maximum(Wc, 1)), np.nan)
         Wfl = 100.0 * HALF / np.maximum(Wc, 1.0)
@@ -656,7 +656,8 @@ def main():
     # included, row-major) is kept and a locus's full matrix is rebuilt when the test needs it
     iu = np.triu_indices(n); ntri = len(iu[0]); diag_pos = np.flatnonzero(iu[0] == iu[1])
     tri_idx = np.empty((n, n), np.int64); tri_idx[iu] = np.arange(ntri); tri_idx[iu[1], iu[0]] = np.arange(ntri)
-    S = np.empty((nloc, ntri), np.float32); W = np.empty((nloc, ntri), np.float32)
+    cdt = np.uint16 if max(len(sites) for _, sites in loci) < 65536 else np.uint32   # counts never exceed a locus's length
+    S = np.empty((nloc, ntri), cdt); W = np.empty((nloc, ntri), cdt)
     plateaus = np.empty(nloc)
     def locus_counts(li):
         sites = loci[li][1]
@@ -664,7 +665,7 @@ def main():
         sh = Pm @ Pm.T; sm = np.zeros((n, n), np.float32)
         for i in range(len(alphabet)):
             Ai = (Xm == i).astype(np.float32); sm += Ai @ Ai.T
-        S[li] = sm[iu]; W[li] = sh[iu]
+        S[li] = sm[iu]; W[li] = sh[iu]                                  # exact: float32 counts below 2^24
         cnt = np.bincount(Xm[Xm >= 0], minlength=len(alphabet)).astype(float)
         f = cnt / max(cnt.sum(), 1.0)
         plateaus[li] = max(100.0 * (1.0 - float((f ** 2).sum())), 1.0)
@@ -704,7 +705,7 @@ def main():
     rate = np.full(nloc, np.nan)
     t0i = tri_idx[gi0, ci0]
     for li in range(nloc):
-        o_, s_ = W[li][t0i], S[li][t0i]
+        o_, s_ = W[li][t0i].astype(np.float32), S[li][t0i].astype(np.float32)
         with np.errstate(invalid="ignore", divide="ignore"):
             d_ = np.where(o_ > 0, 100.0 * (1.0 - s_ / np.maximum(o_, 1)), np.nan)
         val = np.isfinite(d_) & (o_ >= a.fit_overlap)
@@ -752,7 +753,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, m, m_hi, m_xs, plateaus, rate, 
     # pre-pass: count distinct comparisons so the Bonferroni bar is known before any test runs
     Npairs = 0; sel = []
     for li in range(nloc):
-        ov = _expand(W[li], n, iu)
+        ov = _expand(W[li].astype(np.float32), n, iu)
         nres = W[li][diag_pos].astype(int)
         need = np.minimum(a.fit_overlap, nres)[:, None]
         score = np.where((ov >= need) & np.isfinite(mj), -mj, -np.inf)
@@ -791,7 +792,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, m, m_hi, m_xs, plateaus, rate, 
 
     def locus_pairs(li):
         """the comparator pairs of a locus and the locus's rate; None when the locus is skipped"""
-        ov, sm = _expand(W[li], n, iu), _expand(S[li], n, iu)
+        ov, sm = _expand(W[li].astype(np.float32), n, iu), _expand(S[li].astype(np.float32), n, iu)
         top, valid, ncomp, nres = sel[li]
         idx = np.flatnonzero(ncomp > 0)
         if len(idx) == 0: return "skipped-no-cells"
