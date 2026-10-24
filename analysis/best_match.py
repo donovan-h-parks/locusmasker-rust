@@ -53,7 +53,7 @@ for loc in tested:
     rows.append(dict(locus=loc, best=names[j], ident=100 * (1 - best / ov[j]), overlap=int(ov[j]), ntied=len(tied),
                      margin=int(mism[j0] - best) if not np.isnan(mism[j0]) else -1, ident_nn=100 * (1 - mism[j0] / ov[j0]) if not np.isnan(mism[j0]) else np.nan,
                      best_rank=int(rank[j]), masked=r is not None,
-                     side=r["side"] if r else "", n_fail=int(r["n_fail"]) if r else 0, n_sim=int(r["n_similar"]) if r else 0,
+                     side=r["side"] if r else "", n_fail=int(r["n_fail"] or 0) if r else 0, n_sim=int(r["n_similar"] or 0) if r else 0,
                      partner=r["partner"] if r else ""))
 print("closest relatives genome-wide:", nn)
 import collections

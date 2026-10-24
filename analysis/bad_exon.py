@@ -69,8 +69,12 @@ cls = collections.Counter(classify(r) for r in M); clu = collections.Counter(cla
 print(f"{a.taxon}: {len(M)} masked, {len(U)} unmasked; closest relatives used: {rel}")
 print("masked:  ", dict(cls)); print("unmasked:", dict(clu))
 W = [r for r in M if classify(r) == "windowed, clean elsewhere"]
-print(f"windowed & clean: windows per sequence {collections.Counter(r['nwin'] for r in W)}; window length (sites) median {np.median([r['winlen'] for r in W]):.0f}, 10th {np.percentile([r['winlen'] for r in W], 10):.0f}, 90th {np.percentile([r['winlen'] for r in W], 90):.0f}; "
-      f"identity inside windows median {np.nanmedian([r['id_in'] for r in W]):.0f}%, outside median {np.nanmedian([r['id_out'] for r in W]):.1f}%")
+def wstats(W):
+    if not W: return "no windowed sequences"
+    return (f"windows per sequence {dict(collections.Counter(r['nwin'] for r in W))}; window length (sites) median {np.median([r['winlen'] for r in W]):.0f}, "
+            f"10th {np.percentile([r['winlen'] for r in W], 10):.0f}, 90th {np.percentile([r['winlen'] for r in W], 90):.0f}; "
+            f"identity inside windows median {np.nanmedian([r['id_in'] for r in W]):.0f}%, outside median {np.nanmedian([r['id_out'] for r in W]):.1f}%")
+print("windowed & clean:", wstats(W))
 # unmasked cells that also carry a window: how many, and how big
 UW = [r for r in U if classify(r) == "windowed, clean elsewhere"]
 print(f"unmasked sequences with a window: {len(UW)}; their window length median {np.median([r['winlen'] for r in UW]) if UW else 0:.0f}, sequence length median {np.median([r['L'] for r in UW]) if UW else 0:.0f}")
@@ -109,5 +113,5 @@ fig.text(0.03, 0.985, f"{ds}  ·  {a.taxon}  ·  where each masked sequence diff
 H = 0.052 * nrow + 1.6
 fig.text(0.03, 0.985 - 0.32 / H, f"{len(M)} masked sequences, one row each, drawn to length  ·  grey: the sequence where it has data  ·  red tick: a site where {a.taxon} differs from all of {', '.join(rel)} that have the site", fontsize=7.2, color=INK, ha="left", va="top")
 fig.text(0.03, 0.985 - 0.52 / H, f"blue: a window of at least {MINW} such sites no more than {GAP} apart  ·  " + "  ·  ".join(f"{k}: {cls[k]}" for k in order if cls[k]) +
-         f"  ·  windows: length median {np.median([r['winlen'] for r in W]):.0f} sites, identity inside {np.nanmedian([r['id_in'] for r in W]):.0f}%, outside {np.nanmedian([r['id_out'] for r in W]):.1f}%", fontsize=7.2, color=INK, ha="left", va="top")
+         (f"  ·  windows: length median {np.median([r['winlen'] for r in W]):.0f} sites, identity inside {np.nanmedian([r['id_in'] for r in W]):.0f}%, outside {np.nanmedian([r['id_out'] for r in W]):.1f}%" if W else ""), fontsize=7.2, color=INK, ha="left", va="top")
 out = a.out or f"{a.dir}/badexon_{a.taxon}.png"; fig.savefig(out, facecolor=SURF); print("wrote", out)
