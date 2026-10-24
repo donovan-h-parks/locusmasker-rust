@@ -99,12 +99,15 @@ Outputs (in --out; <stem> is the alignment file's name without extension)
                        taxa.txt
 Options
   --datatype dna|aa (required)  --n-comp 5 (odd >= 3)  --fit-overlap 20
-  --alpha 0.05  --min-ratio 2  --mask-similar-only  --mask-different-only
+  --alpha 0.05  --min-ratio 2  --mask-similar-only  --mask-different-only  --threads 1
   (constants in the code: HALF = 0.5 mismatch for the resolution floor and the rate
   pseudocount; dispersion from pairs with >= 10 expected mismatches, shrinkage weight 30)
 """
 import argparse, collections, csv, math, os, re, sys, time
+for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):   # BLAS stays single-threaded (its matrices are
+    os.environ.setdefault(_v, "1")                                          # small); --threads parallelises over loci and pairs
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 
 PROTEIN = "ACDEFGHIKLMNPQRSTVWY"
 DNA = "ACGT"
@@ -531,7 +534,7 @@ def _expand(tri, n, iu):
     M = np.empty((n, n), tri.dtype); M[iu] = tri; M[iu[1], iu[0]] = tri; return M
 
 
-def pair_divergences(S, W, n, iu, rr=None, ok_r=None, chunk_bytes=256 << 20):
+def pair_divergences(S, W, n, iu, rr=None, ok_r=None, chunk_bytes=256 << 20, threads=1):
     """for every taxon pair (flattened n*n): the site-weighted median over loci of the pair's divergence
     (rate-normalised by rr when given), the same median of the resolution floor (half a mismatch per locus),
     and the number of loci contributing; pairs with fewer than MIN_LOCI_FOR_M loci get NaN. Self pairs carry
@@ -542,7 +545,8 @@ def pair_divergences(S, W, n, iu, rr=None, ok_r=None, chunk_bytes=256 << 20):
     m = np.full(npair, np.nan); m_fl = np.full(npair, np.nan); nl = np.zeros(npair, dtype=np.int64)
     diag = np.flatnonzero(iu[0] == iu[1])
     chunk = max(int(chunk_bytes // (8 * 8 * max(nloc, 1))), 1)
-    for c0 in range(0, npair, chunk):
+    if threads > 1: chunk = max(min(chunk, -(-npair // (4 * threads))), 1)      # enough chunks to keep the workers busy
+    def do_chunk(c0):
         c1 = min(c0 + chunk, npair)
         Sc = S[:, c0:c1]; Wc = W[:, c0:c1]
         with np.errstate(invalid="ignore", divide="ignore"):
@@ -557,6 +561,11 @@ def pair_divergences(S, W, n, iu, rr=None, ok_r=None, chunk_bytes=256 << 20):
         nan_fb = np.full(c1 - c0, np.nan)
         m[c0:c1], nl[c0:c1] = pair_median(Dv, Wm, MIN_LOCI_FOR_M, nan_fb)
         m_fl[c0:c1], _ = pair_median(Wfl, Wm, MIN_LOCI_FOR_M, nan_fb)
+    starts = range(0, npair, chunk)
+    if threads > 1:
+        with ThreadPoolExecutor(threads) as ex: list(ex.map(do_chunk, starts))
+    else:
+        for c0 in starts: do_chunk(c0)
     return _expand(m, n, iu), _expand(m_fl, n, iu), _expand(nl, n, iu)
 
 
@@ -597,7 +606,8 @@ def main():
     ap.add_argument("--n-comp", type=int, default=5); ap.add_argument("--fit-overlap", type=int, default=20)
     ap.add_argument("--alpha", type=float, default=0.05); ap.add_argument("--min-ratio", type=float, default=2.0)
     ap.add_argument("--mask-similar-only", action="store_true"); ap.add_argument("--mask-different-only", action="store_true")
-    a = ap.parse_args(); K = a.n_comp
+    ap.add_argument("--threads", type=int, default=1, help="worker threads for the per-locus counts and the pair divergences")
+    a = ap.parse_args(); K = a.n_comp; a.threads = max(1, a.threads)
     if K < 3 or K % 2 == 0: sys.exit("--n-comp must be an odd number of at least 3")
     if a.mask_similar_only and a.mask_different_only:
         sys.exit("--mask-similar-only and --mask-different-only are mutually exclusive")
@@ -630,7 +640,8 @@ def main():
     tri_idx = np.empty((n, n), np.int64); tri_idx[iu] = np.arange(ntri); tri_idx[iu[1], iu[0]] = np.arange(ntri)
     S = np.empty((nloc, ntri), np.float32); W = np.empty((nloc, ntri), np.float32)
     plateaus = np.empty(nloc)
-    for li, (name, sites) in enumerate(loci):
+    def locus_counts(li):
+        sites = loci[li][1]
         Xm = X[:, sites]; Pm = (Xm >= 0).astype(np.float32)
         sh = Pm @ Pm.T; sm = np.zeros((n, n), np.float32)
         for i in range(len(alphabet)):
@@ -639,6 +650,10 @@ def main():
         cnt = np.bincount(Xm[Xm >= 0], minlength=len(alphabet)).astype(float)
         f = cnt / max(cnt.sum(), 1.0)
         plateaus[li] = max(100.0 * (1.0 - float((f ** 2).sum())), 1.0)
+    if a.threads > 1:
+        with ThreadPoolExecutor(a.threads) as ex: list(ex.map(locus_counts, range(nloc), chunksize=max(1, nloc // (8 * a.threads))))
+    else:
+        for li in range(nloc): locus_counts(li)
     present = (W[:, diag_pos] >= a.fit_overlap).sum(0)
     thin = np.flatnonzero(present < MIN_LOCI_PER_TAXON)
     open(f"{a.out}/excluded_taxa.txt", "w").write("".join(f"{names[i]}\t{int(present[i])}\n" for i in thin))
@@ -659,7 +674,7 @@ def main():
     # by the provisional pair divergence m0 (the raw site-weighted median over loci, available before rates exist), one equal
     # vote per neighbour pair resolved beyond its floor, of the multiple-hit-corrected ratio
     # c(d + half a mismatch) / c(m0), m0 the provisional pair divergence (raw site-weighted median).
-    m0, m0_fl, _ = pair_divergences(S, W, n, iu)                      # the floor: the imputed half mismatch per locus, as a percentage
+    m0, m0_fl, _ = pair_divergences(S, W, n, iu, threads=a.threads)   # the floor: the imputed half mismatch per locus, as a percentage
     m0_hi = np.maximum(m0, m0_fl); res0 = m0 > m0_fl
     dist = np.where(np.isfinite(m0), m0, np.inf); np.fill_diagonal(dist, np.inf)   # neighbours by the provisional pair divergence (a median over loci, not swayed by one long fast locus)
     Kn = min(K_eff, n - 1)
@@ -685,7 +700,7 @@ def main():
         scale = wmedian_stack(rate[ok_r, None], lsites[ok_r, None])[0]
         rate = rate / max(scale, 1e-6)
     rr = np.where(ok_r, rate, np.nan)
-    m, m_fl, nl = pair_divergences(S, W, n, iu, rr, ok_r)
+    m, m_fl, nl = pair_divergences(S, W, n, iu, rr, ok_r, threads=a.threads)
     np.fill_diagonal(m, np.nan); np.save(f"{a.out}/m.npy", m)
     # resolution floor of the pair: the median over its loci of half a mismatch per locus (rate-normalised);
     # the divergence used on the too-divergent side is the larger of the measured median and this floor
