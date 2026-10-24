@@ -80,8 +80,8 @@ def log_ticks(lo, hi):
     while len(t) > 3: t = t[::2]
     return t
 
-def panels(by, free=False):
-    """one panel per locus (by='locus') or per taxon (by='taxon'); free = x and y ranged separately"""
+def panels(by):
+    """one panel per locus (by='locus') or per taxon (by='taxon'); each panel's axes autoscale from its points"""
     key = LOC if by == "locus" else TAX
     counts = collections.Counter(key[MASKED]); groups = collections.defaultdict(list)
     for i, k in enumerate(key): groups[k].append(i)
@@ -93,13 +93,11 @@ def panels(by, free=False):
         idx = np.array(groups[k]); inf = INF[idx]
         # the panel's own range: the central 99.8% of its informative values with a margin, the same on
         # both axes so the diagonal stays at 45 degrees; cells with a zero sit on a floor tick labelled 0
-        # the axes are scaled by matplotlib from the plotted points alone (free: x and y separately;
-        # otherwise one square range); a zero divergence cannot sit on a log axis, so such cells go
-        # on a floor at half the smallest positive value, ticked 0
+        # the axes are scaled by matplotlib from every plotted point, x and y separately; a zero divergence
+        # cannot sit on a log axis, so such cells go on a floor at half the smallest positive value, ticked 0
         px, py = EXP[idx][inf], OBS[idx][inf]
         zx, zy = bool((px <= 0).any()), bool((py <= 0).any())
         fx = (px[px > 0].min() / 2 if (px > 0).any() else 0.01); fy = (py[py > 0].min() / 2 if (py > 0).any() else 0.01)
-        if not free: fx = fy = min(fx, fy)
         X = np.where(EXP > 0, EXP, fx); Y = np.where(OBS > 0, OBS, fy)
         ax.set_xscale("log"); ax.set_yscale("log"); ax.margins(0.04)
         def draw(sel, marker, color, size, hollow=False, edge=None, z=3):
@@ -112,7 +110,6 @@ def panels(by, free=False):
         for j, c in BLUES.items(): draw(SMK[idx] & (np.minimum(NS[idx], 3) == j), "v", c, 26, z=6)
         ax.autoscale_view()                                           # from the scatters' data limits (relim would drop collections)
         (xlo, xhi), (ylo, yhi) = ax.get_xlim(), ax.get_ylim()
-        if not free: xlo = ylo = min(xlo, ylo); xhi = yhi = max(xhi, yhi)
         ax.set_autoscale_on(False)
         g = np.array([min(xlo, ylo) / 10, max(xhi, yhi) * 10])
         ax.plot(g, g, color=MODEL, lw=1.1, zorder=1); ax.plot(g, 2 * g, color=FLOOR, lw=0.8, ls=(0, (3, 2)), zorder=1); ax.plot(g, g / 3, color=FLOOR, lw=0.8, ls=(0, (3, 2)), zorder=1)
@@ -122,8 +119,7 @@ def panels(by, free=False):
         ax.text(0.5, 1.012, f"{nm} of {n} sequences masked ({100 * nm / n:.1f}%)", transform=ax.transAxes,
                 fontsize=6.3, color=INK if nm else FAINT, ha="center", va="bottom")
         ax.set_xlim(xlo, xhi); ax.set_ylim(ylo, yhi)
-        if not free: ax.set_aspect("equal")
-        tx = log_ticks(xlo, xhi); ty = log_ticks(ylo, yhi)
+        tx = log_ticks(fx * 10 ** 0.45 if zx else xlo, xhi); ty = log_ticks(fy * 10 ** 0.45 if zy else ylo, yhi)   # keep ticks clear of the 0 floor tick
         ax.set_xticks(tx + ([fx] if zx else [])); ax.set_xticklabels([f"{v:g}" for v in tx] + (["0"] if zx else []))
         ax.set_yticks(ty + ([fy] if zy else [])); ax.set_yticklabels([f"{v:g}" for v in ty] + (["0"] if zy else []))
         for axis in (ax.xaxis, ax.yaxis): axis.set_minor_formatter(matplotlib.ticker.NullFormatter()); axis.set_minor_locator(matplotlib.ticker.NullLocator())
@@ -187,7 +183,7 @@ def bars_page(order, page, npages, nloci, NTOT):
     fig.tight_layout()
     return fig
 
-makers = {"loci": lambda: [panels("locus", free=True)], "taxa": lambda: [panels("taxon")], "bars": bars}
+makers = {"loci": lambda: [panels("locus")], "taxa": lambda: [panels("taxon")], "bars": bars}
 with PdfPages(out) as pdf:
     for name in wanted:
         figs = makers[name]()
