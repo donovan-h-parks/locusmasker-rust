@@ -84,7 +84,10 @@ Outputs (in --out; <stem> is the alignment file's name without extension)
                        expected identity and excess mismatches, plus the closest comparator;
                        similar rows: the partner and the pair's own values), lambda
   cells.tsv            every tested cell: closest-comparator columns plus the medians over
-                       comparators (med_identity, med_expected, med_excess), n_fail, n_similar
+                       comparators (med_identity, med_expected, med_excess), n_fail, n_similar, and
+                       excess_m: the cell's extra divergence beyond expectation as corrected distance
+                       in units of m (a typical locus's divergence) — a foreign or paralogous sequence
+                       adds a constant here whatever its comparators, so cells with one cause share it
   pairs.tsv            every comparison
   similar.tsv          every similar-side event: pair, deficit, lambda, donor/recipient call
   per_locus.tsv        one row per locus, skipped loci included (status column)
@@ -483,7 +486,7 @@ def run_z(a, names, loci, X, S, W, m, m_hi, m_xs, plateaus, rate, tie, masked, K
     pairs.write("locus\ttaxon\trank\tcomparator\tpair_div\toverlap\tidentity\texpected\texcess\tfail\tfail_similar\n")
     cells = open(f"{a.out}/cells.tsv", "w")
     cells.write("locus\ttaxon\tn_comp\tcomparator\tpair_div\tfocal_sites\toverlap\tidentity\texpected\texcess"
-                "\tmed_identity\tmed_expected\tmed_excess\tn_fail\tn_similar\tflag\tambiguous\n")
+                "\tmed_identity\tmed_expected\tmed_excess\tn_fail\tn_similar\tflag\tambiguous\texcess_m\n")
     per = open(f"{a.out}/per_locus.tsv", "w")
     per.write("locus\tsites\ttaxa\ttested\tpairs\trate\tplateau\tcut\tflagged\t"
               + "\t".join(f"fail{j}" for j in range(M_eff, K_eff + 1)) + "\tambiguous\tsimilar\tstatus\n")
@@ -522,7 +525,7 @@ def run_z(a, names, loci, X, S, W, m, m_hi, m_xs, plateaus, rate, tie, masked, K
             mvc = np.maximum(np.asarray(mv, float), 1e-4)
             return np.maximum(P_ * (1.0 - np.exp(-rate_c * corr(mvc) / P_)), 1e-4)
         return dict(idx=idx, gi=gi, ci=ci, rk=rk, o=o, same=same, mis=mis, ident=ident, dob=dob, mp=mp, mph=mph, fit=fit,
-                    ov=ov, sm=sm, ncomp=ncomp, nres=nres, expect=expect)
+                    ov=ov, sm=sm, ncomp=ncomp, nres=nres, expect=expect, corr=corr, rate_c=rate_c)
 
     # dispersion pre-pass: the robust spread of observed/expected among each locus's resolved comparator
     # pairs with enough expected mismatches, with the Poisson part removed: Var(O/E) = 1/E + phi
@@ -545,8 +548,8 @@ def run_z(a, names, loci, X, S, W, m, m_hi, m_xs, plateaus, rate, tie, masked, K
         L = locus_pairs(li)
         skip = L if isinstance(L, str) else None
         if not skip:
-            idx, gi, ci, rk, o, same, mis, ident, dob, mp, mph, fit, ov, sm, ncomp, nres, expect = \
-                (L[k] for k in ("idx", "gi", "ci", "rk", "o", "same", "mis", "ident", "dob", "mp", "mph", "fit", "ov", "sm", "ncomp", "nres", "expect"))
+            idx, gi, ci, rk, o, same, mis, ident, dob, mp, mph, fit, ov, sm, ncomp, nres, expect, corr, rate_c = \
+                (L[k] for k in ("idx", "gi", "ci", "rk", "o", "same", "mis", "ident", "dob", "mp", "mph", "fit", "ov", "sm", "ncomp", "nres", "expect", "corr", "rate_c"))
             phi = (phi_n[li] * (phi_hat[li] if okp[li] else 0.0) + PHI_N0 * phi_bar) / (phi_n[li] + PHI_N0)
         if skip:
             per.write(f"{name}\t{len(sites)}\t{int((nres > 0).sum())}\t0\t0\t"
@@ -588,12 +591,15 @@ def run_z(a, names, loci, X, S, W, m, m_hi, m_xs, plateaus, rate, tie, masked, K
             if flag: fcount[nf] += 1
             namb += amb
             med_i = float(np.median(ident[slc])); med_e = float(np.median(100 - dhat[slc])); med_x = float(np.median(excess[slc]))
+            # the cell's extra divergence beyond expectation, as corrected distance in units of m (a typical
+            # locus's divergence): a foreign or paralogous sequence adds a constant here whatever the comparator
+            exm = float((corr(100 - med_i) - corr(100 - med_e)) / rate_c)
             crow.append(f"{name}\t{names[g]}\t{kc}\t{names[ci[s0]]}\t{mph[s0]:.3f}\t{nres[g]}\t{int(o[s0])}"
                         f"\t{ident[s0]:.2f}\t{100 - dhat[s0]:.2f}\t{excess[s0]:.1f}\t{med_i:.2f}\t{med_e:.2f}\t{med_x:.1f}"
-                        f"\t{nf}\t{nsim}\t{flag}\t{amb}\n")
+                        f"\t{nf}\t{nsim}\t{flag}\t{amb}\t{exm:.3f}\n")
             if (flag or amb) and mask_hi:
                 mask_cell(name, g, sites, "divergent",
-                          [nf, nsim, names[ci[s0]], f"{mph[s0]:.3f}", f"{med_i:.2f}", f"{med_e:.2f}", f"{med_x:.1f}", ""])
+                          [nf, nsim, names[ci[s0]], f"{mph[s0]:.3f}", f"{med_i:.2f}", f"{med_e:.2f}", f"{med_x:.1f}", "", f"{exm:.3f}"])
         cells.writelines(crow)
 
         # ---- similar side: any failing pair; LR direction attribution on shared sites
@@ -611,7 +617,7 @@ def run_z(a, names, loci, X, S, W, m, m_hi, m_xs, plateaus, rate, tie, masked, K
             for g in targets:
                 mask_cell(name, g, sites, "similar",
                           ["", "", names[B if g == A else A], f"{m[A, B]:.3f}", f"{id_ab:.2f}", f"{100 - exp_ab:.2f}",
-                           f"{-defi_ab:.1f}", f"{lam:.1f}"])
+                           f"{-defi_ab:.1f}", f"{lam:.1f}", f"{float((corr(100 - id_ab) - corr(exp_ab)) / rate_c):.3f}"])
             simf.write(f"{name}\t{names[A]}\t{names[B]}\t{m[A, B]:.3f}\t{int(o_ab)}\t{id_ab:.2f}\t{100 - exp_ab:.2f}"
                        f"\t{defi_ab:.1f}\t{lam:.1f}\t{names[donor] if donor is not None else 'NA'}"
                        f"\t{names[recip] if recip is not None else 'NA'}\t{side}\n")
@@ -631,7 +637,7 @@ def run_z(a, names, loci, X, S, W, m, m_hi, m_xs, plateaus, rate, tie, masked, K
     with open(f"{a.out}/masked.csv", "w", newline="") as fh:
         mw = csv.writer(fh)
         mw.writerow(["locus", "taxon", "sites_masked", "side", "n_fail", "n_similar", "partner",
-                     "pair_div", "identity", "expected", "excess", "lambda"])
+                     "pair_div", "identity", "expected", "excess", "lambda", "excess_m"])
         mw.writerows(mrows.values())
     return len(mrows)
 

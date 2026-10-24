@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
 """Figures from locus_outliers.py output, written to one PDF (and PNGs with --png).
 
-    python plot_panels.py DIR [--plots loci,taxa,bars] [--top 100 | --all] [--cols 7] [--out DIR/plots.pdf] [--png] [--title NAME]
+    python plot_panels.py DIR [--plots taxa,loci,bars,residuals_taxa,residuals_loci] [--top 100 | --all] [--cols 7] [--out DIR/plots.pdf] [--png] [--title NAME]
 
 Pages
-  loci   one panel per locus: every tested cell of the locus (a taxon) as one point
-  taxa   one panel per taxon: every tested cell of the taxon (a locus) as one point
-  bars   one bar per locus with a masked cell (all of them, whatever --top): too divergent (reds) then too similar (blues)
+  taxa            one panel per taxon: every tested cell of the taxon (a locus) as one point
+  loci            one panel per locus: every tested cell of the locus (a taxon) as one point
+  bars            one bar per locus with a masked cell (all of them, whatever --top): too divergent (reds) then too similar (blues)
+  residuals_taxa  one strip per taxon: every cell's extra divergence beyond expectation, as corrected distance in
+                  units of m (a typical locus's divergence), on an inverse-hyperbolic-sine axis (linear near 0,
+                  logarithmic far out, no joint); masked cells as triangles, the rest grey; cells identical to their
+                  comparators are counted in the row label rather than drawn (their residual is just minus the
+                  expectation). Cells with one cause share one value, so a batch of bad gene models or one source
+                  of contamination is a tight cluster and a scatter is many independent problems.
+  residuals_loci  the same, one strip per locus; the shaded band at the right of a row is where a saturated
+                  sequence lands, so a tight cluster inside it is foreign sequence, not a shared paralogue.
 
 In the panels a point is a cell, placed at the median over its comparators of the divergence the
 locus expects for the pair (x) and of the divergence observed (y) — the two numbers the cell
@@ -26,7 +34,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
-ap = argparse.ArgumentParser(); ap.add_argument("dir"); ap.add_argument("--plots", default="taxa,loci,bars")
+ap = argparse.ArgumentParser(); ap.add_argument("dir"); ap.add_argument("--plots", default="taxa,loci,bars,residuals_taxa,residuals_loci")
 ap.add_argument("--out"); ap.add_argument("--png", action="store_true"); ap.add_argument("--cols", type=int, default=7)
 ap.add_argument("--top", type=int, default=100, help="panels per page: the N loci / taxa with the most masked sequences")
 ap.add_argument("--all", action="store_true", help="plot every locus and every taxon, however many (overrides --top)")
@@ -34,8 +42,8 @@ ap.add_argument("--title", help="dataset name for the page headers (default: the
 a = ap.parse_args(); out = a.out or f"{a.dir}/plots.pdf"
 NAME = a.title or os.path.basename(os.path.normpath(a.dir))
 wanted = [p.strip() for p in a.plots.split(",") if p.strip()]
-bad = [p for p in wanted if p not in ("loci", "taxa", "bars")]
-if bad: raise SystemExit(f"unknown plot(s): {bad}; choose from loci, taxa, bars")
+bad = [p for p in wanted if p not in ("loci", "taxa", "bars", "residuals_taxa", "residuals_loci")]
+if bad: raise SystemExit(f"unknown plot(s): {bad}; choose from taxa, loci, bars, residuals_taxa, residuals_loci")
 
 # ---- data: one record per tested cell
 side = {}
@@ -53,6 +61,11 @@ FLAG = np.array([r["flag"] == "1" for r in R]); AMB = np.array([r["ambiguous"] =
 SMK = np.array([side.get((l, t)) in ("similar", "both") for l, t in zip(LOC, TAX)])
 DMK = FLAG | AMB; PLAIN = ~DMK & ~SMK; MASKED = DMK | SMK
 INF = (OBS * O / 100 >= 1) | (EXP * O / 100 >= 1)                 # a difference expected or seen
+RATE = np.array([float(per[l]["rate"]) if per[l]["rate"] not in ("nan", "") else np.nan for l in LOC]); PLAT = np.array([float(per[l]["plateau"]) for l in LOC])
+def _corr(p, P): return -P * np.log(1.0 - np.minimum(np.maximum(p, 0.0), 0.98 * P) / P)
+with np.errstate(invalid="ignore", divide="ignore"):
+    EXM = (_corr(OBS, PLAT) - _corr(EXP, PLAT)) / RATE                # extra divergence beyond expectation, in units of m
+    CEIL = (_corr(0.98 * PLAT, PLAT) - _corr(EXP, PLAT)) / RATE        # where a saturated sequence would land
 
 # ---- tokens. Text wears ink; marks wear the verdict colours. The three ramps are light greys,
 # dark reds and the reference blues so that the families stay apart by lightness as well as hue
@@ -183,7 +196,63 @@ def bars_page(order, page, npages, nloci, NTOT):
     fig.tight_layout()
     return fig
 
-makers = {"loci": lambda: [panels("locus")], "taxa": lambda: [panels("taxon")], "bars": bars}
+ROWS_RESID = 150
+
+def residuals(by):
+    """one strip per taxon (by='taxon') or per locus (by='locus'), ROWS_RESID rows per page, most masked first"""
+    key = LOC if by == "locus" else TAX
+    ok = np.isfinite(EXM) & (RATE > 0)
+    counts = collections.Counter(key[MASKED])
+    order = sorted(set(key[ok]), key=lambda k: (-counts[k], k)); NTOT = len(order)
+    if not a.all: order = order[:a.top]
+    pages = [order[i:i + ROWS_RESID] for i in range(0, len(order), ROWS_RESID)]
+    return [residual_page(by, chunk, i + 1, len(pages), NTOT, ok) for i, chunk in enumerate(pages)]
+
+def residual_page(by, order, page, npages, NTOT, ok):
+    key = LOC if by == "locus" else TAX
+    n = len(order); ys = np.arange(n)[::-1]
+    pre = os.path.commonprefix(order); suf = os.path.commonprefix([k[::-1] for k in order])[::-1] if n > 1 else ""
+    short = (lambda k: k[len(pre):len(k) - len(suf)] or k) if by == "locus" and n > 1 else (lambda k: k)
+    labels = []
+    fig, ax = plt.subplots(figsize=(10.5, 0.27 * n + 1.8), dpi=150)
+    rng = np.random.default_rng(0)
+    for y, k in zip(ys, order):
+        sel = (key == k) & ok
+        ident = sel & (OBS <= 0); drawn = sel & (OBS > 0)
+        labels.append(f"{short(k)}   {int(MASKED[sel].sum())} masked · {int(ident.sum()):,} identical")
+        jit = rng.uniform(-0.28, 0.28, int(drawn.sum())); idx = np.flatnonzero(drawn)
+        plain = PLAIN[idx]; npl = int(plain.sum())
+        size, alpha = (10, 0.6) if npl <= 200 else (5, 0.4) if npl <= 1000 else (3, 0.25)
+        ax.scatter(EXM[idx][plain], y + jit[plain], s=size, color=GREY3[0], alpha=alpha, linewidths=0, rasterized=True, zorder=1)
+        for j, c in REDS.items():
+            s_ = DMK[idx] & (np.minimum(np.maximum(NF[idx], LOW), NC) == j)
+            if s_.any(): ax.scatter(EXM[idx][s_], y + jit[s_], s=22, marker="^", color=c, edgecolors=SURF, linewidths=0.4, zorder=3)
+        for j, c in BLUES.items():
+            s_ = SMK[idx] & (np.minimum(NS[idx], 3) == j)
+            if s_.any(): ax.scatter(EXM[idx][s_], y + jit[s_], s=22, marker="v", color=c, edgecolors=SURF, linewidths=0.4, zorder=3)
+        if by == "locus" and drawn.any():
+            c_lo = float(np.percentile(CEIL[idx], 10))
+            ax.fill_betweenx([y - 0.4, y + 0.4], c_lo, 1e5, color="#eeedea", zorder=0); ax.plot([c_lo, c_lo], [y - 0.4, y + 0.4], color="#c9c7c2", lw=0.8, zorder=0)
+    vals = EXM[np.isin(key, order) & ok & (OBS > 0)]
+    xlo = min(float(vals.min()) * 1.3, -30) if len(vals) else -30; xhi = max(float(vals.max()) * 1.3, 300) if len(vals) else 300
+    ax.set_xscale("asinh", linear_width=1.0); ax.set_xlim(xlo, xhi)
+    ax.xaxis.set_major_locator(matplotlib.ticker.FixedLocator([-1000, -100, -10, -1, 0, 1, 10, 100, 1000])); ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{int(v):,}"))
+    ax.axvline(0, color=MODEL, lw=1.0, zorder=2)
+    ax.set_yticks(ys); ax.set_yticklabels(labels, fontsize=6.5); ax.set_ylim(-0.7, n - 0.3)
+    ax.set_xlabel("extra divergence beyond expectation, in units of a typical locus's divergence (m)   ◀ too similar   |   too divergent ▶", fontsize=8, color=MUTED)
+    unit = "taxa" if by == "taxon" else "loci"
+    head = f"{NAME}  ·  Residuals by {by}" + (f"  ·  page {page} of {npages}" if npages > 1 else "")
+    sub = f"{int(MASKED.sum()):,} of {len(R):,} sequences masked ({100 * MASKED.sum() / len(R):.1f}%)" + (f"  ·  the {min(a.top, NTOT) if not a.all else NTOT} most masked of {NTOT} {unit}" if not a.all and NTOT > a.top else f"  ·  all {NTOT} {unit}")
+    note = ("each point is one sequence; triangles are masked (reds too divergent, blues too similar), grey are the " + by + "'s other sequences\n"
+            "sequences identical to their comparators are counted in the row label, not drawn; axis linear near 0, logarithmic far out" + ("; shaded = where a saturated sequence would land" if by == "locus" else ""))
+    ax.set_title(f"{head}\n{sub}\n{note}", fontsize=8.5, color=INK, loc="left", linespacing=1.35)
+    for s_ in ("top", "right", "left"): ax.spines[s_].set_visible(False)
+    ax.spines["bottom"].set_color(SPINE); ax.tick_params(colors=MUTED, length=0, labelsize=6.5); ax.xaxis.grid(True, color=GRID, lw=0.5); ax.set_axisbelow(True)
+    fig.tight_layout()
+    return fig
+
+makers = {"loci": lambda: [panels("locus")], "taxa": lambda: [panels("taxon")], "bars": bars,
+          "residuals_taxa": lambda: residuals("taxon"), "residuals_loci": lambda: residuals("locus")}
 with PdfPages(out) as pdf:
     for name in wanted:
         figs = makers[name]()
