@@ -6,7 +6,9 @@
 Pages
   taxa            one panel per taxon: every tested cell of the taxon (a locus) as one point
   loci            one panel per locus: every tested cell of the locus (a taxon) as one point
-  bars            one bar per locus with a masked cell (all of them, whatever --top): too divergent (reds) then too similar (blues)
+  bars            histogram of loci by the number of masked sequences they hold, zero included; each bar is
+                  coloured by the mix of mask kinds among those loci's masks; the y axis is broken (and says so)
+                  when the zero bar dwarfs the rest
   residuals_taxa  one strip per taxon: every cell's extra divergence beyond expectation, as corrected distance in
                   units of m (a typical locus's divergence), on an inverse-hyperbolic-sine axis (linear near 0,
                   logarithmic far out, no joint); masked cells as triangles, the rest grey; cells identical to their
@@ -159,42 +161,69 @@ def panels(by):
     fig.tight_layout(rect=(0.012, 0.012, 1, 1 - 1.15 / H), h_pad=1.0, w_pad=0.5)
     return fig
 
-ROWS_PER_PAGE = 150
-
 def bars():
-    """every locus with a masked cell, most masked first, ROWS_PER_PAGE rows per page"""
-    counts = collections.Counter(LOC[MASKED])
-    order = sorted(counts, key=lambda k: (-counts[k], k)); NTOT = len(set(LOC))
-    if not order: order = sorted(set(LOC))[:1]
-    pages = [order[i:i + ROWS_PER_PAGE] for i in range(0, len(order), ROWS_PER_PAGE)]
-    return [bars_page(chunk, i + 1, len(pages), len(order), NTOT) for i, chunk in enumerate(pages)]
-
-def bars_page(order, page, npages, nloci, NTOT):
-    n = len(order); ys = np.arange(n)[::-1]
-    lab_in = min(0.048 * max(len(l) for l in order) + 0.4, 4.5)
-    fig, ax = plt.subplots(figsize=(7.0 + lab_in, 0.17 * n + 1.6), dpi=200)
-    right = [(f"fails {j} of {NC}", REDS[j], np.array([int(((LOC == k) & ((FLAG & (NF == j)) | ((AMB & ~FLAG) if j == LOW else False))).sum()) for k in order])) for j in FAILS]
-    left = [(f"{j}{'+' if j == 3 else ''} pair{'s' if j > 1 else ''}", BLUES[j], np.array([int(((LOC == k) & SMK & (np.minimum(NS, 3) == j)).sum()) for k in order])) for j in (1, 2, 3)]
-    base = np.zeros(n)
-    for lab, c, v in right + left:                                   # one stacked bar: too divergent first, then too similar
-        nz = v > 0; ax.barh(ys[nz], v[nz], left=base[nz], color=c, edgecolor=SURF, linewidth=0.8, height=0.72); base += v
-    top = max(base.max(), 1)
-    for y, t_ in zip(ys, base):
-        if t_: ax.text(t_ + top * 0.012, y, f"{int(t_):,}", va="center", ha="left", fontsize=6, color=MUTED)
-    ax.set_yticks(ys); ax.set_yticklabels(order, fontsize=6); ax.set_ylim(-0.7, n - 0.3)
-    ax.set_xlim(0, top * 1.12)
-    ax.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
-    ax.set_xlabel("sequences masked", fontsize=7.5, color=MUTED)
-    ax.set_title(f"{NAME}  ·  Number of sequences masked per locus" + (f"  ·  page {page} of {npages}" if npages > 1 else "") + "\n"
-                 f"{int(MASKED.sum()):,} of {len(R):,} sequences masked ({100 * MASKED.sum() / len(R):.1f}%)  ·  {nloci} of {NTOT} loci have a masked sequence",
-                 fontsize=9, color=INK, loc="left", pad=8, linespacing=1.3)
-    handles = [Patch(facecolor=c, edgecolor=SURF, label=("too divergent · " if lab.startswith(f"fails {LOW}") else "") + lab) for lab, c, _ in right] + \
-              [Patch(facecolor=c, edgecolor=SURF, label=("too similar · " if lab.startswith("1 ") else "") + lab) for lab, c, _ in left]
-    ax.legend(handles=handles, frameon=False, fontsize=6.5, loc="lower right", labelcolor=INK, ncol=2)
-    for s_ in ("top", "right", "left"): ax.spines[s_].set_visible(False)
-    ax.spines["bottom"].set_color(SPINE); ax.tick_params(colors=MUTED, length=0, labelsize=6.5); ax.xaxis.grid(True, color=GRID, lw=0.5); ax.set_axisbelow(True)
-    fig.tight_layout()
-    return fig
+    """histogram of loci by the number of masked sequences they hold (zero included), each bar coloured by the
+    mix of mask categories among those loci's masks; a broken y axis when the zero bar dwarfs the rest"""
+    nmask = collections.Counter(LOC[MASKED]); allloci = sorted(set(LOC)); NTOT = len(allloci)
+    k_of = {l: nmask.get(l, 0) for l in allloci}; kmax = max(k_of.values()) if k_of else 0
+    if kmax <= 25: bins = [(k, k, str(k)) for k in range(kmax + 1)]
+    else:
+        edges = [0, 1, 2, 3, 4, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10 ** 9]; bins = []
+        for lo_, hi_ in zip(edges[:-1], edges[1:]):
+            hi_i = hi_ - 1 if hi_ > lo_ + 1 else lo_
+            if lo_ > kmax: break
+            bins.append((lo_, hi_i, str(lo_) if hi_i == lo_ else (f"{lo_}–{min(hi_i, kmax)}" if hi_i < 10 ** 8 else f"{lo_}+")))
+    cats = [(f"fails {j} of {NC}", REDS[j], lambda idx, j=j: DMK[idx] & (np.minimum(np.maximum(NF[idx], LOW), NC) == j)) for j in FAILS] + \
+           [(f"{j}{'+' if j == 3 else ''} pair{'s' if j > 1 else ''}", BLUES[j], lambda idx, j=j: SMK[idx] & (np.minimum(NS[idx], 3) == j)) for j in (1, 2, 3)]
+    heights = []; comp = []
+    for lo_, hi_, lab in bins:
+        loci = [l for l in allloci if lo_ <= k_of[l] <= hi_]; n = len(loci); heights.append(n)
+        if lo_ == 0 or n == 0: comp.append([n] + [0] * len(cats)); continue
+        idx = np.flatnonzero(np.isin(LOC, loci) & MASKED)
+        shares = np.array([float(f(idx).sum()) for _, _, f in cats]); shares = shares / max(shares.sum(), 1)
+        comp.append([0] + list(n * shares))
+    comp = np.array(comp); x = np.arange(len(bins))
+    big = heights[0] > 5 * max(heights[1:] + [1]) and len(bins) > 1
+    if big:
+        fig, (axt, axb) = plt.subplots(2, 1, figsize=(max(6.5, 0.55 * len(bins) + 2), 5.2), dpi=150, sharex=True, gridspec_kw=dict(height_ratios=(1, 2.6), hspace=0.08))
+        axes = (axt, axb)
+    else:
+        fig, axb = plt.subplots(figsize=(max(6.5, 0.55 * len(bins) + 2), 4.6), dpi=150); axt = None; axes = (axb,)
+    cols = [GREY3[0]] + [c for _, c, _ in cats]
+    for ax in axes:
+        base = np.zeros(len(bins))
+        for ci_, c in enumerate(cols):
+            v = comp[:, ci_]; nz = v > 0
+            ax.bar(x[nz], v[nz], bottom=base[nz], color=c, edgecolor=SURF, linewidth=0.8, width=0.72); base += v
+        for s_ in ("top", "right"): ax.spines[s_].set_visible(False)
+        for s_ in ("left", "bottom"): ax.spines[s_].set_color(SPINE)
+        ax.tick_params(colors=MUTED, length=0, labelsize=7); ax.yaxis.grid(True, color=GRID, lw=0.5); ax.set_axisbelow(True)
+        ax.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(5, integer=True))
+    if big:
+        top_lo = max(heights[1:]) * 1.25; axb.set_ylim(0, top_lo); axt.set_ylim(heights[0] * 0.75, heights[0] * 1.12)
+        axt.spines["bottom"].set_visible(False); axb.spines["top"].set_visible(False); axt.tick_params(labelbottom=False)
+        d = 0.012
+        for ax, y0 in ((axt, 0), (axb, 1)):
+            ax.plot((-d, +d), (y0 - 2 * d, y0 + 2 * d), transform=ax.transAxes, color=INK, clip_on=False, lw=0.9)
+        axt.text(0.0, 0.02, "y axis broken here: the top panel is the zero bar only, on its own scale", transform=axt.transAxes, fontsize=6.5, color="#b0171f", va="bottom", ha="left")
+        axt.text(x[0], heights[0] * 1.02, f"{heights[0]:,}", ha="center", va="bottom", fontsize=7, color=INK)
+        for xi, h in zip(x[1:], heights[1:]):
+            if h: axb.text(xi, h + top_lo * 0.01, f"{h:,}", ha="center", va="bottom", fontsize=7, color=INK)
+    else:
+        top = max(heights + [1]); axb.set_ylim(0, top * 1.12)
+        for xi, h in zip(x, heights):
+            if h: axb.text(xi, h + top * 0.01, f"{h:,}", ha="center", va="bottom", fontsize=7, color=INK)
+    axb.set_xticks(x); axb.set_xticklabels([b[2] for b in bins], fontsize=7)
+    axb.set_xlabel("sequences masked in the locus", fontsize=8, color=MUTED); axb.set_ylabel("loci", fontsize=8, color=MUTED)
+    if axt is not None: axt.set_ylabel("loci", fontsize=8, color=MUTED)
+    (axt or axb).set_title(f"{NAME}  ·  Number of sequences masked per locus\n"
+                           f"{int(MASKED.sum()):,} of {len(R):,} sequences masked ({100 * MASKED.sum() / len(R):.1f}%)  ·  {len(nmask)} of {NTOT} loci have a masked sequence",
+                           fontsize=9, color=INK, loc="left", pad=8, linespacing=1.3)
+    handles = [Patch(facecolor=GREY3[0], edgecolor=SURF, label="loci with no masked sequence")] + \
+              [Patch(facecolor=c, edgecolor=SURF, label=("too divergent · " if lab.startswith(f"fails {LOW}") else "too similar · " if lab.startswith("1 ") else "") + lab) for lab, c, _ in cats]
+    axb.legend(handles=handles, frameon=False, fontsize=6.5, loc="upper right", labelcolor=INK, title="bar colour = mix of mask kinds in those loci", title_fontsize=6.5)
+    if not big: fig.tight_layout()
+    return [fig]
 
 ROWS_RESID = 150
 
