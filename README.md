@@ -1,33 +1,60 @@
 # locus_outliers: masking phylogenetic outliers from a multi-locus alignment
 
+# What's this?
+
+A script which attempts to highlight and mask potentially misleading seuqences (individual loci from individual taxa) from large phylogenomic analyses. Read on if you have a large (>10 loci) dataset, and are intending to use it to estimate a single phylogenetic tree with a method that doesn't account for things like contamination, introgression, horizontal gene transfer, or accidental use of paralogs. (NB: this includes methods in software like IQ-TREE, RAxML, BEAST, PhyloBayes, MCMCTREE, MrBayes, ASTRAL, etc.)
+
+[add summary figure - alignment of 10 loci from 7 taxa, all present to start with, big arrow, alignment of the same loci, but with a handful of cells obviously gapped out; maybe one in the middle with the outlier loci highlited in red; even better if the first alignment shows the contaminated sequences as clearly coming from a different taxon, and then shows a tree grouping these taxa; then the masked alignment shows the tree fixed]
+
 # Why?
 
-In a large multi-locus alignment, it's possilbe that some loci seem very different from others in the same taxon. This can occur for a lot of reasons, including: contamination, mis-labelling, bioinformatic errors (like BUSCO pulling out a different locus), hybridsation or HGT, etc. If the aim is to produce a single estimate of a species tree from a concatenated or ILS-based analysis, these loci can only mislead the analysis. This method attempts to find and mask them from a single multiple sequence alignment, before the expense of building any trees. 
+A lot of people (me included) are interested in estimating phylogenies from large datasets. Although we all know that some data doesn't fit on a tree, we are often willing to intentionally ignore this and as a first pass estimate a single tree topology that we hope is a good explanation of the entire dataset (e.g. a species tree). 
+
+However, in a large multi-locus alignment not all sequenced loci from all taxa will *fit* on a single tree, and these loci can be problematic for inferring that tree. Loci can mislead tree inference for a lot of reasons, including but not limited to: contamination, mis-labelling, bioinformatic errors (like BUSCO pulling out a different locus from different genomes), hybridsation and introgression, horizontal gene transfer, accidental labelling of a paralog as an ortholog, etc. If the aim is to produce a single estimate of a tree from a concatenated (e.g. IQ-TREE), ILS-aware (e.g. BEAST), or ILS-robust (ASTRAL) analysis, these loci can mislead the analysis. This repo contains scripts which look at the alignment and attempt to find and mask such loci.
+
+# Pros and cons of masking data
+
+The intention of this repo is that one would use this script to mask data before building a tree. An obvious use case would be to detect and remove contaminants and mislabelled sequences from large datasets. These are _obviously_ misleading because they're _wrong_, and nobody wants them in their datasets. Another use case is more nuanced - removing loci that have moved horizontally, due to processes like introgression or HGT. These loci are _not_ wrong, but should still be interested in masking them if the intention is to use a method that doesn't account for these biological processes when building the tree. 
+
+So, one should be aware that the individual loci from individual taxa highlighted by this method could be highlighted due to any of the following three reasons: (i) the loci are strictly wrong (e.g. contamination during sequencing); (ii) the loci are biologically correct but not accounted for by a downstream method (e.g. HGT in a standard BEAST analysis); (iii) the loci have highlighted but it's a false positive. The method below seeks to maximise identification of the first two categories, and minimise the third. 
+
+One needs to be aware though that because categories i and ii above have identical signals in the data, if one is interested in the biological side, one can consider this method as highlighting exactly the loci that might have been invovled in the interesting biology. In this case, the sensible use of the script would be to do it in two stages:
+
+i. use the script to mask data to build a single tree
+ii. use un-masked data to then look for the interesting biological signals w.r.t to the tree estimated from the masked data (of course, the data on which loci were masked is also telling you something interesting, but the methods are intentionally rather crude and tree-free, because I wanted them to be a pre-tree step, and very fast)
 
 # Input/output
 
-The input is the concatenated alignment and the locus boundaries. This can be supplied in one of two ways (details here: https://iqtree.github.io/doc/Advanced-Tutorial):
+## Input
 
-1. A single NEXUS format alignment file with a SETS block
-2. A FASTA or PHYLIP format alignment with a RAxML-style partitions.txt file.
+Input either of the following:
+
+1. A single NEXUS format alignment file with a SETS block defining the loci
+2. A FASTA, PHYLIP, or NEXUS format alignment with a RAxML-style partitions.txt file defining the loci.
+
+NB: your alignment must have at least 10 loci for this method to work.
+
+More details on formats can be found here: https://iqtree.github.io/doc/Advanced-Tutorial
+
+## Output
 
 The output consists of the following:
 
-1. The alignment in its input format with every outlier locus (locus × taxon cell) masked as gaps: `<name>.masked.<ext>`
-2. `masked.csv`, one row per masked cell with the evidence for masking it: locus, taxon, sites masked, number of comparators, number of comparators failed, median residual, whether the cell was ambiguous (fewer than five comparators), and the closest comparator with its alignment-wide identity, overlap, locus identity, expected identity and residual
-3. `plots.pdf`, the diagnostic figures (see below)
-4. The full results behind the masking:
+
+1. `results_report.html`, an interactive HTML report showing all results [claude please note that we need to build this later, once we've finalised the plots]
+2. The alignment in its input format with every outlier sequence (individual locus in an individual taxon) masked as gaps: `<name>.masked.<ext>`
+3. `masked.csv`, one row per masked cell with the evidence for masking it: locus, taxon, sites masked, number of comparators, number of comparators failed, median residual, whether the cell was ambiguous (fewer than five comparators), and the closest comparator with its alignment-wide identity, overlap, locus identity, expected identity and residual
+4. `plots.pdf`, the diagnostic figures (see below)
+5. The full results behind the masking:
    - `cells.tsv`: every tested cell, with the same columns as `masked.csv` plus the flag, so unmasked cells can be inspected too
    - `pairs.tsv`: every individual comparison (locus, taxon, comparator rank, comparator, alignment-wide identity, overlap, locus identity, expected identity, residual, pass/fail)
    - `per_locus.tsv`: per locus, the number of sites, taxa, tested cells and pairs, the locus rate, the robust spread of residuals, the band, and the counts flagged by number of comparators failed
    - `trends.tsv`: the locus trend on a grid, as plotted
    - `ani.npy` and `taxa.txt`: the taxon × taxon alignment-wide identity matrix (%) and its row order
 
-## Method overview
+# Method overview
 
-The basic idea of the method is to compare a genome to its closest relative in the alignment, and then look at the distribution of relatedness for each locus in turn. An outlier loci is one that is far _less_ related than expected, based on this comparison. We improve the power of the method by developing the expectation of the relatedness of each locus across all genomes, using the five closest relatives to each genome. We consider an outlier to be any locus that is 25% less related than the expected median relatedness, based on the full-alignment to single-locus comparisons for that locus.
-
-A single locus in a single taxon is marked as an outlier if it is found to be an outlier when compared to three or more of the five closest relatives.
+The basic idea of the method is to compare a genome to its closest relatives in the alignment, and then look at the distribution of relatedness for each locus in turn. An outlier sequence is a sequence in the focal genome that is far _more_ or _less_ related than expected based on this comparison. 
 
 In a bit more detail, the method does the following things:
 
@@ -44,7 +71,7 @@ at random. Fewer than five may exist.
 **Trend.** Locus identity rises with genome-wide identity along a curve specific to the locus.
 *T_ℓ(a)* is the running median of *I_ℓ(g,h)* over all comparator pairs of the locus with at
 least 20 shared sites, as a function of *x* = log₁₀(100 − *A(g,h)*): windows of 0.1 decade,
-each widened until it holds 40 pairs, joined by linear interpolation.
+each widened until it holds 40 pairs, joined by linear interpolation. Note that the trend is binned on log divergence (not linear divergence) because linear bins flatten above 99% identity, and in many datasets closest taxa in the alignment are often >99% similar.
 
 **Pair test.** For each pairing of a single locus *ℓ* in genomes *g*, *h* the residual is
 
@@ -66,43 +93,32 @@ deviations, whichever is larger. The test is one-sided.
 which for five comparators is the same as failing against at least three. A cell with fewer than
 five comparators that satisfies the inequality is reported as *ambiguous* and treated as flagged. We use five comparators because if you use a single comparator you can't know which genome in the focal pair has the outlier locus. You only know that one of them is. Using five helps to make this a directional test. For example, a contaminant locus should appear very different from all five of the most closely related genomes being compared. While an unlucky inclusion of a contaminant locus in the _comparison set_ of a good locus will affect only a single one of the five comparisons.
 
-## Usage
+# Usage
+
+## Installation
+
+The simplest way to run this script is to use Conda as follows. 
+
+[claude: write a conda env file and conda instructions here: insall conda; install env; start env;]
+
+If you prefer to do it another way, the requirements for the script are in the `environment.yml` file.
+
+## Running the script
+
+If you have a nexus file with a SETS block (example filename here is `alignment.nex`): 
 
     python locus_outliers.py --aln alignment.nex --out scan
-    python locus_outliers.py --aln alignment.fasta --partitions partitions.txt --out scan
-    python locus_outliers.py --aln alignment.phy --partitions partitions.txt --out scan
-    python plot_panels.py scan                          # scan/plots.pdf, all pages
-    python plot_panels.py scan --plots log,per_locus     # any subset of log, linear, per_locus
-    python plot_panels.py scan --png                     # also write each page as a PNG
 
-A NEXUS alignment is read with Biopython's `Bio.Nexus`; each `charset` in the SETS block is one
-locus. A FASTA, PHYLIP or NEXUS alignment without charsets takes a RAxML-style partition file
-(`DNA, locus1 = 1-100, 250-300`, `WAG, locus2 = 101-249\3`; the model prefix is optional). A
-NEXUS file with charsets and a partition file together is an error: supply one or the other.
-Data type is read from the NEXUS file when it states one, otherwise inferred from the sequences
-(DNA when at least 90% of the non-missing characters are A, C, G, T or U). DNA is analysed on
-A, C, G, T only, with U read as T; protein on the 20 standard amino acids; gaps and every other
-character are treated as missing.
+If you have a nexus file with no SETS block, or a FASTA or PHYLIP alignment, and a partitions file:
+
+    python locus_outliers.py --aln alignment.fasta --partitions partitions.txt --out scan
+
+[claude - fold the call to the plots right into the main script please]
 
 Method options:
 
-- `--n-comp 5`: comparators per cell, the closest taxa by alignment-wide identity.
-- `--fit-overlap 20`: sites a pair must share in a locus to be a valid comparison and to enter
-  the trend fit; a taxon with fewer residues than this in the locus needs an overlap of all its
-  residues instead.
-- `--min-band 25`: a pair fails when its locus identity is more than this many percentage
-  points below the trend.
-- `--k 5`: the band is the larger of `--min-band` and `k` robust standard deviations of the
-  locus residuals.
-- `--bin 0.1`: running-median window width, in decades of (100 − alignment-wide identity).
-- `--bin-min 40`: pairs a window must hold; a window widens until it does.
+[claude - update these please]
+
+- `--n-comp 5`: comparators per cell, the closest taxa by alignment-wide identity. Must be odd and at least 5.
+- `--fit-overlap 20`: sites a pair must share in a locus to be a valid comparison for the trend fit.
 - `--seed 1`: random seed for breaking ties between equally close comparators.
-
-Requirements: Python 3, numpy, Biopython (NEXUS input only); matplotlib for the figures.
-
-## Reading the panels
-
-The cutoff is to be judged, not trusted. Flagged points hugging the dashed line in a locus with
-no separate population below the cloud are the marginal cases. A trend that bends away from the
-cloud at the sparse low-identity end reflects few comparators there. A cloud that is wide
-everywhere usually means alignment problems rather than foreign sequences.
