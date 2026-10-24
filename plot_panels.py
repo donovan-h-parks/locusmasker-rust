@@ -6,9 +6,9 @@
 Pages
   taxa            one panel per taxon: every tested cell of the taxon (a locus) as one point
   loci            one panel per locus: every tested cell of the locus (a taxon) as one point
-  bars            histogram of loci by the number of masked sequences they hold, zero included; each bar is
-                  coloured by the mix of mask kinds among those loci's masks; the y axis is broken (and says so)
-                  when the zero bar dwarfs the rest
+  bars            two histograms, one above the other: loci, and taxa, by the number of masked sequences they hold,
+                  zero included; each bar is coloured by the mix of mask kinds among those units' masks; a facet's
+                  y axis is broken (and says so) when its zero bar dwarfs the rest
   residuals_taxa  one strip per taxon: every cell's extra divergence beyond expectation, as corrected distance in
                   units of m (a typical locus's divergence), on an inverse-hyperbolic-sine axis (linear near 0,
                   logarithmic far out, no joint); masked cells as triangles, the rest grey; cells identical to their
@@ -161,11 +161,13 @@ def panels(by):
     fig.tight_layout(rect=(0.012, 0.012, 1, 1 - 1.15 / H), h_pad=1.0, w_pad=0.5)
     return fig
 
-def bars():
-    """histogram of loci by the number of masked sequences they hold (zero included), each bar coloured by the
-    mix of mask categories among those loci's masks; a broken y axis when the zero bar dwarfs the rest"""
-    nmask = collections.Counter(LOC[MASKED]); allloci = sorted(set(LOC)); NTOT = len(allloci)
-    k_of = {l: nmask.get(l, 0) for l in allloci}; kmax = max(k_of.values()) if k_of else 0
+def hist_facet(fig, slot, by):
+    """one histogram: units (loci or taxa) by the number of masked sequences they hold, zero included, bars
+    coloured by the mix of mask kinds among those units' masks; a broken y axis when the zero bar dwarfs the
+    rest. Draws into gridspec slot `slot`; returns (top axes or None, bottom axes, legend handles)."""
+    key = LOC if by == "locus" else TAX
+    nmask = collections.Counter(key[MASKED]); units = sorted(set(key)); NTOT = len(units)
+    k_of = {u: nmask.get(u, 0) for u in units}; kmax = max(k_of.values()) if k_of else 0
     if kmax <= 25: bins = [(k, k, str(k)) for k in range(kmax + 1)]
     else:
         edges = [0, 1, 2, 3, 4, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10 ** 9]; bins = []
@@ -177,18 +179,17 @@ def bars():
            [(f"{j}{'+' if j == 3 else ''} pair{'s' if j > 1 else ''}", BLUES[j], lambda idx, j=j: SMK[idx] & (np.minimum(NS[idx], 3) == j)) for j in (1, 2, 3)]
     heights = []; comp = []
     for lo_, hi_, lab in bins:
-        loci = [l for l in allloci if lo_ <= k_of[l] <= hi_]; n = len(loci); heights.append(n)
+        sel_units = [u for u in units if lo_ <= k_of[u] <= hi_]; n = len(sel_units); heights.append(n)
         if lo_ == 0 or n == 0: comp.append([n] + [0] * len(cats)); continue
-        idx = np.flatnonzero(np.isin(LOC, loci) & MASKED)
+        idx = np.flatnonzero(np.isin(key, sel_units) & MASKED)
         shares = np.array([float(f(idx).sum()) for _, _, f in cats]); shares = shares / max(shares.sum(), 1)
         comp.append([0] + list(n * shares))
     comp = np.array(comp); x = np.arange(len(bins))
-    big = heights[0] > 5 * max(heights[1:] + [1]) and len(bins) > 1
+    big = len(bins) > 1 and heights[0] > 5 * max(heights[1:] + [1])
     if big:
-        fig, (axt, axb) = plt.subplots(2, 1, figsize=(max(6.5, 0.55 * len(bins) + 2), 5.2), dpi=150, sharex=True, gridspec_kw=dict(height_ratios=(1, 2.6), hspace=0.08))
-        axes = (axt, axb)
+        sub = slot.subgridspec(2, 1, height_ratios=(1, 2.6), hspace=0.08); axt = fig.add_subplot(sub[0]); axb = fig.add_subplot(sub[1], sharex=axt); axes = (axt, axb)
     else:
-        fig, axb = plt.subplots(figsize=(max(6.5, 0.55 * len(bins) + 2), 4.6), dpi=150); axt = None; axes = (axb,)
+        axb = fig.add_subplot(slot); axt = None; axes = (axb,)
     cols = [GREY3[0]] + [c for _, c, _ in cats]
     for ax in axes:
         base = np.zeros(len(bins))
@@ -199,30 +200,37 @@ def bars():
         for s_ in ("left", "bottom"): ax.spines[s_].set_color(SPINE)
         ax.tick_params(colors=MUTED, length=0, labelsize=7); ax.yaxis.grid(True, color=GRID, lw=0.5); ax.set_axisbelow(True)
         ax.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(5, integer=True))
+    unit = "loci" if by == "locus" else "taxa"
     if big:
         top_lo = max(heights[1:]) * 1.25; axb.set_ylim(0, top_lo); axt.set_ylim(heights[0] * 0.75, heights[0] * 1.12)
         axt.spines["bottom"].set_visible(False); axb.spines["top"].set_visible(False); axt.tick_params(labelbottom=False)
         d = 0.012
         for ax, y0 in ((axt, 0), (axb, 1)):
             ax.plot((-d, +d), (y0 - 2 * d, y0 + 2 * d), transform=ax.transAxes, color=INK, clip_on=False, lw=0.9)
-        axt.text(0.0, 0.02, "y axis broken here: the top panel is the zero bar only, on its own scale", transform=axt.transAxes, fontsize=6.5, color="#b0171f", va="bottom", ha="left")
+        axt.text(0.0, 0.02, "y axis broken: the top panel is the zero bar only, on its own scale", transform=axt.transAxes, fontsize=6.5, color="#b0171f", va="bottom", ha="left")
         axt.text(x[0], heights[0] * 1.02, f"{heights[0]:,}", ha="center", va="bottom", fontsize=7, color=INK)
         for xi, h in zip(x[1:], heights[1:]):
             if h: axb.text(xi, h + top_lo * 0.01, f"{h:,}", ha="center", va="bottom", fontsize=7, color=INK)
+        axt.set_ylabel(unit, fontsize=8, color=MUTED)
     else:
         top = max(heights + [1]); axb.set_ylim(0, top * 1.12)
         for xi, h in zip(x, heights):
             if h: axb.text(xi, h + top * 0.01, f"{h:,}", ha="center", va="bottom", fontsize=7, color=INK)
     axb.set_xticks(x); axb.set_xticklabels([b[2] for b in bins], fontsize=7)
-    axb.set_xlabel("sequences masked in the locus", fontsize=8, color=MUTED); axb.set_ylabel("loci", fontsize=8, color=MUTED)
-    if axt is not None: axt.set_ylabel("loci", fontsize=8, color=MUTED)
-    (axt or axb).set_title(f"{NAME}  ·  Number of sequences masked per locus\n"
-                           f"{int(MASKED.sum()):,} of {len(R):,} sequences masked ({100 * MASKED.sum() / len(R):.1f}%)  ·  {len(nmask)} of {NTOT} loci have a masked sequence",
-                           fontsize=9, color=INK, loc="left", pad=8, linespacing=1.3)
-    handles = [Patch(facecolor=GREY3[0], edgecolor=SURF, label="loci with no masked sequence")] + \
+    axb.set_xlabel(f"sequences masked in the {by}", fontsize=8, color=MUTED); axb.set_ylabel(unit, fontsize=8, color=MUTED)
+    (axt or axb).set_title(f"by {by}  ·  {len(nmask)} of {NTOT} {unit} have a masked sequence", fontsize=8.5, color=INK, loc="left", pad=6)
+    handles = [Patch(facecolor=GREY3[0], edgecolor=SURF, label=f"no masked sequence")] + \
               [Patch(facecolor=c, edgecolor=SURF, label=("too divergent · " if lab.startswith(f"fails {LOW}") else "too similar · " if lab.startswith("1 ") else "") + lab) for lab, c, _ in cats]
-    axb.legend(handles=handles, frameon=False, fontsize=6.5, loc="upper right", labelcolor=INK, title="bar colour = mix of mask kinds in those loci", title_fontsize=6.5)
-    if not big: fig.tight_layout()
+    return axt, axb, handles
+
+def bars():
+    """the two marginals side by side: loci and taxa by the number of masked sequences they hold"""
+    fig = plt.figure(figsize=(8.5, 9.6), dpi=150)
+    gs = fig.add_gridspec(2, 1, hspace=0.32, left=0.09, right=0.98, top=0.855, bottom=0.06)
+    _, axl, handles = hist_facet(fig, gs[0], "locus"); _, axr, _ = hist_facet(fig, gs[1], "taxon")
+    fig.text(0.09, 0.975, f"{NAME}  ·  Number of sequences masked per locus and per taxon", fontsize=10, color=INK, fontweight="bold", ha="left", va="top")
+    fig.text(0.09, 0.95, f"{int(MASKED.sum()):,} of {len(R):,} sequences masked ({100 * MASKED.sum() / len(R):.1f}%)  ·  bar colour = mix of mask kinds among those loci's or taxa's masks", fontsize=8.5, color=INK, ha="left", va="top")
+    fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.09, 0.93), ncol=4, frameon=False, fontsize=6.5, labelcolor=INK, columnspacing=1.2, handletextpad=0.4)
     return [fig]
 
 ROWS_RESID = 150
