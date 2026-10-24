@@ -1,0 +1,52 @@
+DNA alignment: 90 taxa, 9,150,597 sites, 5162 charsets
+ENSG00000161544dna: HOMO_SAP CDS 444 nt, MACAC_FAS 351 nt
+  HOMO_SAP protein, forward:       ARLYANCEDVGVAILVRFFVNFPSAKQYFSQFKHMEDPLEMERSPQLRKHACRVMGALNT
+  MACAC_FAS forward frame 1:    DLLHPAHFLVGVAVFLDHLQNDPREDLEVHWLHLVLEGMGFPHKGQHRGHLVGVVQVLHD
+  MACAC_FAS revcomp frame 1:    ARLYANCEDVGVAILVRFFVNFKQYFSQFKHMEEPLEMERSPQLRKHACRVMGALNTVVE
+  MACAC_FAS revcomp frame 2:    PGSMPTARTWGWPSW*GSL*TSSSTSASSSTWRNPWRWSGAPSCGSTPAESWGPSTLSWR
+  MACAC_FAS revcomp frame 3:    PALCQLRGRGGGHPGEVLCELQAVLQPVQAHGGTPGDGAEPPAAEARLPSHGGPQHCRGE
+  15-mers of MACAC_FAS found in HOMO_SAP: forward 0%, reverse complement 65%
+
+masked sequences by taxon: reverse complement / forward / undecided, judged by median 12-mer sharing with up to 5 closest relatives
+  MACAC_FAS  reverse   26  forward    5  undecided    0  too short   0
+  PAPIO_ANU  reverse   25  forward   18  undecided    0  too short   0
+  RATTU_NOR  reverse   14  forward   26  undecided    3  too short   0
+  MESOC_AUR  reverse   13  forward   15  undecided    0  too short   0
+  MUS_MUS    reverse   13  forward    6  undecided    1  too short   0
+  CRICE_GRI  reverse   12  forward   10  undecided    0  too short   0
+  MICRO_OCH  reverse   12  forward    6  undecided    0  too short   0
+  JACUL_JAC  reverse    9  forward    5  undecided    0  too short   0
+  PANTH_HOD  reverse    8  forward    1  undecided    0  too short   0
+  TURSI_TRU  reverse    7  forward    8  undecided    0  too short   0
+  CAPRA_HIR  reverse    6  forward    3  undecided    0  too short   0
+  BALAE_ACU  reverse    4  forward   50  undecided    0  too short   0
+  OVIS_ARI   reverse    4  forward   15  undecided    0  too short   0
+  PHYSE_MAC  reverse    3  forward   56  undecided    0  too short   0
+  BOS_TAU    reverse    3  forward    4  undecided    0  too short   0
+  BOS_MUT    reverse    3  forward    4  undecided    0  too short   0
+  VICUG_PAC  reverse    3  forward    1  undecided    0  too short   0
+  PEROM_MAN  reverse    2  forward   54  undecided    0  too short   0
+  SUS_SCR    reverse    2  forward   45  undecided    0  too short   0
+  MYOTI_BRA  reverse    1  forward    6  undecided    0  too short   0
+  PTERO_PAR  reverse    1  forward   50  undecided    0  too short   0
+  ODOBE_ROS  reverse    1  forward    1  undecided    0  too short   0
+  CAVIA_POR  reverse    1  forward   23  undecided    1  too short   0
+  OCTOD_DEG  reverse    1  forward   11  undecided    0  too short   0
+  ORCIN_ORC  reverse    1  forward    9  undecided    0  too short   0
+  CHINC_LAN  reverse    1  forward    2  undecided    0  too short   0
+  HETER_GLA  reverse    1  forward    0  undecided    0  too short   0
+  GORIL_GOR  reverse    0  forward  273  undecided    0  too short   0
+  MACAC_MUL  reverse    0  forward  252  undecided    0  too short   0
+  NOMAS_LEU  reverse    0  forward   76  undecided    0  too short   0
+  LIPOT_VEX  reverse    0  forward   48  undecided    0  too short   0
+  LEPTO_WED  reverse    0  forward   68  undecided    0  too short   0
+  MEGAD_LYR  reverse    0  forward   47  undecided    2  too short   0
+  RHINO_FER  reverse    0  forward   40  undecided    0  too short   0
+  ELEPH_EDW  reverse    0  forward   44  undecided    1  too short   0
+  CHLOR_SAB  reverse    0  forward   72  undecided    0  too short   0
+  CHRYS_ASI  reverse    0  forward   47  undecided    1  too short   0
+  OTOLE_GAR  reverse    0  forward   48  undecided    0  too short   0
+  all        reverse  177  forward 2027  undecided  134  too short   0
+control, 1,500 unmasked sequences: {'forward': 1373, 'undecided': 127}
+
+GORIL_GOR windows (loci with codon-matched DNA: 254 of 254; windows of >= 48 nt checked: 296): 12-mers of the window found in the HOMO_SAP CDS, forward vs reverse complement: {'neither': 282, 'forward': 13, 'reverse': 1}
