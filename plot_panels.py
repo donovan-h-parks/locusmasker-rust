@@ -28,7 +28,7 @@ from matplotlib.patches import Patch
 
 ap = argparse.ArgumentParser(); ap.add_argument("dir"); ap.add_argument("--plots", default="taxa,loci,bars")
 ap.add_argument("--out"); ap.add_argument("--png", action="store_true"); ap.add_argument("--cols", type=int, default=7)
-ap.add_argument("--top", type=int, default=100, help="panels per page: the N loci / taxa with the most masked cells")
+ap.add_argument("--top", type=int, default=100, help="panels per page: the N loci / taxa with the most masked sequences")
 ap.add_argument("--all", action="store_true", help="plot every locus and every taxon, however many (overrides --top)")
 ap.add_argument("--title", help="dataset name for the page headers (default: the directory name)")
 a = ap.parse_args(); out = a.out or f"{a.dir}/plots.pdf"
@@ -88,7 +88,7 @@ def panels(by, free=False):
     order = sorted(groups, key=lambda k: (-counts[k], k)); NTOT = len(order)
     if not a.all: order = order[:a.top]
     ncol = min(a.cols, len(order)); nrow = math.ceil(len(order) / ncol); pw, ph = 2.3, 2.25
-    fig, axs = plt.subplots(nrow, ncol, figsize=(pw * ncol + 0.7, ph * nrow + 1.35), dpi=110, squeeze=False)
+    fig, axs = plt.subplots(nrow, ncol, figsize=(pw * ncol + 0.7, ph * nrow + 1.5), dpi=110, squeeze=False)
     for ax, k in zip(axs.ravel(), order):
         idx = np.array(groups[k]); inf = INF[idx]
         # the panel's own range: the central 99.8% of its informative values with a margin, the same on
@@ -116,10 +116,10 @@ def panels(by, free=False):
         ax.set_autoscale_on(False)
         g = np.array([min(xlo, ylo) / 10, max(xhi, yhi) * 10])
         ax.plot(g, g, color=MODEL, lw=1.1, zorder=1); ax.plot(g, 2 * g, color=FLOOR, lw=0.8, ls=(0, (3, 2)), zorder=1); ax.plot(g, g / 3, color=FLOOR, lw=0.8, ls=(0, (3, 2)), zorder=1)
-        nm = int(MASKED[idx].sum()); n = len(idx); hot = nm >= 40
+        nm = int(MASKED[idx].sum()); n = len(idx)
         title, fs = fit_title(k, pw - 0.25)
-        ax.set_title(title, fontsize=fs, color=INK, fontweight="bold" if hot else "normal", pad=12, linespacing=0.95)
-        ax.text(0.5, 1.012, f"{nm} of {n} masked" + (f" · {int((~inf).sum())} with no differences" if (~inf).sum() else ""), transform=ax.transAxes,
+        ax.set_title(title, fontsize=fs, color=INK, pad=12, linespacing=0.95)
+        ax.text(0.5, 1.012, f"{nm} of {n} sequences masked ({100 * nm / n:.1f}%)", transform=ax.transAxes,
                 fontsize=6.3, color=INK if nm else FAINT, ha="center", va="bottom")
         ax.set_xlim(xlo, xhi); ax.set_ylim(ylo, yhi)
         if not free: ax.set_aspect("equal")
@@ -133,19 +133,21 @@ def panels(by, free=False):
     for ax in axs.ravel()[len(order):]: ax.axis("off")
     fig.supxlabel("expected divergence of the cell, median over its comparators (%)", fontsize=8, color=MUTED, y=0.004)
     fig.supylabel("observed divergence of the cell, median over its comparators (%)", fontsize=8, color=MUTED, x=0.004)
-    H = ph * nrow + 1.35
+    H = ph * nrow + 1.5
     unit = "loci" if by == "locus" else "taxa"
-    head = f"{NAME}  ·  {int(MASKED.sum()):,} of {len(R):,} cells masked ({int(DMK.sum()):,} too divergent, {int(SMK.sum()):,} too similar)" + (f"  ·  {len(order)} of {NTOT} {unit} shown" if len(order) < NTOT else f"  ·  one panel per {by}")
-    sub = ("one point = a cell (" + ("a taxon at this locus" if by == "locus" else "a locus of this taxon") + "), at the median over its comparators of expected and observed divergence  ·  "
-           "diagonal = each cell's own expectation  ·  dashed = the effect floors applied to each cell (2x above, 1/3 below)  ·  no line is fitted to a panel  ·  shape = verdict, colour grades it")
+    head = f"{NAME}  ·  {'Locus' if by == 'locus' else 'Taxon'} plot"
+    sub = f"{int(MASKED.sum()):,} of {len(R):,} sequences masked ({100 * MASKED.sum() / len(R):.1f}%)"
+    note = ("each point represents a single sequence (a single locus in a single taxon), diagonal line is where the observed is the same as the expected "
+            "divergence, dashed lines are the thresholds used for defining outliers (2x above, 1/3 below)" + (f"  ·  the {len(order)} most masked of {NTOT} {unit} are shown" if len(order) < NTOT else ""))
     fig.text(0.01, 1 - 0.14 / H, head, fontsize=11, color=INK, fontweight="bold", ha="left", va="top")
-    fig.text(0.01, 1 - 0.36 / H, sub, fontsize=7.5, color=MUTED, ha="left", va="top")
+    fig.text(0.01, 1 - 0.36 / H, sub, fontsize=9, color=INK, ha="left", va="top")
+    fig.text(0.01, 1 - 0.55 / H, note, fontsize=7.5, color=MUTED, ha="left", va="top")
     handles = [Line2D([], [], marker="o", ls="", color=c, ms=4.5, label=("passes · " if j == 0 else "") + f"fails {j} of {NC}") for j, c in GREYS.items()] + \
               [Line2D([], [], marker="^", ls="", color=c, mec=SURF, ms=6, label=("masked, too divergent · " if j == LOW else "") + f"fails {j} of {NC}") for j, c in REDS.items()] + \
               [Line2D([], [], marker="v", ls="", color=BLUES[j], mec=SURF, ms=6, label=("masked, too similar · " if j == 1 else "") + f"{j}{'+' if j == 3 else ''} pair{'s' if j > 1 else ''}") for j in (1, 2, 3)]
-    fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.005, 1 - 0.52 / H), ncol=min(len(handles), max(4, int((pw * ncol + 0.7) / 1.5))),
+    fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.005, 1 - 0.70 / H), ncol=min(len(handles), max(4, int((pw * ncol + 0.7) / 1.5))),
                frameon=False, fontsize=7, handletextpad=0.3, columnspacing=1.2, labelcolor=INK)
-    fig.tight_layout(rect=(0.012, 0.012, 1, 1 - 1.0 / H), h_pad=1.0, w_pad=0.5)
+    fig.tight_layout(rect=(0.012, 0.012, 1, 1 - 1.15 / H), h_pad=1.0, w_pad=0.5)
     return fig
 
 ROWS_PER_PAGE = 150
@@ -173,9 +175,10 @@ def bars_page(order, page, npages, nloci, NTOT):
     ax.set_yticks(ys); ax.set_yticklabels(order, fontsize=6); ax.set_ylim(-0.7, n - 0.3)
     ax.set_xlim(0, top * 1.12)
     ax.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
-    ax.set_xlabel("cells masked", fontsize=7.5, color=MUTED)
-    ax.set_title(f"{NAME}  ·  {int(MASKED.sum()):,} cells masked, by locus  ·  {nloci} of {NTOT} loci have a masked cell" + (f"  ·  page {page} of {npages}" if npages > 1 else ""),
-                 fontsize=9, color=INK, loc="left", fontweight="bold", pad=8)
+    ax.set_xlabel("sequences masked", fontsize=7.5, color=MUTED)
+    ax.set_title(f"{NAME}  ·  Number of sequences masked per locus" + (f"  ·  page {page} of {npages}" if npages > 1 else "") + "\n"
+                 f"{int(MASKED.sum()):,} of {len(R):,} sequences masked ({100 * MASKED.sum() / len(R):.1f}%)  ·  {nloci} of {NTOT} loci have a masked sequence",
+                 fontsize=9, color=INK, loc="left", pad=8, linespacing=1.3)
     handles = [Patch(facecolor=c, edgecolor=SURF, label=("too divergent · " if lab.startswith(f"fails {LOW}") else "") + lab) for lab, c, _ in right] + \
               [Patch(facecolor=c, edgecolor=SURF, label=("too similar · " if lab.startswith("1 ") else "") + lab) for lab, c, _ in left]
     ax.legend(handles=handles, frameon=False, fontsize=6.5, loc="lower right", labelcolor=INK, ncol=2)
