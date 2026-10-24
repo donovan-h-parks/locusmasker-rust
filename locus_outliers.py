@@ -202,6 +202,12 @@ _NEX_PUNCT = "()[]{}\\,;:=*\\'\"`+-<>"
 _NEX_VALID = {"dna": "GATCRYWSMKHBVDN", "nucleotide": "GATCRYWSMKHBVDN", "rna": "GAUCRYWSMKHBVDN", "protein": "BZXACDEFGHIKLMNPQRSTVWY*"}
 
 
+_RE_NEXUS_HEAD = re.compile(rb"\s*#NEXUS[ \t]*\r?\n", re.I)
+_RE_BEGIN = re.compile(rb"\s*begin\s+(\w+)\s*;", re.I)
+_RE_END = re.compile(rb"(?im)^[ \t]*end(?:block)?[ \t]*;")
+_RE_MATRIX = re.compile(rb"(?i)(?<![\w])matrix(?![\w])")
+
+
 def _safename(name):
     """a taxon or set name as Bio.Nexus writes it: quoted when it holds whitespace or punctuation"""
     safe = name.replace("'", "''")
@@ -231,32 +237,36 @@ def read_nexus_fast(path):
     """a NEXUS alignment read straight into byte rows: one DATA or CHARACTERS block (plain names, no comments, no
     quoting, format options limited to datatype / missing / gap / interleave) and at most one SETS block of charset
     and taxset statements with plain site ranges. Anything else raises _Unsupported and Bio.Nexus is used instead.
+    Works on the file's bytes with offsets, so the only copies made are the sequence rows themselves.
     Returns names, rows (bytearrays), charsets (name -> sorted 0-based sites), NexusInfo."""
     data = open(path, "rb").read()
-    if b"[" in data or b"'" in data or b'"' in data or b"(" in data or b"{" in data: raise _Unsupported("comments, quotes or ambiguity sets")
-    text = data.decode("ascii")                                   # NEXUS is ASCII; anything else goes to Bio.Nexus
-    blocks = re.split(r"(?i)\bbegin\s+", text)
-    if not blocks[0].strip().upper().startswith("#NEXUS") or len(blocks[0].split()) != 1: raise _Unsupported("text before the first block")
-    datab = setsb = None
-    for b in blocks[1:]:
-        m = re.match(r"(\w+)\s*;", b)
-        if not m: raise _Unsupported("block header")
-        kind = m.group(1).lower(); body = b[m.end():]
-        endm = re.search(r"(?i)\bend(?:block)?\s*;", body)
-        if not endm or body[endm.end():].strip(): raise _Unsupported("block end")
-        body = body[:endm.start()]
+    for ch in (b"[", b"'", b'"', b"(", b"{"):
+        if ch in data: raise _Unsupported("comments, quotes or ambiguity sets")
+    m = _RE_NEXUS_HEAD.match(data)
+    if not m: raise _Unsupported("header")
+    pos = m.end(); datab = setsb = None
+    while True:
+        m = _RE_BEGIN.match(data, pos)
+        if not m:
+            if data[pos:].strip(): raise _Unsupported("text between blocks")
+            break
+        kind = m.group(1).lower().decode("ascii"); body_start = m.end()
+        e = _RE_END.search(data, body_start)
+        if not e: raise _Unsupported("block end")
+        span = (body_start, e.start())
         if kind in ("data", "characters"):
             if datab is not None: raise _Unsupported("two data blocks")
-            datab = body
+            datab = span
         elif kind == "sets":
             if setsb is not None: raise _Unsupported("two sets blocks")
-            setsb = body
+            setsb = data[span[0]:span[1]]
         else: raise _Unsupported("block " + kind)
+        pos = e.end()
     if datab is None: raise _Unsupported("no data block")
     # the data block: dimensions, format, matrix
-    mi = re.search(r"(?i)\bmatrix\b", datab)
+    mi = _RE_MATRIX.search(data, datab[0], datab[1])
     if not mi: raise _Unsupported("no matrix")
-    header = datab[:mi.start()]; mtext = datab[mi.end():]
+    header = data[datab[0]:mi.start()].decode("ascii"); mstart = mi.end()
     cmds = [c.strip() for c in header.split(";") if c.strip()]
     ntax = nchar = None; opts = {}
     for c in cmds:
@@ -281,33 +291,44 @@ def read_nexus_fast(path):
     missing = opts.get("missing", "?")[0] if "missing" in opts else None
     gap = opts.get("gap", "-")[0] if "gap" in opts else None
     interleave = opts.get("interleave", "no") in ("yes", "")
-    end = mtext.find(";")
+    end = data.find(b";", mstart, datab[1])
     if end < 0: raise _Unsupported("matrix end")
-    if mtext[end + 1:].strip(): raise _Unsupported("text after the matrix")
+    if data[end + 1:datab[1]].strip(): raise _Unsupported("text after the matrix")
     names = []; rows = {}
-    lines = [ln for ln in mtext[:end].split("\n") if ln.strip()]
+    def lines_between(a_, b_):                                     # non-empty lines of data[a_:b_], one at a time
+        p_ = a_
+        while p_ < b_:
+            q = data.find(b"\n", p_, b_); q = b_ if q < 0 else q
+            ln = data[p_:q].strip()
+            if ln: yield ln
+            p_ = q + 1
     if interleave:
-        for ln in lines:
+        for ln in lines_between(mstart, end):
             w = ln.split(None, 1)
             if len(w) != 2: raise _Unsupported("interleaved line")
-            if w[0] not in rows: names.append(w[0]); rows[w[0]] = bytearray()
-            rows[w[0]] += "".join(w[1].split()).encode()
+            nm = w[0].decode("ascii")
+            if nm not in rows: names.append(nm); rows[nm] = bytearray()
+            rows[nm] += b"".join(w[1].split())
     else:
-        i = 0
-        while i < len(lines):
-            w = lines[i].split(None, 1); i += 1
-            if w[0] in rows: raise _Unsupported("duplicate taxon")
-            chars = "".join(w[1].split()) if len(w) > 1 else ""
-            while len(chars) < nchar and i < len(lines): chars += "".join(lines[i].split()); i += 1
-            names.append(w[0]); rows[w[0]] = bytearray(chars.encode())
+        pending = None
+        for ln in lines_between(mstart, end):
+            if pending is None:
+                w = ln.split(None, 1); nm = w[0].decode("ascii")
+                if nm in rows: raise _Unsupported("duplicate taxon")
+                names.append(nm); rows[nm] = bytearray(b"".join(w[1].split())) if len(w) > 1 else bytearray()
+                pending = nm if len(rows[nm]) < nchar else None
+            else:
+                rows[pending] += b"".join(ln.split())
+                if len(rows[pending]) >= nchar: pending = None
     if len(names) != ntax or any(len(rows[t]) != nchar for t in names): raise _Unsupported("matrix dimensions")
+    del data
     seen = np.zeros(256, bool)
     for t in names: seen |= np.bincount(np.frombuffer(rows[t], dtype=np.uint8), minlength=256) > 0
     valid = _NEX_VALID[dt]; valid = valid + valid.lower() + (missing or "") + (gap or "")
     if any(chr(c) not in valid for c in np.flatnonzero(seen)): raise _Unsupported("characters outside the datatype")
     # the sets block
     charsets = {}; taxsets = {}
-    for c in (setsb or "").split(";"):
+    for c in (setsb.decode("ascii") if setsb else "").split(";"):
         c = c.strip()
         if not c: continue
         m = re.match(r"(?is)(charset|taxset)\s+(\S+)\s*=\s*(.*)$", c)
@@ -824,8 +845,9 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, m, m_hi, m_xs, plateaus, rate, 
         # medians over each cell's comparators: the pairs laid out one row per cell, NaN beyond the cell's count
         row = np.repeat(np.arange(ncell), kc); col = np.arange(len(gi)) - np.repeat(starts, kc)
         def cell_median(v):
-            P = np.full((ncell, K_eff), np.nan); P[row, col] = v
-            return np.nanmedian(P, axis=1)
+            P = np.full((ncell, K_eff), np.nan); P[row, col] = v; P.sort(axis=1)            # NaN sorts last
+            ar = np.arange(ncell)
+            return (P[ar, (kc - 1) // 2] + P[ar, kc // 2]) / 2                             # np.median's mean of the middle two
         med_i = cell_median(ident); med_e = cell_median(100 - dhat); med_x = cell_median(excess)
         # the cell's extra divergence beyond expectation, as corrected distance in units of m (a typical
         # locus's divergence): a foreign or paralogous sequence adds a constant here whatever the comparator
