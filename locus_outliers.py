@@ -596,32 +596,45 @@ def run_z(a, names, loci, X, S, W, m, m_hi, m_xs, plateaus, rate, tie, masked, K
         if fail_lo.any():
             fail_lo[fail_lo] = bb_tails(mis[fail_lo], o[fail_lo], E_lo[fail_lo], phi, False) < logbar
 
-        pairs.writelines(f"{name}\t{names[gi[j]]}\t{rk[j] + 1}\t{names[ci[j]]}\t{mph[j]:.3f}\t{int(o[j])}"
-                         f"\t{ident[j]:.2f}\t{100 - dhat[j]:.2f}\t{excess[j]:.1f}\t{int(fail_hi[j])}\t{int(fail_lo[j])}\n"
-                         for j in range(len(gi)))
+        # pairs.tsv: the columns formatted once each, then joined row by row
+        c_g = [names[i] for i in gi.tolist()]; c_c = [names[i] for i in ci.tolist()]
+        c_rk = [str(r + 1) for r in rk.tolist()]; c_mph = ["%.3f" % v for v in mph.tolist()]; c_o = [str(int(v)) for v in o.tolist()]
+        c_id = ["%.2f" % v for v in ident.tolist()]; c_ex = ["%.2f" % v for v in (100 - dhat).tolist()]; c_xs = ["%.1f" % v for v in excess.tolist()]
+        c_fh = [str(int(v)) for v in fail_hi.tolist()]; c_fl = [str(int(v)) for v in fail_lo.tolist()]
+        pairs.writelines(f"{name}\t{a1}\t{a2}\t{a3}\t{a4}\t{a5}\t{a6}\t{a7}\t{a8}\t{a9}\t{a10}\n"
+                         for a1, a2, a3, a4, a5, a6, a7, a8, a9, a10 in zip(c_g, c_rk, c_c, c_mph, c_o, c_id, c_ex, c_xs, c_fh, c_fl))
 
-        # ---- divergent side: majority over comparators
-        starts = np.r_[0, np.cumsum(ncomp[idx])[:-1]]
-        fcount = {j: 0 for j in range(M_eff, K_eff + 1)}; namb = 0
-        crow = []
-        for g, s0, kc in zip(idx, starts, ncomp[idx]):
-            slc = slice(s0, s0 + kc)
-            nf = int(fail_hi[slc].sum()); nsim = int(fail_lo[slc].sum())
-            flag = int(kc >= K_eff and nf >= M_eff)
-            amb = int(kc < K_eff and nf >= kc // 2 + 1)
-            if flag: fcount[nf] += 1
-            namb += amb
-            med_i = float(np.median(ident[slc])); med_e = float(np.median(100 - dhat[slc])); med_x = float(np.median(excess[slc]))
-            # the cell's extra divergence beyond expectation, as corrected distance in units of m (a typical
-            # locus's divergence): a foreign or paralogous sequence adds a constant here whatever the comparator
-            exm = float((corr(100 - med_i) - corr(100 - med_e)) / rate_c)
-            crow.append(f"{name}\t{names[g]}\t{kc}\t{names[ci[s0]]}\t{mph[s0]:.3f}\t{nres[g]}\t{int(o[s0])}"
-                        f"\t{ident[s0]:.2f}\t{100 - dhat[s0]:.2f}\t{excess[s0]:.1f}\t{med_i:.2f}\t{med_e:.2f}\t{med_x:.1f}"
-                        f"\t{nf}\t{nsim}\t{flag}\t{amb}\t{exm:.3f}\n")
-            if (flag or amb) and mask_hi:
-                mask_cell(name, g, sites, "divergent",
-                          [nf, nsim, names[ci[s0]], f"{mph[s0]:.3f}", f"{med_i:.2f}", f"{med_e:.2f}", f"{med_x:.1f}", "", f"{exm:.3f}"])
-        cells.writelines(crow)
+        # ---- divergent side: majority over comparators, every cell at once
+        kc = ncomp[idx]; ncell = len(idx)
+        starts = np.r_[0, np.cumsum(kc)[:-1]]
+        nf = np.add.reduceat(fail_hi.astype(np.int64), starts); nsim = np.add.reduceat(fail_lo.astype(np.int64), starts)
+        flag = (kc >= K_eff) & (nf >= M_eff)
+        amb = (kc < K_eff) & (nf >= kc // 2 + 1)
+        fc = np.bincount(nf[flag], minlength=K_eff + 1); fcount = {j: int(fc[j]) for j in range(M_eff, K_eff + 1)}
+        namb = int(amb.sum())
+        # medians over each cell's comparators: the pairs laid out one row per cell, NaN beyond the cell's count
+        row = np.repeat(np.arange(ncell), kc); col = np.arange(len(gi)) - np.repeat(starts, kc)
+        def cell_median(v):
+            P = np.full((ncell, K_eff), np.nan); P[row, col] = v
+            return np.nanmedian(P, axis=1)
+        med_i = cell_median(ident); med_e = cell_median(100 - dhat); med_x = cell_median(excess)
+        # the cell's extra divergence beyond expectation, as corrected distance in units of m (a typical
+        # locus's divergence): a foreign or paralogous sequence adds a constant here whatever the comparator
+        exm = (corr(100 - med_i) - corr(100 - med_e)) / rate_c
+        s0 = starts
+        c_g = [names[i] for i in idx.tolist()]; c_kc = [str(v) for v in kc.tolist()]; c_c = [names[i] for i in ci[s0].tolist()]
+        c_mph = ["%.3f" % v for v in mph[s0].tolist()]; c_nres = [str(v) for v in nres[idx].tolist()]; c_o = [str(int(v)) for v in o[s0].tolist()]
+        c_id = ["%.2f" % v for v in ident[s0].tolist()]; c_ex = ["%.2f" % v for v in (100 - dhat[s0]).tolist()]; c_xs = ["%.1f" % v for v in excess[s0].tolist()]
+        c_mi = ["%.2f" % v for v in med_i.tolist()]; c_me = ["%.2f" % v for v in med_e.tolist()]; c_mx = ["%.1f" % v for v in med_x.tolist()]
+        c_nf = [str(v) for v in nf.tolist()]; c_ns = [str(v) for v in nsim.tolist()]; c_fl = [str(int(v)) for v in flag.tolist()]; c_am = [str(int(v)) for v in amb.tolist()]
+        c_exm = ["%.3f" % v for v in exm.tolist()]
+        cells.writelines(f"{name}\t{a1}\t{a2}\t{a3}\t{a4}\t{a5}\t{a6}\t{a7}\t{a8}\t{a9}\t{a10}\t{a11}\t{a12}\t{a13}\t{a14}\t{a15}\t{a16}\t{a17}\n"
+                         for a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17
+                         in zip(c_g, c_kc, c_c, c_mph, c_nres, c_o, c_id, c_ex, c_xs, c_mi, c_me, c_mx, c_nf, c_ns, c_fl, c_am, c_exm))
+        if mask_hi:
+            for q in np.flatnonzero(flag | amb).tolist():
+                mask_cell(name, int(idx[q]), sites, "divergent",
+                          [int(nf[q]), int(nsim[q]), c_c[q], c_mph[q], c_mi[q], c_me[q], c_mx[q], "", c_exm[q]])
 
         # ---- similar side: any failing pair; LR direction attribution on shared sites
         simpairs = {}
