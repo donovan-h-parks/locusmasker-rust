@@ -108,6 +108,7 @@ for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):   # BL
     os.environ.setdefault(_v, "1")                                          # small); --threads parallelises over loci and pairs
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
+from itertools import chain
 
 PROTEIN = "ACDEFGHIKLMNPQRSTVWY"
 DNA = "ACGT"
@@ -461,25 +462,45 @@ def log_fact(upto):
     global _LF
     if len(_LF) <= upto: _LF = np.concatenate([[0.0], np.cumsum(np.log(np.arange(1, upto + 1, dtype=float)))])
     return _LF
-def _logpmf(k, pi, n, d, a_, b_, cpair, phi):
-    """log pmf of the mismatch count k for the pair pi: binomial(n, d), or beta-binomial when the locus is dispersed
-    (pairs with fewer than 2 sites stay binomial)"""
-    ni = n[pi]; nint = ni.astype(np.int64); lf = log_fact(int(n.max()) + 1)
-    lchoose = lf[nint] - lf[k] - lf[nint - k]; kf = k.astype(float)
-    lbin = lchoose + kf * np.log(d)[pi] + (ni - kf) * np.log(1 - d)[pi]
-    if phi < 1e-8: return lbin
-    lbb = lchoose + lgamma_v(kf + a_[pi]) + lgamma_v((nint - k).astype(float) + b_[pi]) + cpair[pi]
-    return np.where((n >= 2)[pi], lbb, lbin)
-def _logsum_groups(lp, cnt):
-    """log of the sum of exp(lp) within consecutive groups of sizes cnt (every cnt > 0)"""
-    st = np.cumsum(cnt) - cnt; mx = np.maximum.reduceat(lp, st)
-    return mx + np.log(np.add.reduceat(np.exp(lp - np.repeat(mx, cnt)), st))
+def _block_terms(k0, cnt, n, d, a_, b_, cpair, phi, B):
+    """log pmf of the mismatch counts k0[i] .. k0[i] + cnt[i] - 1 for each pair i, as a (pairs, B) array with -inf
+    beyond cnt. Binomial coefficients from the log-factorial table; the beta-binomial's two gamma terms from one
+    log-gamma per pair at the block's first term and the recurrence lgamma(x + 1) = lgamma(x) + log x along the
+    block, which costs a log per term instead of a log-gamma."""
+    nint = n.astype(np.int64); lf = log_fact(int(n.max()) + 1)
+    j = np.arange(B); kk = k0[:, None] + j[None, :]; valid = j[None, :] < cnt[:, None]
+    ksafe = np.where(valid, kk, 0); nk = np.where(valid, nint[:, None] - kk, 0)
+    lchoose = lf[nint][:, None] - lf[ksafe] - lf[nk]
+    kf = ksafe.astype(float); nf_ = n[:, None]
+    lbin = lchoose + kf * np.log(d)[:, None] + (nf_ - kf) * np.log(1 - d)[:, None]
+    if phi < 1e-8: lp = lbin
+    else:
+        k0f = k0.astype(float)
+        base_a = lgamma_v(k0f + a_)                                            # lgamma(k0 + a), then + log(k0 + a + t)
+        inc_a = np.log(k0f[:, None] + a_[:, None] + j[None, :])
+        lg_a = base_a[:, None] + np.cumsum(inc_a, axis=1) - inc_a
+        x = n - k0f + b_                                                        # lgamma(n - k0 + b), then - log(x - t)
+        base_b = lgamma_v(x)
+        inc_b = np.log(np.maximum(x[:, None] - (j[None, :] + 1), 1e-300))
+        cs_b = np.cumsum(inc_b, axis=1)
+        lg_b = base_b[:, None] - np.concatenate([np.zeros((len(k0), 1)), cs_b[:, :-1]], axis=1)
+        lbb = lchoose + lg_a + lg_b + cpair[:, None]
+        lp = np.where((n >= 2)[:, None], lbb, lbin)
+    return np.where(valid, lp, -np.inf)
+
+
+def _logsumexp_rows(lp):
+    mx = np.max(lp, axis=1); mx = np.where(np.isfinite(mx), mx, 0.0)
+    return mx + np.log(np.sum(np.exp(lp - mx[:, None]), axis=1))
+
+
 def bb_tails(o, n, E, phi, upper):
     """log tail probability of the mismatch count among n shared sites: binomial with mean E, or, when the locus
     is overdispersed, beta-binomial with mean E and variance E + phi E^2. upper -> log P(X >= o), else
-    log P(X <= o). All pairs at once. The lower tail is the exact sum of its terms; the upper tail is summed
-    directly from o upward in blocks of 64 terms until a block adds less than 1e-20 of the running sum while
-    the pmf is falling (or n is reached), so far tails come out to full precision instead of as 1 - P(X < o)."""
+    log P(X <= o). All pairs at once, in blocks of 64 terms per pair. The lower tail is the exact sum of its
+    terms; the upper tail is summed directly from the observed count upward until a block adds less than 1e-20
+    of the running sum while the pmf is falling (or n is reached), so far tails come out to full precision
+    instead of as 1 - P(X < o). Both are floored at log(1e-300) and capped at log(1)."""
     o = np.asarray(o, float); n = np.asarray(n, float); E = np.asarray(E, float); m = len(o)
     if m == 0: return np.empty(0)
     E = np.minimum(np.maximum(E, 1e-9), n * (1 - 1e-9)); d = E / n
@@ -489,26 +510,23 @@ def bb_tails(o, n, E, phi, upper):
             rho = np.where(n >= 2, np.minimum((d + phi * n * d) / ((1 - d) * np.maximum(n - 1, 1)), 1 - 1e-6), 0.5)
         a_ = d * (1 / rho - 1); b_ = (1 - d) * (1 / rho - 1)
         cpair = -lgamma_v(n + a_ + b_) - (lgamma_v(a_) + lgamma_v(b_) - lgamma_v(a_ + b_))
-    oi = o.astype(np.int64); nint = n.astype(np.int64)
-    if not upper:
-        cnt = oi + 1; pi = np.repeat(np.arange(m), cnt)
-        k = np.arange(int(cnt.sum())) - np.repeat(np.cumsum(cnt) - cnt, cnt)
-        ls = _logsum_groups(_logpmf(k, pi, n, d, a_, b_, cpair, phi), cnt)
-        return np.maximum(np.minimum(ls, 0.0), _LOG_FLOOR)          # log P(X <= o), capped at log 1, floored like the loop's 1e-300
-    # upper tail: P(X >= o), summed from k = o upward
-    out = np.full(m, -np.inf); active = np.flatnonzero(oi <= nint); kstart = oi.copy(); B = 64
+    oi = o.astype(np.int64); nint = n.astype(np.int64); B = 64
+    out = np.full(m, -np.inf)
+    if upper: active = np.flatnonzero(oi <= nint); kstart = oi.copy(); last = nint
+    else: active = np.arange(m); kstart = np.zeros(m, np.int64); last = oi
     while len(active):
-        cnt = np.minimum(B, nint[active] - kstart[active] + 1); has = cnt > 0
+        cnt = np.minimum(B, last[active] - kstart[active] + 1); has = cnt > 0
         active, cnt = active[has], cnt[has]
         if not len(active): break
-        pi = np.repeat(active, cnt); k = np.repeat(kstart[active], cnt) + (np.arange(int(cnt.sum())) - np.repeat(np.cumsum(cnt) - cnt, cnt))
-        lp = _logpmf(k, pi, n, d, a_, b_, cpair, phi)
-        blk = _logsum_groups(lp, cnt)
+        lp = _block_terms(kstart[active], cnt, n[active], d[active], None if a_ is None else a_[active],
+                          None if b_ is None else b_[active], None if cpair is None else cpair[active], phi, B)
+        blk = _logsumexp_rows(lp)
         out[active] = np.logaddexp(out[active], blk)
-        ends = np.cumsum(cnt) - 1; starts = ends - cnt + 1
-        falling = lp[ends] < lp[starts]
-        done = (kstart[active] + cnt > nint[active]) | (falling & (blk < out[active] - 46.0))
         kstart[active] += cnt
+        done = kstart[active] > last[active]
+        if upper:
+            rows = np.arange(len(active)); falling = lp[rows, cnt - 1] < lp[rows, 0]
+            done |= falling & (blk < out[active] - 46.0)
         active = active[~done]
     return np.maximum(np.minimum(out, 0.0), _LOG_FLOOR)
 
@@ -841,13 +859,11 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, m, m_hi, m_xs, plateaus, rate, 
         if fail_lo.any():
             fail_lo[fail_lo] = bb_tails(mis[fail_lo], o[fail_lo], E_lo[fail_lo], phi, False) < logbar
 
-        # pairs.tsv: the columns formatted once each, then joined row by row
-        c_g = [names[i] for i in gi.tolist()]; c_c = [names[i] for i in ci.tolist()]
-        c_rk = [str(r + 1) for r in rk.tolist()]; c_mph = ["%.3f" % v for v in mph.tolist()]; c_o = [str(int(v)) for v in o.tolist()]
-        c_id = ["%.2f" % v for v in ident.tolist()]; c_ex = ["%.2f" % v for v in (100 - dhat).tolist()]; c_xs = ["%.1f" % v for v in excess.tolist()]
-        c_fh = [str(int(v)) for v in fail_hi.tolist()]; c_fl = [str(int(v)) for v in fail_lo.tolist()]
-        pairs.writelines(f"{name}\t{a1}\t{a2}\t{a3}\t{a4}\t{a5}\t{a6}\t{a7}\t{a8}\t{a9}\t{a10}\n"
-                         for a1, a2, a3, a4, a5, a6, a7, a8, a9, a10 in zip(c_g, c_rk, c_c, c_mph, c_o, c_id, c_ex, c_xs, c_fh, c_fl))
+        # pairs.tsv: one %-format of the whole locus's rows (the locus name is part of the format)
+        lname = name.replace("%", "%%"); c_g = [names[i] for i in gi.tolist()]; c_c = [names[i] for i in ci.tolist()]
+        pairs.write((lname + "\t%s\t%d\t%s\t%.3f\t%d\t%.2f\t%.2f\t%.1f\t%d\t%d\n") * len(gi) % tuple(chain.from_iterable(zip(
+            c_g, (rk + 1).tolist(), c_c, mph.tolist(), o.astype(np.int64).tolist(), ident.tolist(), (100 - dhat).tolist(), excess.tolist(),
+            fail_hi.astype(np.int64).tolist(), fail_lo.astype(np.int64).tolist()))))
 
         # ---- divergent side: majority over comparators, every cell at once
         kc = ncomp[idx]; ncell = len(idx)
@@ -868,19 +884,15 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, m, m_hi, m_xs, plateaus, rate, 
         # locus's divergence): a foreign or paralogous sequence adds a constant here whatever the comparator
         exm = (corr(100 - med_i) - corr(100 - med_e)) / rate_c
         s0 = starts
-        c_g = [names[i] for i in idx.tolist()]; c_kc = [str(v) for v in kc.tolist()]; c_c = [names[i] for i in ci[s0].tolist()]
-        c_mph = ["%.3f" % v for v in mph[s0].tolist()]; c_nres = [str(v) for v in nres[idx].tolist()]; c_o = [str(int(v)) for v in o[s0].tolist()]
-        c_id = ["%.2f" % v for v in ident[s0].tolist()]; c_ex = ["%.2f" % v for v in (100 - dhat[s0]).tolist()]; c_xs = ["%.1f" % v for v in excess[s0].tolist()]
-        c_mi = ["%.2f" % v for v in med_i.tolist()]; c_me = ["%.2f" % v for v in med_e.tolist()]; c_mx = ["%.1f" % v for v in med_x.tolist()]
-        c_nf = [str(v) for v in nf.tolist()]; c_ns = [str(v) for v in nsim.tolist()]; c_fl = [str(int(v)) for v in flag.tolist()]; c_am = [str(int(v)) for v in amb.tolist()]
-        c_exm = ["%.3f" % v for v in exm.tolist()]
-        cells.writelines(f"{name}\t{a1}\t{a2}\t{a3}\t{a4}\t{a5}\t{a6}\t{a7}\t{a8}\t{a9}\t{a10}\t{a11}\t{a12}\t{a13}\t{a14}\t{a15}\t{a16}\t{a17}\n"
-                         for a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17
-                         in zip(c_g, c_kc, c_c, c_mph, c_nres, c_o, c_id, c_ex, c_xs, c_mi, c_me, c_mx, c_nf, c_ns, c_fl, c_am, c_exm))
+        c_g = [names[i] for i in idx.tolist()]; c_c = [names[i] for i in ci[s0].tolist()]
+        cells.write((lname + "\t%s\t%d\t%s\t%.3f\t%d\t%d\t%.2f\t%.2f\t%.1f\t%.2f\t%.2f\t%.1f\t%d\t%d\t%d\t%d\t%.3f\n") * ncell % tuple(chain.from_iterable(zip(
+            c_g, kc.tolist(), c_c, mph[s0].tolist(), nres[idx].tolist(), o[s0].astype(np.int64).tolist(), ident[s0].tolist(), (100 - dhat[s0]).tolist(),
+            excess[s0].tolist(), med_i.tolist(), med_e.tolist(), med_x.tolist(), nf.tolist(), nsim.tolist(), flag.astype(np.int64).tolist(),
+            amb.astype(np.int64).tolist(), exm.tolist()))))
         if mask_hi:
             for q in np.flatnonzero(flag | amb).tolist():
                 mask_cell(name, int(idx[q]), sites, "divergent",
-                          [int(nf[q]), int(nsim[q]), c_c[q], c_mph[q], c_mi[q], c_me[q], c_mx[q], "", c_exm[q]])
+                          [int(nf[q]), int(nsim[q]), c_c[q], "%.3f" % mph[s0[q]], "%.2f" % med_i[q], "%.2f" % med_e[q], "%.1f" % med_x[q], "", "%.3f" % exm[q]])
 
         # ---- similar side: any failing pair; LR direction attribution on shared sites
         simpairs = {}
