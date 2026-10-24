@@ -383,7 +383,7 @@ def matches():
         idx, best, ident, close = best_matches(names, X, sites_of, t)
         ok = best != ""; mk = MASKED[idx] & ok; um = ~MASKED[idx] & ok
         cm = collections.Counter(best[mk]); cu = collections.Counter(best[um]); nm, nu = int(mk.sum()), int(um.sum())
-        taxa_sorted = [u for u, _ in cm.most_common()]
+        taxa_sorted = sorted({u for u in cm} | {u for u in cu if cu[u] / max(nu, 1) * nm >= 1}, key=lambda u: (-cm[u], -cu[u]))   # a taxon the unmasked sequences predict stays on the axis even with no bar
         if len(taxa_sorted) > MAXBARS:
             rest = taxa_sorted[MAXBARS - 1:]; taxa_sorted = taxa_sorted[:MAXBARS - 1] + [f"other ({len(rest)} taxa)"]
             cm[taxa_sorted[-1]] = sum(cm[u] for u in rest); cu[taxa_sorted[-1]] = sum(cu[u] for u in rest)
