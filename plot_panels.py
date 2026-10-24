@@ -214,8 +214,12 @@ def hist_facet(fig, slot, by):
             for s_ in ("top", "right"): a_x.spines[s_].set_visible(False)
             for s_ in ("left", "bottom"): a_x.spines[s_].set_color(SPINE)
             a_x.tick_params(colors=MUTED, length=0, labelsize=7); a_x.yaxis.grid(True, color=GRID, lw=0.5); a_x.set_axisbelow(True)
-            a_x.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(5, integer=True)); a_x.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(8, integer=True))
+            a_x.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(5, integer=True))
     edge = lambda b: (bins[b][0] - 0.5, bins[b][1] + 0.5)
+    blabel = lambda b: str(bins[b][0]) if bins[b][0] == bins[b][1] else f"{bins[b][0]}–{bins[b][1]}"
+    def label_bins(a_x, bs):                                          # every bar carries its range; thinned and turned when crowded
+        bs = [b for b in bs if heights[b] > 0 or len(bs) <= 12]
+        a_x.set_xticks([centres[b] for b in bs]); a_x.set_xticklabels([blabel(b) for b in bs], fontsize=6.5 if len(bs) <= 12 else 6, rotation=0 if len(bs) <= 12 else 90)
     if xbreak:
         ax[0, 0].set_xlim(-0.6, edge(xbreak[0])[1] + 0.6 * w); ax[0, 1].set_xlim(edge(xbreak[1])[0] - 0.6 * w, edge(len(bins) - 1)[1] + 0.6 * w)
         for r in range(nrow):
@@ -224,9 +228,9 @@ def hist_facet(fig, slot, by):
             for a_x, x0 in ((ax[r, 0], 1), (ax[r, 1], 0)):
                 a_x.plot((x0 - d, x0 + d), (-2 * d, 2 * d), transform=a_x.transAxes, color=INK, clip_on=False, lw=0.9)
         ax[0, 1].text(0.0, 1.0, "x axis broken", transform=ax[0, 1].transAxes, fontsize=6.5, color="#b0171f", ha="left", va="bottom")
-        for r in range(nrow): ax[r, 1].xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(3, integer=True))
+        label_bins(ax[nrow - 1, 0], range(0, xbreak[0] + 1)); label_bins(ax[nrow - 1, 1], range(xbreak[1], len(bins)))
     else:
-        ax[0, 0].set_xlim(-0.6, edge(len(bins) - 1)[1] + 0.6 * w)
+        ax[0, 0].set_xlim(-0.6, edge(len(bins) - 1)[1] + 0.6 * w); label_bins(ax[nrow - 1, 0], range(len(bins)))
     if ybreak:
         top_lo = max(int(heights[1:].max()), 1) * 1.25; ax[1, 0].set_ylim(0, top_lo); ax[0, 0].set_ylim(heights[0] * 0.75, heights[0] * 1.12)
         for c in range(ncol):
@@ -244,7 +248,7 @@ def hist_facet(fig, slot, by):
             col_ = 1 if (xbreak and b >= xbreak[1]) else 0
             ax[lab_row, col_].text(centres[b], heights[b] + ax[lab_row, 0].get_ylim()[1] * 0.012, f"{heights[b]:,}", ha="center", va="bottom", fontsize=7, color=INK)
     unit = "loci" if by == "locus" else "taxa"
-    ax[nrow - 1, 0].set_xlabel(f"sequences masked in the {by}" + (f"  (bins of {w})" if w > 1 else ""), fontsize=8, color=MUTED); ax[nrow - 1, 0].set_ylabel(unit, fontsize=8, color=MUTED)
+    ax[nrow - 1, 0].set_xlabel(f"sequences masked in the {by}", fontsize=8, color=MUTED); ax[nrow - 1, 0].set_ylabel(unit, fontsize=8, color=MUTED)
     if ybreak: ax[0, 0].set_ylabel(unit, fontsize=8, color=MUTED)
     ax[0, 0].set_title(f"by {by}  ·  {len(nmask)} of {NTOT} {unit} have a masked sequence", fontsize=8.5, color=INK, loc="left", pad=6)
     return [Patch(facecolor=GREY3[0], edgecolor=SURF, label="no masked sequence")] + \
