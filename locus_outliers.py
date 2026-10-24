@@ -120,6 +120,7 @@ MIN_LOCI_FOR_M = 5      # pairs overlapping in fewer loci have no m and are neve
 MIN_LOCI_PER_TAXON = 10 # a taxon needs this many loci with >= fit-overlap residues to take part
 MIN_FIT_PAIRS = 8       # a locus needs this many fit pairs to be tested (or to get a rate)
 LR_BAR = 10.0           # |2 ln LR| above which a similar event's direction is attributed
+TEST_THREAD_PAIRS = 4000  # --threads applies to the test stage only when a locus has this many comparisons on average
 
 
 # ------------------------------------------------------------------ input
@@ -812,35 +813,43 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, m, m_hi, m_xs, plateaus, rate, 
         return dict(idx=idx, gi=gi, ci=ci, rk=rk, o=o, same=same, mis=mis, ident=ident, dob=dob, mp=mp, mph=mph, fit=fit,
                     ov=ov, sm=sm, ncomp=ncomp, nres=nres, expect=expect, corr=corr, rate_c=rate_c)
 
+    # worker threads pay off in the test only when a locus's arrays are large (thousands of pairs): with small loci
+    # the per-call interpreter-lock traffic of many small numpy operations makes threads slower than one
+    ntested = sum(1 for t in sel if (t[2] > 0).any())
+    pool = ThreadPoolExecutor(a.threads) if a.threads > 1 and Npairs / max(ntested, 1) >= TEST_THREAD_PAIRS else None
     # dispersion pre-pass: the robust spread of observed/expected among each locus's resolved comparator
     # pairs with enough expected mismatches, with the Poisson part removed: Var(O/E) = 1/E + phi
-    phi_hat = np.full(nloc, np.nan); phi_n = np.zeros(nloc)
-    for li in range(nloc):
+    def locus_phi(li):
         L = locus_pairs(li)
-        if isinstance(L, str): continue
+        if isinstance(L, str): return np.nan, 0.0
         E = L["o"] * L["expect"](L["mph"]) / 100.0
         use = L["fit"] & (E >= PHI_MIN_E)
-        if use.sum() < 10: continue
+        if use.sum() < 10: return np.nan, 0.0
         r = np.log((L["mis"][use] + HALF) / E[use])
         s_ = 1.4826 * float(np.median(np.abs(r - np.median(r))))
-        phi_hat[li] = max(s_ ** 2 - float(np.median(1.0 / E[use])), 0.0); phi_n[li] = use.sum()
+        return max(s_ ** 2 - float(np.median(1.0 / E[use])), 0.0), float(use.sum())
+    phi_hat = np.full(nloc, np.nan); phi_n = np.zeros(nloc)
+    for li, (h, c) in enumerate(pool.map(locus_phi, range(nloc)) if pool else map(locus_phi, range(nloc))):
+        phi_hat[li] = h; phi_n[li] = c
     okp = phi_n > 0
     phi_bar = wmedian1(phi_hat[okp], phi_n[okp]) if okp.any() else 0.0
     print(f"dispersion: dataset-wide phi {phi_bar:.4f} (robust SD of O/E beyond Poisson {math.sqrt(phi_bar):.2f}); "
           f"per-locus phi 10/50/90%: {np.nanpercentile(phi_hat[okp], [10, 50, 90]).round(4).tolist() if okp.any() else 'n/a'}", file=sys.stderr)
+    logbar = math.log(a.alpha / max(2 * Npairs, 1))
+    zeros = "\t".join("0" for _ in range(M_eff, K_eff + 1))
 
-    for li, (name, sites) in enumerate(loci):
+    def process_locus(li):
+        """everything the test decides and writes for one locus, as text blocks and mask actions; touches no shared
+        state, so loci can be processed in parallel and written in order"""
+        name, sites = loci[li]
         L = locus_pairs(li)
-        skip = L if isinstance(L, str) else None
-        if not skip:
-            idx, gi, ci, rk, o, same, mis, ident, dob, mp, mph, fit, ov, sm, ncomp, nres, expect, corr, rate_c = \
-                (L[k] for k in ("idx", "gi", "ci", "rk", "o", "same", "mis", "ident", "dob", "mp", "mph", "fit", "ov", "sm", "ncomp", "nres", "expect", "corr", "rate_c"))
-            phi = (phi_n[li] * (phi_hat[li] if okp[li] else 0.0) + PHI_N0 * phi_bar) / (phi_n[li] + PHI_N0)
-        if skip:
-            per.write(f"{name}\t{len(sites)}\t{int((nres > 0).sum())}\t0\t0\t"
-                      f"{rate[li]:.3f}\t{plateaus[li]:.1f}\t{kq:.2f}\t0\t"
-                      + "\t".join("0" for _ in range(M_eff, K_eff + 1)) + f"\t0\t0\t{skip}\n")
-            print(f"{name}: {skip}", file=sys.stderr); continue
+        if isinstance(L, str):
+            nres = sel[li][3]
+            return dict(skipped=True, log=f"{name}: {L}",
+                        per=f"{name}\t{len(sites)}\t{int((nres > 0).sum())}\t0\t0\t{rate[li]:.3f}\t{plateaus[li]:.1f}\t{kq:.2f}\t0\t{zeros}\t0\t0\t{L}\n")
+        idx, gi, ci, rk, o, same, mis, ident, dob, mp, mph, fit, ov, sm, ncomp, nres, expect, corr, rate_c = \
+            (L[k] for k in ("idx", "gi", "ci", "rk", "o", "same", "mis", "ident", "dob", "mp", "mph", "fit", "ov", "sm", "ncomp", "nres", "expect", "corr", "rate_c"))
+        phi = (phi_n[li] * (phi_hat[li] if okp[li] else 0.0) + PHI_N0 * phi_bar) / (phi_n[li] + PHI_N0)
 
         # the count test with a quasi-Poisson variance: Var(O) = E + phi E^2, phi the locus's dispersion
         # (shrunk toward the dataset's); phi = 0 is the plain Poisson test
@@ -851,7 +860,6 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, m, m_hi, m_xs, plateaus, rate, 
         # exact binomial tails over the shared sites (beta-binomial when the locus is overdispersed), evaluated
         # only for the pairs that clear the effect floors; a pair fails when its tail probability is below alpha / 2N
         excess = mis - E
-        logbar = math.log(a.alpha / max(2 * Npairs, 1))
         fail_hi = excess > (a.min_ratio - 1) * E
         if fail_hi.any():
             fail_hi[fail_hi] = bb_tails(mis[fail_hi], o[fail_hi], E[fail_hi], phi, True) < logbar
@@ -862,9 +870,9 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, m, m_hi, m_xs, plateaus, rate, 
 
         # pairs.tsv: one %-format of the whole locus's rows (the locus name is part of the format)
         lname = name.replace("%", "%%"); c_g = [names[i] for i in gi.tolist()]; c_c = [names[i] for i in ci.tolist()]
-        pairs.write((lname + "\t%s\t%d\t%s\t%.3f\t%d\t%.2f\t%.2f\t%.1f\t%d\t%d\n") * len(gi) % tuple(chain.from_iterable(zip(
+        pairs_block = (lname + "\t%s\t%d\t%s\t%.3f\t%d\t%.2f\t%.2f\t%.1f\t%d\t%d\n") * len(gi) % tuple(chain.from_iterable(zip(
             c_g, (rk + 1).tolist(), c_c, mph.tolist(), o.astype(np.int64).tolist(), ident.tolist(), (100 - dhat).tolist(), excess.tolist(),
-            fail_hi.astype(np.int64).tolist(), fail_lo.astype(np.int64).tolist()))))
+            fail_hi.astype(np.int64).tolist(), fail_lo.astype(np.int64).tolist())))
 
         # ---- divergent side: majority over comparators, every cell at once
         kc = ncomp[idx]; ncell = len(idx)
@@ -886,14 +894,15 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, m, m_hi, m_xs, plateaus, rate, 
         exm = (corr(100 - med_i) - corr(100 - med_e)) / rate_c
         s0 = starts
         c_g = [names[i] for i in idx.tolist()]; c_c = [names[i] for i in ci[s0].tolist()]
-        cells.write((lname + "\t%s\t%d\t%s\t%.3f\t%d\t%d\t%.2f\t%.2f\t%.1f\t%.2f\t%.2f\t%.1f\t%d\t%d\t%d\t%d\t%.3f\n") * ncell % tuple(chain.from_iterable(zip(
+        cells_block = (lname + "\t%s\t%d\t%s\t%.3f\t%d\t%d\t%.2f\t%.2f\t%.1f\t%.2f\t%.2f\t%.1f\t%d\t%d\t%d\t%d\t%.3f\n") * ncell % tuple(chain.from_iterable(zip(
             c_g, kc.tolist(), c_c, mph[s0].tolist(), nres[idx].tolist(), o[s0].astype(np.int64).tolist(), ident[s0].tolist(), (100 - dhat[s0]).tolist(),
             excess[s0].tolist(), med_i.tolist(), med_e.tolist(), med_x.tolist(), nf.tolist(), nsim.tolist(), flag.astype(np.int64).tolist(),
-            amb.astype(np.int64).tolist(), exm.tolist()))))
+            amb.astype(np.int64).tolist(), exm.tolist())))
+        masks = []
         if mask_hi:
             for q in np.flatnonzero(flag | amb).tolist():
-                mask_cell(name, int(idx[q]), sites, "divergent",
-                          [int(nf[q]), int(nsim[q]), c_c[q], "%.3f" % mph[s0[q]], "%.2f" % med_i[q], "%.2f" % med_e[q], "%.1f" % med_x[q], "", "%.3f" % exm[q]])
+                masks.append((int(idx[q]), "divergent",
+                              [int(nf[q]), int(nsim[q]), c_c[q], "%.3f" % mph[s0[q]], "%.2f" % med_i[q], "%.2f" % med_e[q], "%.1f" % med_x[q], "", "%.3f" % exm[q]]))
 
         # ---- similar side: any failing pair; LR direction attribution on shared sites
         simpairs = {}
@@ -901,6 +910,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, m, m_hi, m_xs, plateaus, rate, 
             key = (int(min(gi[j], ci[j])), int(max(gi[j], ci[j])))
             simpairs.setdefault(key, j)
         Xs = X[:, sites] if simpairs else None
+        sim_lines = []
         for (A, B) in sorted(simpairs):
             lam, donor, recip = attribute(A, B, Xs, m, ov, expect, a.fit_overlap)
             o_ab = float(ov[A, B]); id_ab = 100.0 * sm[A, B] / max(o_ab, 1.0)
@@ -908,24 +918,43 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, m, m_hi, m_xs, plateaus, rate, 
             targets = ([recip] if recip is not None else [A, B]) if mask_lo else []
             side = ("both" if recip is None else names[recip]) if mask_lo else "none"
             for g in targets:
-                mask_cell(name, g, sites, "similar",
-                          ["", "", names[B if g == A else A], f"{m[A, B]:.3f}", f"{id_ab:.2f}", f"{100 - exp_ab:.2f}",
-                           f"{-defi_ab:.1f}", f"{lam:.1f}", f"{float((corr(100 - id_ab) - corr(exp_ab)) / rate_c):.3f}"])
-            simf.write(f"{name}\t{names[A]}\t{names[B]}\t{m[A, B]:.3f}\t{int(o_ab)}\t{id_ab:.2f}\t{100 - exp_ab:.2f}"
-                       f"\t{defi_ab:.1f}\t{lam:.1f}\t{names[donor] if donor is not None else 'NA'}"
-                       f"\t{names[recip] if recip is not None else 'NA'}\t{side}\n")
+                masks.append((g, "similar",
+                              ["", "", names[B if g == A else A], f"{m[A, B]:.3f}", f"{id_ab:.2f}", f"{100 - exp_ab:.2f}",
+                               f"{-defi_ab:.1f}", f"{lam:.1f}", f"{float((corr(100 - id_ab) - corr(exp_ab)) / rate_c):.3f}"]))
+            sim_lines.append(f"{name}\t{names[A]}\t{names[B]}\t{m[A, B]:.3f}\t{int(o_ab)}\t{id_ab:.2f}\t{100 - exp_ab:.2f}"
+                             f"\t{defi_ab:.1f}\t{lam:.1f}\t{names[donor] if donor is not None else 'NA'}"
+                             f"\t{names[recip] if recip is not None else 'NA'}\t{side}\n")
 
         gd = expect(grid_m)
-        trends.writelines(f"{name}\t{gm:.4f}\t{100 - gdv:.4f}\t{100 - min(a.min_ratio * gdv, plateaus[li]):.4f}\t{100 - gdv / 3:.4f}\n"
-                          for gm, gdv in zip(grid_m, gd))
+        trends_block = "".join(f"{name}\t{gm:.4f}\t{100 - gdv:.4f}\t{100 - min(a.min_ratio * gdv, plateaus[li]):.4f}\t{100 - gdv / 3:.4f}\n"
+                               for gm, gdv in zip(grid_m, gd))
         nflag = sum(fcount.values()); fstr = "/".join(str(fcount[j]) for j in range(M_eff, K_eff + 1))
-        per.write(f"{name}\t{len(sites)}\t{int((nres > 0).sum())}\t{len(idx)}\t{len(gi)}\t"
-                  f"{rate[li]:.3f}\t{plateaus[li]:.1f}\t{kq:.2f}\t{nflag}\t"
-                  + "\t".join(str(fcount[j]) for j in range(M_eff, K_eff + 1))
-                  + f"\t{namb}\t{len(simpairs)}\ttested\n")
-        disp.write(f"{name}\t{(phi_hat[li] if okp[li] else float('nan')):.4f}\t{int(phi_n[li])}\t{phi:.4f}\n")
-        print(f"{name}: {len(idx)} cells, {len(gi)} pairs, flagged {nflag} "
-              f"(fails {M_eff}..{K_eff} of {K_eff}: {fstr}), ambiguous {namb}, similar {len(simpairs)}", file=sys.stderr)
+        per_line = (f"{name}\t{len(sites)}\t{int((nres > 0).sum())}\t{len(idx)}\t{len(gi)}\t"
+                    f"{rate[li]:.3f}\t{plateaus[li]:.1f}\t{kq:.2f}\t{nflag}\t"
+                    + "\t".join(str(fcount[j]) for j in range(M_eff, K_eff + 1))
+                    + f"\t{namb}\t{len(simpairs)}\ttested\n")
+        disp_line = f"{name}\t{(phi_hat[li] if okp[li] else float('nan')):.4f}\t{int(phi_n[li])}\t{phi:.4f}\n"
+        log = (f"{name}: {len(idx)} cells, {len(gi)} pairs, flagged {nflag} "
+               f"(fails {M_eff}..{K_eff} of {K_eff}: {fstr}), ambiguous {namb}, similar {len(simpairs)}")
+        return dict(skipped=False, pairs=pairs_block, cells=cells_block, masks=masks, simf="".join(sim_lines),
+                    trends=trends_block, per=per_line, disp=disp_line, log=log)
+
+    def consume(li, R):
+        name, sites = loci[li]
+        if R["skipped"]:
+            per.write(R["per"]); print(R["log"], file=sys.stderr); return
+        pairs.write(R["pairs"]); cells.write(R["cells"])
+        for g, side, ev in R["masks"]: mask_cell(name, g, sites, side, ev)
+        simf.write(R["simf"]); trends.write(R["trends"]); per.write(R["per"]); disp.write(R["disp"])
+        print(R["log"], file=sys.stderr)
+
+    if pool:
+        batch = 8 * a.threads                                           # loci in flight, so the text blocks do not pile up
+        for b0 in range(0, nloc, batch):
+            for li, R in zip(range(b0, min(b0 + batch, nloc)), pool.map(process_locus, range(b0, min(b0 + batch, nloc)))): consume(li, R)
+        pool.shutdown()
+    else:
+        for li in range(nloc): consume(li, process_locus(li))
     for fh in (pairs, cells, per, trends, simf, disp): fh.close()
     with open(f"{a.out}/masked.csv", "w", newline="") as fh:
         mw = csv.writer(fh)
