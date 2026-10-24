@@ -51,13 +51,22 @@ Method:
             expected mismatch fraction for the count test. A straight line through the
             origin in corrected-distance space, one parameter per locus, 50% breakdown over
             the comparator pairs, nothing to overfit.
-  test      with E = expected mismatches on o shared sites, a comparison fails the DIVERGENT
-            side when observed - E > max(k*sqrt(E), (--min-ratio - 1) * E): the one-sided
-            Pearson residual (Poisson score) test plus a relative effect floor. The SIMILAR
-            side mirrors it with a stricter effect floor: E - observed > max(k*sqrt(E), 2E/3),
-            i.e. the pair must be less than a third as divergent as expected. k is the
-            Bonferroni quantile of --alpha over all distinct comparisons in the run (both
-            sides), so the bar scales with dataset size.
+  dispersion the scatter of locus divergence between close relatives is wider than counting
+            noise, and differently so for different loci. Each locus gets a dispersion phi:
+            the robust spread (1.4826 MAD) of log(observed/expected) over its resolved
+            comparator pairs with at least 10 expected mismatches, squared, minus the
+            counting part 1/E, floored at 0; it is shrunk toward the dataset-wide value
+            (the pair-weighted median over loci) with the weight of 30 pairs, so small
+            datasets use one dispersion and large ones get per-locus values.
+  test      exact tail probabilities, no normal approximation. With E the expected mismatches
+            among the o shared sites, the observed count is binomial(o, E/o), or
+            beta-binomial with the same mean and variance E + phi E^2 when the locus is
+            dispersed. A comparison fails the DIVERGENT side when observed > --min-ratio x E
+            and P(X >= observed) < alpha / 2N; the SIMILAR side when observed < E/3 and
+            P(X <= observed) < alpha / 2N. N is the number of distinct comparisons in the run
+            (both sides): Bonferroni, so the bar scales with dataset size. The effect floors
+            keep statistically significant but biologically trivial excesses in very long
+            loci from being masked; the tail test is the decision.
   decide    a cell (taxon x locus) is DIVERGENT-masked when a majority of its comparators fail
             the divergent side (fewer comparators than requested failing a majority = masked
             as ambiguous). Any single similar-side pair flags a SIMILAR event; its direction
@@ -80,6 +89,7 @@ Outputs (in --out; <stem> is the alignment file's name without extension)
   similar.tsv          every similar-side event: pair, deficit, lambda, donor/recipient call
   per_locus.tsv        one row per locus, skipped loci included (status column)
   trends.tsv           expectation and both effect floors (too divergent / too similar) on a grid
+  dispersion.tsv       per locus: raw dispersion estimate, pairs it used, dispersion applied
   ani.npy, m.npy       alignment-wide identity (%) and pair divergence m (points); m_hi.npy is
                        max(m, m_res), the divergence the too-divergent test is evaluated at
                        (pair_div in pairs.tsv, cells.tsv and masked.csv reports this value);
@@ -87,6 +97,8 @@ Outputs (in --out; <stem> is the alignment file's name without extension)
 Options
   --datatype dna|aa (required)  --n-comp 5 (odd >= 3)  --fit-overlap 20
   --alpha 0.05  --min-ratio 2  --mask-similar-only  --mask-different-only
+  (constants in the code: HALF = 0.5 mismatch for the resolution floor and the rate
+  pseudocount; dispersion from pairs with >= 10 expected mismatches, shrinkage weight 30)
 """
 import argparse, collections, csv, math, os, re, sys, time
 import numpy as np
@@ -95,6 +107,8 @@ PROTEIN = "ACDEFGHIKLMNPQRSTVWY"
 DNA = "ACGT"
 HALF = 0.5              # mismatches imputed to a locus that shows none (half the detection limit);
                         # also the pseudocount on the locus side of the rate ratio
+PHI_MIN_E = 10.0        # a pair contributes to the locus dispersion only if it expects this many mismatches
+PHI_N0 = 30.0           # shrinkage weight: a locus's dispersion is pulled toward the dataset's with this many pairs' worth
 MIN_LOCI_FOR_M = 5      # pairs overlapping in fewer loci have no m and are never compared
 MIN_LOCI_PER_TAXON = 10 # a taxon needs this many loci with >= fit-overlap residues to take part
 MIN_FIT_PAIRS = 8       # a locus needs this many fit pairs to be tested (or to get a rate)
@@ -241,6 +255,33 @@ def wmedian_stack(vals, wts):
     idx = np.minimum((cw < tot[None, :] / 2).sum(0), v.shape[0] - 1)
     out = np.take_along_axis(v_s, idx[None, :], 0)[0]
     return np.where(tot > 0, out, np.nan)
+
+
+_lgamma = np.vectorize(math.lgamma, otypes=[float])
+
+
+def bb_tails(o, n, E, phi, upper):
+    """log tail probability of the mismatch count among n shared sites: binomial with mean E, or, when the
+    locus is overdispersed, beta-binomial with mean E and variance E + phi E^2 (the beta-binomial's
+    intraclass correlation follows from phi in closed form). upper -> log P(X >= o), else log P(X <= o).
+    Vectorised over pairs; the sum runs over the lower tail, which is short on the similar side."""
+    o = np.asarray(o, float); n = np.asarray(n, float); E = np.asarray(E, float); out = np.empty(len(o))
+    for i in range(len(o)):
+        oi, ni, Ei = o[i], n[i], min(max(E[i], 1e-9), n[i] * (1 - 1e-9))
+        d = Ei / ni
+        kmax = int(oi) if not upper else int(oi) - 1                 # P(X <= kmax) summed exactly
+        k = np.arange(0, max(kmax, 0) + 1, dtype=float)
+        lchoose = _lgamma(ni + 1) - _lgamma(k + 1) - _lgamma(ni - k + 1)
+        if phi < 1e-8 or ni < 2:
+            lp = lchoose + k * math.log(d) + (ni - k) * math.log(1 - d)
+        else:
+            rho = min((d + phi * ni * d) / ((1 - d) * (ni - 1)), 1 - 1e-6)
+            a_, b_ = d * (1 / rho - 1), (1 - d) * (1 / rho - 1)
+            lp = lchoose + _lgamma(k + a_) + _lgamma(ni - k + b_) - _lgamma(ni + a_ + b_) - (math.lgamma(a_) + math.lgamma(b_) - math.lgamma(a_ + b_))
+        mx = lp.max(); cdf = math.exp(mx) * float(np.exp(lp - mx).sum()) if kmax >= 0 else 0.0
+        cdf = min(cdf, 1.0)
+        out[i] = math.log(max(1.0 - cdf, 1e-300)) if upper else math.log(max(cdf, 1e-300))
+    return out
 
 
 def wmedian1(v, w):
@@ -446,6 +487,7 @@ def run_z(a, names, loci, X, S, W, m, m_hi, m_xs, plateaus, rate, tie, masked, K
     per = open(f"{a.out}/per_locus.tsv", "w")
     per.write("locus\tsites\ttaxa\ttested\tpairs\trate\tplateau\tcut\tflagged\t"
               + "\t".join(f"fail{j}" for j in range(M_eff, K_eff + 1)) + "\tambiguous\tsimilar\tstatus\n")
+    disp = open(f"{a.out}/dispersion.tsv", "w"); disp.write("locus\tphi_hat\tpairs\tphi\n")
     trends = open(f"{a.out}/trends.tsv", "w"); trends.write("locus\tpair_div\ttrend\tcutoff\tcutoff_hi\n")
     simf = open(f"{a.out}/similar.tsv", "w")
     simf.write("locus\ttaxon_a\ttaxon_b\tpair_div\toverlap\tidentity\texpected\tdeficit\tlambda\tdonor\trecipient\tmasked\n")
@@ -460,49 +502,75 @@ def run_z(a, names, loci, X, S, W, m, m_hi, m_xs, plateaus, rate, tie, masked, K
         v = views[g][sites]; cnt = int((v != 45).sum()); views[g][sites] = 45   # 45 = '-'
         mrows[key] = [name, names[g], cnt, side] + evidence
 
-    for li, (name, sites) in enumerate(loci):
+    def locus_pairs(li):
+        """the comparator pairs of a locus and the locus's rate; None when the locus is skipped"""
         ov, sm = W[li], S[li]
         top, valid, ncomp, nres = sel[li]
         idx = np.flatnonzero(ncomp > 0)
-        skip = None
-        if len(idx) == 0:
-            skip = "skipped-no-cells"
-        else:
-            gi, ci, rk = flatten_pairs(idx, top, valid, K_eff)
-            o = ov[gi, ci]; same = sm[gi, ci]; mis = o - same
-            ident = 100.0 * same / o; dob = 100.0 - ident
-            mp = m[gi, ci]; mph = m_hi[gi, ci]; mpx = m_xs[gi, ci]
-            fit = (o >= a.fit_overlap) & (mpx > 0)                    # only pairs resolved beyond their floor vote on the rate
-            if fit.sum() < MIN_FIT_PAIRS: skip = f"skipped-few-resolved-pairs({int(fit.sum())})"
+        if len(idx) == 0: return "skipped-no-cells"
+        gi, ci, rk = flatten_pairs(idx, top, valid, K_eff)
+        o = ov[gi, ci]; same = sm[gi, ci]; mis = o - same
+        ident = 100.0 * same / o; dob = 100.0 - ident
+        mp = m[gi, ci]; mph = m_hi[gi, ci]; mpx = m_xs[gi, ci]
+        fit = (o >= a.fit_overlap) & (mpx > 0)
+        if fit.sum() < MIN_FIT_PAIRS: return f"skipped-few-resolved-pairs({int(fit.sum())})"
+        P_ = plateaus[li]
+        corr = lambda p: -P_ * np.log(1.0 - np.minimum(np.asarray(p, float), 0.98 * P_) / P_)
+        pc = 100.0 * HALF / o
+        rate_c = max(float(np.median((corr(dob + pc) / corr(mph))[fit])), 1e-3)
+        def expect(mv):
+            mvc = np.maximum(np.asarray(mv, float), 1e-4)
+            return np.maximum(P_ * (1.0 - np.exp(-rate_c * corr(mvc) / P_)), 1e-4)
+        return dict(idx=idx, gi=gi, ci=ci, rk=rk, o=o, same=same, mis=mis, ident=ident, dob=dob, mp=mp, mph=mph, fit=fit,
+                    ov=ov, sm=sm, ncomp=ncomp, nres=nres, expect=expect)
+
+    # dispersion pre-pass: the robust spread of observed/expected among each locus's resolved comparator
+    # pairs with enough expected mismatches, with the Poisson part removed: Var(O/E) = 1/E + phi
+    phi_hat = np.full(nloc, np.nan); phi_n = np.zeros(nloc)
+    for li in range(nloc):
+        L = locus_pairs(li)
+        if isinstance(L, str): continue
+        E = L["o"] * L["expect"](L["mph"]) / 100.0
+        use = L["fit"] & (E >= PHI_MIN_E)
+        if use.sum() < 10: continue
+        r = np.log((L["mis"][use] + HALF) / E[use])
+        s_ = 1.4826 * float(np.median(np.abs(r - np.median(r))))
+        phi_hat[li] = max(s_ ** 2 - float(np.median(1.0 / E[use])), 0.0); phi_n[li] = use.sum()
+    okp = phi_n > 0
+    phi_bar = wmedian1(phi_hat[okp], phi_n[okp]) if okp.any() else 0.0
+    print(f"dispersion: dataset-wide phi {phi_bar:.4f} (robust SD of O/E beyond Poisson {math.sqrt(phi_bar):.2f}); "
+          f"per-locus phi 10/50/90%: {np.nanpercentile(phi_hat[okp], [10, 50, 90]).round(4).tolist() if okp.any() else 'n/a'}", file=sys.stderr)
+
+    for li, (name, sites) in enumerate(loci):
+        L = locus_pairs(li)
+        skip = L if isinstance(L, str) else None
+        if not skip:
+            idx, gi, ci, rk, o, same, mis, ident, dob, mp, mph, fit, ov, sm, ncomp, nres, expect = \
+                (L[k] for k in ("idx", "gi", "ci", "rk", "o", "same", "mis", "ident", "dob", "mp", "mph", "fit", "ov", "sm", "ncomp", "nres", "expect"))
+            phi = (phi_n[li] * (phi_hat[li] if okp[li] else 0.0) + PHI_N0 * phi_bar) / (phi_n[li] + PHI_N0)
         if skip:
             per.write(f"{name}\t{len(sites)}\t{int((nres > 0).sum())}\t0\t0\t"
                       f"{rate[li]:.3f}\t{plateaus[li]:.1f}\t{kq:.2f}\t0\t"
                       + "\t".join("0" for _ in range(M_eff, K_eff + 1)) + f"\t0\t0\t{skip}\n")
             print(f"{name}: {skip}", file=sys.stderr); continue
 
-        # one rate per locus on multiple-hit-corrected distances (F81-style, with the locus's own
-        # random-identity plateau P): corrected distance c(p) = -P ln(1 - p/P); the locus's expected
-        # corrected distance is r x c(m); r = median over fit pairs of c(d)/c(m) (50% breakdown over
-        # ALL the locus's pairs, no windows, nothing to overfit); back-transformed for the count test
-        P_ = plateaus[li]
-        corr = lambda p: -P_ * np.log(1.0 - np.minimum(np.asarray(p, float), 0.98 * P_) / P_)
-        pc = 100.0 * HALF / o                                       # the same pseudocount on the locus side
-        rho = corr(dob + pc) / corr(mph)
-        rate_c = max(float(np.median(rho[fit])), 1e-3)               # one equal vote per resolved comparator pair (depth-neutral)
-
-        def expect(mv):
-            mvc = np.maximum(np.asarray(mv, float), 1e-4)
-            return np.maximum(P_ * (1.0 - np.exp(-rate_c * corr(mvc) / P_)), 1e-4)
-
+        # the count test with a quasi-Poisson variance: Var(O) = E + phi E^2, phi the locus's dispersion
+        # (shrunk toward the dataset's); phi = 0 is the plain Poisson test
         dhat = expect(mph)                                          # divergent side: the divergence we cannot exclude
         dlo = expect(mp)                                            # similar side: the divergence we can
         E = o * dhat / 100.0
         E_lo = o * dlo / 100.0
+        # exact binomial tails over the shared sites (beta-binomial when the locus is overdispersed), evaluated
+        # only for the pairs that clear the effect floors; a pair fails when its tail probability is below alpha / 2N
         excess = mis - E
-        kE = kq * np.sqrt(E)
-        fail_hi = (excess > kE) & (excess > (a.min_ratio - 1) * E)
+        logbar = math.log(a.alpha / max(2 * Npairs, 1))
+        fail_hi = excess > (a.min_ratio - 1) * E
+        if fail_hi.any():
+            fail_hi[fail_hi] = bb_tails(mis[fail_hi], o[fail_hi], E[fail_hi], phi, True) < logbar
         defi = E_lo - mis
-        fail_lo = (defi > kq * np.sqrt(E_lo)) & (defi > (2.0 / 3.0) * E_lo)
+        fail_lo = defi > (2.0 / 3.0) * E_lo
+        if fail_lo.any():
+            fail_lo[fail_lo] = bb_tails(mis[fail_lo], o[fail_lo], E_lo[fail_lo], phi, False) < logbar
 
         pairs.writelines(f"{name}\t{names[gi[j]]}\t{rk[j] + 1}\t{names[ci[j]]}\t{mph[j]:.3f}\t{int(o[j])}"
                          f"\t{ident[j]:.2f}\t{100 - dhat[j]:.2f}\t{excess[j]:.1f}\t{int(fail_hi[j])}\t{int(fail_lo[j])}\n"
@@ -556,9 +624,10 @@ def run_z(a, names, loci, X, S, W, m, m_hi, m_xs, plateaus, rate, tie, masked, K
                   f"{rate[li]:.3f}\t{plateaus[li]:.1f}\t{kq:.2f}\t{nflag}\t"
                   + "\t".join(str(fcount[j]) for j in range(M_eff, K_eff + 1))
                   + f"\t{namb}\t{len(simpairs)}\ttested\n")
+        disp.write(f"{name}\t{(phi_hat[li] if okp[li] else float('nan')):.4f}\t{int(phi_n[li])}\t{phi:.4f}\n")
         print(f"{name}: {len(idx)} cells, {len(gi)} pairs, flagged {nflag} "
               f"(fails {M_eff}..{K_eff} of {K_eff}: {fstr}), ambiguous {namb}, similar {len(simpairs)}", file=sys.stderr)
-    for fh in (pairs, cells, per, trends, simf): fh.close()
+    for fh in (pairs, cells, per, trends, simf, disp): fh.close()
     with open(f"{a.out}/masked.csv", "w", newline="") as fh:
         mw = csv.writer(fh)
         mw.writerow(["locus", "taxon", "sites_masked", "side", "n_fail", "n_similar", "partner",
