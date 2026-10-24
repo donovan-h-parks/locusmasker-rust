@@ -420,31 +420,73 @@ def wmedian_stack(vals, wts):
     return np.where(tot > 0, out, np.nan)
 
 
-_lgamma = np.vectorize(math.lgamma, otypes=[float])
-
-
+_LANCZOS = np.array([0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313, -176.61502916214059,
+                     12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7])
+def lgamma_v(x):
+    """log Gamma for arrays of positive x: Lanczos (g = 7, 9 terms), arguments below 1 shifted up by one; within
+    about 3e-15 relative of math.lgamma"""
+    x = np.asarray(x, dtype=np.float64); small = x < 1.0
+    xs = np.where(small, x + 1.0, x) - 1.0; t = xs + 7.5
+    s = _LANCZOS[0] + np.sum(_LANCZOS[1:] / (xs[..., None] + np.arange(1, 9)), axis=-1)
+    out = 0.5 * math.log(2 * math.pi) + (xs + 0.5) * np.log(t) - t + np.log(s)
+    return np.where(small, out - np.log(x), out)
+_LF = np.zeros(1)
+_LOG_FLOOR = math.log(1e-300)
+def log_fact(upto):
+    """log k! for k = 0..upto, cached and grown on demand"""
+    global _LF
+    if len(_LF) <= upto: _LF = np.concatenate([[0.0], np.cumsum(np.log(np.arange(1, upto + 1, dtype=float)))])
+    return _LF
+def _logpmf(k, pi, n, d, a_, b_, cpair, phi):
+    """log pmf of the mismatch count k for the pair pi: binomial(n, d), or beta-binomial when the locus is dispersed
+    (pairs with fewer than 2 sites stay binomial)"""
+    ni = n[pi]; nint = ni.astype(np.int64); lf = log_fact(int(n.max()) + 1)
+    lchoose = lf[nint] - lf[k] - lf[nint - k]; kf = k.astype(float)
+    lbin = lchoose + kf * np.log(d)[pi] + (ni - kf) * np.log(1 - d)[pi]
+    if phi < 1e-8: return lbin
+    lbb = lchoose + lgamma_v(kf + a_[pi]) + lgamma_v((nint - k).astype(float) + b_[pi]) + cpair[pi]
+    return np.where((n >= 2)[pi], lbb, lbin)
+def _logsum_groups(lp, cnt):
+    """log of the sum of exp(lp) within consecutive groups of sizes cnt (every cnt > 0)"""
+    st = np.cumsum(cnt) - cnt; mx = np.maximum.reduceat(lp, st)
+    return mx + np.log(np.add.reduceat(np.exp(lp - np.repeat(mx, cnt)), st))
 def bb_tails(o, n, E, phi, upper):
-    """log tail probability of the mismatch count among n shared sites: binomial with mean E, or, when the
-    locus is overdispersed, beta-binomial with mean E and variance E + phi E^2 (the beta-binomial's
-    intraclass correlation follows from phi in closed form). upper -> log P(X >= o), else log P(X <= o).
-    Vectorised over pairs; the sum runs over the lower tail, which is short on the similar side."""
-    o = np.asarray(o, float); n = np.asarray(n, float); E = np.asarray(E, float); out = np.empty(len(o))
-    for i in range(len(o)):
-        oi, ni, Ei = o[i], n[i], min(max(E[i], 1e-9), n[i] * (1 - 1e-9))
-        d = Ei / ni
-        kmax = int(oi) if not upper else int(oi) - 1                 # P(X <= kmax) summed exactly
-        k = np.arange(0, max(kmax, 0) + 1, dtype=float)
-        lchoose = _lgamma(ni + 1) - _lgamma(k + 1) - _lgamma(ni - k + 1)
-        if phi < 1e-8 or ni < 2:
-            lp = lchoose + k * math.log(d) + (ni - k) * math.log(1 - d)
-        else:
-            rho = min((d + phi * ni * d) / ((1 - d) * (ni - 1)), 1 - 1e-6)
-            a_, b_ = d * (1 / rho - 1), (1 - d) * (1 / rho - 1)
-            lp = lchoose + _lgamma(k + a_) + _lgamma(ni - k + b_) - _lgamma(ni + a_ + b_) - (math.lgamma(a_) + math.lgamma(b_) - math.lgamma(a_ + b_))
-        mx = lp.max(); cdf = math.exp(mx) * float(np.exp(lp - mx).sum()) if kmax >= 0 else 0.0
-        cdf = min(cdf, 1.0)
-        out[i] = math.log(max(1.0 - cdf, 1e-300)) if upper else math.log(max(cdf, 1e-300))
-    return out
+    """log tail probability of the mismatch count among n shared sites: binomial with mean E, or, when the locus
+    is overdispersed, beta-binomial with mean E and variance E + phi E^2. upper -> log P(X >= o), else
+    log P(X <= o). All pairs at once. The lower tail is the exact sum of its terms; the upper tail is summed
+    directly from o upward in blocks of 64 terms until a block adds less than 1e-20 of the running sum while
+    the pmf is falling (or n is reached), so far tails come out to full precision instead of as 1 - P(X < o)."""
+    o = np.asarray(o, float); n = np.asarray(n, float); E = np.asarray(E, float); m = len(o)
+    if m == 0: return np.empty(0)
+    E = np.minimum(np.maximum(E, 1e-9), n * (1 - 1e-9)); d = E / n
+    a_ = b_ = cpair = None
+    if phi >= 1e-8:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rho = np.where(n >= 2, np.minimum((d + phi * n * d) / ((1 - d) * np.maximum(n - 1, 1)), 1 - 1e-6), 0.5)
+        a_ = d * (1 / rho - 1); b_ = (1 - d) * (1 / rho - 1)
+        cpair = -lgamma_v(n + a_ + b_) - (lgamma_v(a_) + lgamma_v(b_) - lgamma_v(a_ + b_))
+    oi = o.astype(np.int64); nint = n.astype(np.int64)
+    if not upper:
+        cnt = oi + 1; pi = np.repeat(np.arange(m), cnt)
+        k = np.arange(int(cnt.sum())) - np.repeat(np.cumsum(cnt) - cnt, cnt)
+        ls = _logsum_groups(_logpmf(k, pi, n, d, a_, b_, cpair, phi), cnt)
+        return np.maximum(np.minimum(ls, 0.0), _LOG_FLOOR)          # log P(X <= o), capped at log 1, floored like the loop's 1e-300
+    # upper tail: P(X >= o), summed from k = o upward
+    out = np.full(m, -np.inf); active = np.flatnonzero(oi <= nint); kstart = oi.copy(); B = 64
+    while len(active):
+        cnt = np.minimum(B, nint[active] - kstart[active] + 1); has = cnt > 0
+        active, cnt = active[has], cnt[has]
+        if not len(active): break
+        pi = np.repeat(active, cnt); k = np.repeat(kstart[active], cnt) + (np.arange(int(cnt.sum())) - np.repeat(np.cumsum(cnt) - cnt, cnt))
+        lp = _logpmf(k, pi, n, d, a_, b_, cpair, phi)
+        blk = _logsum_groups(lp, cnt)
+        out[active] = np.logaddexp(out[active], blk)
+        ends = np.cumsum(cnt) - 1; starts = ends - cnt + 1
+        falling = lp[ends] < lp[starts]
+        done = (kstart[active] + cnt > nint[active]) | (falling & (blk < out[active] - 46.0))
+        kstart[active] += cnt
+        active = active[~done]
+    return np.maximum(np.minimum(out, 0.0), _LOG_FLOOR)
 
 
 def wmedian1(v, w):
