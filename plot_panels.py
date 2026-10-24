@@ -228,7 +228,6 @@ def hist_facet(fig, slot, by):
             d = 0.012
             for a_x, x0 in ((ax[r, 0], 1), (ax[r, 1], 0)):
                 a_x.plot((x0 - d, x0 + d), (-2 * d, 2 * d), transform=a_x.transAxes, color=INK, clip_on=False, lw=0.9)
-        ax[0, 1].text(0.0, 1.0, "x axis broken", transform=ax[0, 1].transAxes, fontsize=6.5, color="#b0171f", ha="left", va="bottom")
         label_bins(ax[nrow - 1, 0], range(0, xbreak[0] + 1)); label_bins(ax[nrow - 1, 1], range(xbreak[1], len(bins)))
     else:
         ax[0, 0].set_xlim(-0.6, edge(len(bins) - 1)[1] + 0.6 * w); label_bins(ax[nrow - 1, 0], range(len(bins)))
@@ -239,7 +238,6 @@ def hist_facet(fig, slot, by):
             d = 0.012
             for a_x, y0 in ((ax[0, c], 0), (ax[1, c], 1)):
                 a_x.plot((-d, +d), (y0 - 2 * d, y0 + 2 * d), transform=a_x.transAxes, color=INK, clip_on=False, lw=0.9)
-        ax[0, 0].text(0.0, 0.02, "y axis broken: the top panel is the zero bar only, on its own scale", transform=ax[0, 0].transAxes, fontsize=6.5, color="#b0171f", va="bottom", ha="left")
         ax[0, 0].text(0, heights[0] * 1.02, f"{heights[0]:,}", ha="center", va="bottom", fontsize=7, color=INK)
         lab_from, lab_row = 1, 1
     else:
@@ -260,7 +258,7 @@ def bars():
     gs = fig.add_gridspec(2, 1, hspace=0.32, left=0.09, right=0.98, top=0.845, bottom=0.06)
     handles = hist_facet(fig, gs[0], "locus"); hist_facet(fig, gs[1], "taxon")
     fig.text(0.09, 0.975, f"{NAME}  ·  Number of sequences masked per locus and per taxon", fontsize=10, color=INK, fontweight="bold", ha="left", va="top")
-    fig.text(0.09, 0.95, f"{int(MASKED.sum()):,} of {len(R):,} sequences masked ({100 * MASKED.sum() / len(R):.1f}%)  ·  bar colour = kinds of mask among the masked sequences; zero bar = how many of {NC} comparators its sequences fail", fontsize=8.5, color=INK, ha="left", va="top")
+    fig.text(0.09, 0.95, f"{int(MASKED.sum()):,} of {len(R):,} sequences masked ({100 * MASKED.sum() / len(R):.1f}%)", fontsize=8.5, color=INK, ha="left", va="top")
     fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.09, 0.93), ncol=3, frameon=False, fontsize=6.5, labelcolor=INK, columnspacing=2.0, handletextpad=0.5)
     return [fig]
 
