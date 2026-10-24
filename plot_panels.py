@@ -105,7 +105,7 @@ def panels(by):
     order = sorted(groups, key=lambda k: (-counts[k], k)); NTOT = len(order)
     if not a.all: order = order[:a.top]
     ncol = min(a.cols, len(order)); nrow = math.ceil(len(order) / ncol); pw, ph = 2.3, 2.25
-    fig, axs = plt.subplots(nrow, ncol, figsize=(pw * ncol + 0.7, ph * nrow + 1.5), dpi=110, squeeze=False)
+    fig, axs = plt.subplots(nrow, ncol, figsize=(pw * ncol + 0.7, ph * nrow + 1.7), dpi=110, squeeze=False)
     for ax, k in zip(axs.ravel(), order):
         idx = np.array(groups[k]); inf = INF[idx]
         # the panel's own range: the central 99.8% of its informative values with a margin, the same on
@@ -146,7 +146,7 @@ def panels(by):
     for ax in axs.ravel()[len(order):]: ax.axis("off")
     fig.supxlabel("expected divergence of the cell, median over its comparators (%)", fontsize=8, color=MUTED, y=0.004)
     fig.supylabel("observed divergence of the cell, median over its comparators (%)", fontsize=8, color=MUTED, x=0.004)
-    H = ph * nrow + 1.5
+    H = ph * nrow + 1.7
     unit = "loci" if by == "locus" else "taxa"
     head = f"{NAME}  ·  {'Locus' if by == 'locus' else 'Taxon'} plot"
     sub = f"{int(MASKED.sum()):,} of {len(R):,} sequences masked ({100 * MASKED.sum() / len(R):.1f}%)"
@@ -155,12 +155,11 @@ def panels(by):
     fig.text(0.01, 1 - 0.14 / H, head, fontsize=11, color=INK, fontweight="bold", ha="left", va="top")
     fig.text(0.01, 1 - 0.36 / H, sub, fontsize=9, color=INK, ha="left", va="top")
     fig.text(0.01, 1 - 0.55 / H, note, fontsize=7.5, color=MUTED, ha="left", va="top")
-    handles = [Line2D([], [], marker="o", ls="", color=c, ms=4.5, label=("passes · " if j == 0 else "") + f"fails {j} of {NC}") for j, c in GREYS.items()] + \
-              [Line2D([], [], marker="^", ls="", color=c, mec=SURF, ms=6, label=("masked, too divergent · " if j == LOW else "") + f"fails {j} of {NC}") for j, c in REDS.items()] + \
-              [Line2D([], [], marker="v", ls="", color=BLUES[j], mec=SURF, ms=6, label=("masked, too similar · " if j == 1 else "") + f"{j}{'+' if j == 3 else ''} pair{'s' if j > 1 else ''}") for j in (1, 2, 3)]
-    fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.005, 1 - 0.70 / H), ncol=min(len(handles), max(4, int((pw * ncol + 0.7) / 1.5))),
-               frameon=False, fontsize=7, handletextpad=0.3, columnspacing=1.2, labelcolor=INK)
-    fig.tight_layout(rect=(0.012, 0.012, 1, 1 - 1.15 / H), h_pad=1.0, w_pad=0.5)
+    handles = [Line2D([], [], marker="o", ls="", color=c, ms=4.5, label=f"not masked · fails {j} of {NC}") for j, c in GREYS.items()] + \
+              [Line2D([], [], marker="^", ls="", color=c, mec=SURF, ms=6, label=f"masked, too divergent · fails {j} of {NC}") for j, c in REDS.items()] + \
+              [Line2D([], [], marker="v", ls="", color=BLUES[j], mec=SURF, ms=6, label=f"masked, too similar · {j}{'+' if j == 3 else ''} pair{'s' if j > 1 else ''}") for j in (1, 2, 3)]
+    fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.005, 1 - 0.68 / H), ncol=3, frameon=False, fontsize=7, handletextpad=0.3, columnspacing=2.0, labelcolor=INK)
+    fig.tight_layout(rect=(0.012, 0.012, 1, 1 - 1.35 / H), h_pad=1.0, w_pad=0.5)
     return fig
 
 def hist_facet(fig, slot, by):
@@ -173,8 +172,9 @@ def hist_facet(fig, slot, by):
     key = LOC if by == "locus" else TAX
     nmask = collections.Counter(key[MASKED]); units = sorted(set(key)); NTOT = len(units)
     k_of = np.array([nmask.get(u, 0) for u in units]); kmax = int(k_of.max()) if len(k_of) else 0
-    cats = [(f"fails {j} of {NC}", REDS[j], lambda idx, j=j: DMK[idx] & (np.minimum(np.maximum(NF[idx], LOW), NC) == j)) for j in FAILS] + \
-           [(f"{j}{'+' if j == 3 else ''} pair{'s' if j > 1 else ''}", BLUES[j], lambda idx, j=j: SMK[idx] & (np.minimum(NS[idx], 3) == j)) for j in (1, 2, 3)]
+    cats = [(f"not masked · fails {j} of {NC}", GREYS[j], lambda idx, j=j: PLAIN[idx] & (NF[idx] == j)) for j in sorted(GREYS)] + \
+           [(f"masked, too divergent · fails {j} of {NC}", REDS[j], lambda idx, j=j: DMK[idx] & (np.minimum(np.maximum(NF[idx], LOW), NC) == j)) for j in FAILS] + \
+           [(f"masked, too similar · {j}{'+' if j == 3 else ''} pair{'s' if j > 1 else ''}", BLUES[j], lambda idx, j=j: SMK[idx] & (np.minimum(NS[idx], 3) == j)) for j in (1, 2, 3)]
     pos = k_of[k_of > 0]
     if len(pos) >= 2:
         iqr = float(np.percentile(pos, 75) - np.percentile(pos, 25)); w = 2 * iqr / len(pos) ** (1 / 3)
@@ -183,14 +183,15 @@ def hist_facet(fig, slot, by):
     else: w = 1
     bins = [(0, 0)] + [(lo_, min(lo_ + w - 1, kmax)) for lo_ in range(1, kmax + 1, w)]
     heights = np.array([int(((k_of >= lo_) & (k_of <= hi_)).sum()) for lo_, hi_ in bins])
-    comp = np.zeros((len(bins), 1 + len(cats)))
+    comp = np.zeros((len(bins), len(cats)))                            # bars with masks: the kinds of mask among their masked sequences; the zero bar: how many comparators its sequences fail
     for b, (lo_, hi_) in enumerate(bins):
         if heights[b] == 0: continue
-        if lo_ == 0: comp[b, 0] = heights[b]; continue
         sel_units = [u for u, kk in zip(units, k_of) if lo_ <= kk <= hi_]
-        idx = np.flatnonzero(np.isin(key, sel_units) & MASKED)
-        shares = np.array([float(f(idx).sum()) for _, _, f in cats]); shares = shares / max(shares.sum(), 1)
-        comp[b, 1:] = heights[b] * shares
+        idx = np.flatnonzero(np.isin(key, sel_units))
+        shares = np.array([float(f(idx).sum()) for _, _, f in cats])
+        if lo_ > 0: shares[:len(GREYS)] = 0
+        shares = shares / max(shares.sum(), 1)
+        comp[b] = heights[b] * shares
     centres = np.array([(lo_ + hi_) / 2 for lo_, hi_ in bins]); widths = np.array([(hi_ - lo_ + 1) * 0.9 for lo_, hi_ in bins])
     # x break: a run of at least three empty bins after which only a few occupied bins remain
     occ = [b for b in range(len(bins)) if heights[b] > 0]; xbreak = None
@@ -204,7 +205,7 @@ def hist_facet(fig, slot, by):
     for r in range(nrow):
         for c in range(ncol):
             ax[r, c] = fig.add_subplot(sub[r, c], sharex=ax[0, c] if r else None, sharey=ax[r, 0] if c else None)
-    cols = [GREY3[0]] + [c for _, c, _ in cats]
+    cols = [c for _, c, _ in cats]
     for r in range(nrow):
         for c in range(ncol):
             a_x = ax[r, c]; base = np.zeros(len(bins))
@@ -251,17 +252,16 @@ def hist_facet(fig, slot, by):
     ax[nrow - 1, 0].set_xlabel(f"sequences masked in the {by}", fontsize=8, color=MUTED); ax[nrow - 1, 0].set_ylabel(unit, fontsize=8, color=MUTED)
     if ybreak: ax[0, 0].set_ylabel(unit, fontsize=8, color=MUTED)
     ax[0, 0].set_title(f"by {by}  ·  {len(nmask)} of {NTOT} {unit} have a masked sequence", fontsize=8.5, color=INK, loc="left", pad=6)
-    return [Patch(facecolor=GREY3[0], edgecolor=SURF, label="no masked sequence")] + \
-           [Patch(facecolor=c, edgecolor=SURF, label=("too divergent · " if lab.startswith(f"fails {LOW}") else "too similar · " if lab.startswith("1 ") else "") + lab) for lab, c, _ in cats]
+    return [Patch(facecolor=c, edgecolor=SURF, label=lab) for lab, c, _ in cats]
 
 def bars():
     """the two marginals side by side: loci and taxa by the number of masked sequences they hold"""
     fig = plt.figure(figsize=(8.5, 9.6), dpi=150)
-    gs = fig.add_gridspec(2, 1, hspace=0.32, left=0.09, right=0.98, top=0.855, bottom=0.06)
+    gs = fig.add_gridspec(2, 1, hspace=0.32, left=0.09, right=0.98, top=0.845, bottom=0.06)
     handles = hist_facet(fig, gs[0], "locus"); hist_facet(fig, gs[1], "taxon")
     fig.text(0.09, 0.975, f"{NAME}  ·  Number of sequences masked per locus and per taxon", fontsize=10, color=INK, fontweight="bold", ha="left", va="top")
-    fig.text(0.09, 0.95, f"{int(MASKED.sum()):,} of {len(R):,} sequences masked ({100 * MASKED.sum() / len(R):.1f}%)  ·  bar colour = mix of mask kinds among those loci's or taxa's masks", fontsize=8.5, color=INK, ha="left", va="top")
-    fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.09, 0.93), ncol=4, frameon=False, fontsize=6.5, labelcolor=INK, columnspacing=1.2, handletextpad=0.4)
+    fig.text(0.09, 0.95, f"{int(MASKED.sum()):,} of {len(R):,} sequences masked ({100 * MASKED.sum() / len(R):.1f}%)  ·  bar colour = kinds of mask among the masked sequences; zero bar = how many of {NC} comparators its sequences fail", fontsize=8.5, color=INK, ha="left", va="top")
+    fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.09, 0.93), ncol=3, frameon=False, fontsize=6.5, labelcolor=INK, columnspacing=2.0, handletextpad=0.5)
     return [fig]
 
 ROWS_RESID = 150
