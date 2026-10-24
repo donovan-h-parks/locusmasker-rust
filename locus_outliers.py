@@ -505,21 +505,25 @@ def pair_median(vals, W, min_loci, fallback):
     return np.where(nl >= min_loci, v, fallback), nl
 
 
-def pair_divergences(S, W, n, rr=None, ok_r=None, chunk_bytes=256 << 20):
+def _expand(tri, n, iu):
+    """an upper-triangle vector (diagonal included, row-major) as the full symmetric n x n matrix"""
+    M = np.empty((n, n), tri.dtype); M[iu] = tri; M[iu[1], iu[0]] = tri; return M
+
+
+def pair_divergences(S, W, n, iu, rr=None, ok_r=None, chunk_bytes=256 << 20):
     """for every taxon pair (flattened n*n): the site-weighted median over loci of the pair's divergence
     (rate-normalised by rr when given), the same median of the resolution floor (half a mismatch per locus),
     and the number of loci contributing; pairs with fewer than MIN_LOCI_FOR_M loci get NaN. Self pairs carry
     no vote; loci without a rate (ok_r False) carry none either. Computed in chunks of pairs straight from
     the per-locus counts, so the peak memory is a few chunk-sized temporaries rather than several copies of
     the whole loci x pairs matrix; the per-pair arithmetic is exactly that of pair_median."""
-    nloc = S.shape[0]; npair = n * n
-    S2 = S.reshape(nloc, npair); W2 = W.reshape(nloc, npair)
+    nloc, npair = S.shape                                               # the pairs are the upper triangle, diagonal included
     m = np.full(npair, np.nan); m_fl = np.full(npair, np.nan); nl = np.zeros(npair, dtype=np.int64)
-    diag = np.arange(n) * (n + 1)
+    diag = np.flatnonzero(iu[0] == iu[1])
     chunk = max(int(chunk_bytes // (8 * 8 * max(nloc, 1))), 1)
     for c0 in range(0, npair, chunk):
         c1 = min(c0 + chunk, npair)
-        Sc = S2[:, c0:c1]; Wc = W2[:, c0:c1]
+        Sc = S[:, c0:c1]; Wc = W[:, c0:c1]
         with np.errstate(invalid="ignore", divide="ignore"):
             Dv = np.where(Wc > 0, 100.0 * (1.0 - Sc / np.maximum(Wc, 1)), np.nan)
         Wfl = 100.0 * HALF / np.maximum(Wc, 1.0)
@@ -532,7 +536,7 @@ def pair_divergences(S, W, n, rr=None, ok_r=None, chunk_bytes=256 << 20):
         nan_fb = np.full(c1 - c0, np.nan)
         m[c0:c1], nl[c0:c1] = pair_median(Dv, Wm, MIN_LOCI_FOR_M, nan_fb)
         m_fl[c0:c1], _ = pair_median(Wfl, Wm, MIN_LOCI_FOR_M, nan_fb)
-    return m, m_fl, nl
+    return _expand(m, n, iu), _expand(m_fl, n, iu), _expand(nl, n, iu)
 
 
 def top_comparators(score, kk, nres):
@@ -599,25 +603,30 @@ def main():
 
     # ---- pass 1: per-locus shared/same counts; alignment-wide identity falls out of the sums
     nloc = len(loci)
-    S = np.empty((nloc, n, n), np.float32); W = np.empty((nloc, n, n), np.float32)
+    # the same-residue and shared-site counts of every pair, per locus: symmetric, so the upper triangle (diagonal
+    # included, row-major) is kept and a locus's full matrix is rebuilt when the test needs it
+    iu = np.triu_indices(n); ntri = len(iu[0]); diag_pos = np.flatnonzero(iu[0] == iu[1])
+    tri_idx = np.empty((n, n), np.int64); tri_idx[iu] = np.arange(ntri); tri_idx[iu[1], iu[0]] = np.arange(ntri)
+    S = np.empty((nloc, ntri), np.float32); W = np.empty((nloc, ntri), np.float32)
     plateaus = np.empty(nloc)
     for li, (name, sites) in enumerate(loci):
         Xm = X[:, sites]; Pm = (Xm >= 0).astype(np.float32)
         sh = Pm @ Pm.T; sm = np.zeros((n, n), np.float32)
         for i in range(len(alphabet)):
             Ai = (Xm == i).astype(np.float32); sm += Ai @ Ai.T
-        S[li], W[li] = sm, sh
+        S[li] = sm[iu]; W[li] = sh[iu]
         cnt = np.bincount(Xm[Xm >= 0], minlength=len(alphabet)).astype(float)
         f = cnt / max(cnt.sum(), 1.0)
         plateaus[li] = max(100.0 * (1.0 - float((f ** 2).sum())), 1.0)
-    present = np.stack([W[li].diagonal() >= a.fit_overlap for li in range(nloc)]).sum(0)
+    present = (W[:, diag_pos] >= a.fit_overlap).sum(0)
     thin = np.flatnonzero(present < MIN_LOCI_PER_TAXON)
     open(f"{a.out}/excluded_taxa.txt", "w").write("".join(f"{names[i]}\t{int(present[i])}\n" for i in thin))
     if len(thin):
-        S[:, thin, :] = 0; S[:, :, thin] = 0; W[:, thin, :] = 0; W[:, :, thin] = 0   # out of the test entirely
+        drop = np.isin(iu[0], thin) | np.isin(iu[1], thin)
+        S[:, drop] = 0; W[:, drop] = 0                                     # out of the test entirely
         print(f"{len(thin)} taxa with fewer than {MIN_LOCI_PER_TAXON} loci present are excluded from the test "
               f"(listed in excluded_taxa.txt, left unmasked)", file=sys.stderr)
-    tot_same = S.sum(0, dtype=np.float64); tot_shared = W.sum(0, dtype=np.float64)
+    tot_same = _expand(S.sum(0, dtype=np.float64), n, iu); tot_shared = _expand(W.sum(0, dtype=np.float64), n, iu)
     with np.errstate(invalid="ignore", divide="ignore"):
         ani = np.where(tot_shared > 0, 100.0 * tot_same / tot_shared, np.nan)
     np.fill_diagonal(ani, np.nan); np.save(f"{a.out}/ani.npy", ani)
@@ -629,8 +638,7 @@ def main():
     # by the provisional pair divergence m0 (the raw site-weighted median over loci, available before rates exist), one equal
     # vote per neighbour pair resolved beyond its floor, of the multiple-hit-corrected ratio
     # c(d + half a mismatch) / c(m0), m0 the provisional pair divergence (raw site-weighted median).
-    m0, m0_fl, _ = pair_divergences(S, W, n)                          # the floor: the imputed half mismatch per locus, as a percentage
-    m0, m0_fl = m0.reshape(n, n), m0_fl.reshape(n, n)
+    m0, m0_fl, _ = pair_divergences(S, W, n, iu)                      # the floor: the imputed half mismatch per locus, as a percentage
     m0_hi = np.maximum(m0, m0_fl); res0 = m0 > m0_fl
     dist = np.where(np.isfinite(m0), m0, np.inf); np.fill_diagonal(dist, np.inf)   # neighbours by the provisional pair divergence (a median over loci, not swayed by one long fast locus)
     Kn = min(K_eff, n - 1)
@@ -640,8 +648,9 @@ def main():
     gi0, ci0 = gi0[okn], ci0[okn]
     m0n = m0_hi[gi0, ci0]
     rate = np.full(nloc, np.nan)
+    t0i = tri_idx[gi0, ci0]
     for li in range(nloc):
-        o_, s_ = W[li][gi0, ci0], S[li][gi0, ci0]
+        o_, s_ = W[li][t0i], S[li][t0i]
         with np.errstate(invalid="ignore", divide="ignore"):
             d_ = np.where(o_ > 0, 100.0 * (1.0 - s_ / np.maximum(o_, 1)), np.nan)
         val = np.isfinite(d_) & (o_ >= a.fit_overlap)
@@ -655,16 +664,14 @@ def main():
         scale = wmedian_stack(rate[ok_r, None], lsites[ok_r, None])[0]
         rate = rate / max(scale, 1e-6)
     rr = np.where(ok_r, rate, np.nan)
-    m, m_fl, nl = pair_divergences(S, W, n, rr, ok_r)
-    m = m.reshape(n, n)
+    m, m_fl, nl = pair_divergences(S, W, n, iu, rr, ok_r)
     np.fill_diagonal(m, np.nan); np.save(f"{a.out}/m.npy", m)
     # resolution floor of the pair: the median over its loci of half a mismatch per locus (rate-normalised);
     # the divergence used on the too-divergent side is the larger of the measured median and this floor
-    m_fl = m_fl.reshape(n, n)
     m_hi = np.maximum(m, m_fl); np.fill_diagonal(m_hi, np.nan); np.save(f"{a.out}/m_hi.npy", m_hi)
     m_xs = np.maximum(m - m_fl, 0.0)                                  # divergence resolved beyond the floor: the rate-vote weight
     keep = np.ones(n, bool); keep[thin] = False
-    nlk = nl.reshape(n, n)[np.ix_(keep, keep)][np.triu_indices(int(keep.sum()), 1)]
+    nlk = nl[np.ix_(keep, keep)][np.triu_indices(int(keep.sum()), 1)]
     fb = float((nlk < MIN_LOCI_FOR_M).mean()) if len(nlk) else 0.0
     print(f"pair divergences done, {time.time() - t0:.0f}s"
           + (f"; note: {fb:.0%} of taxon pairs overlap in <{MIN_LOCI_FOR_M} loci and are never compared"
@@ -674,14 +681,14 @@ def main():
     tie = np.nan_to_num(100.0 - ani, nan=100.0) * 1e-9 + np.arange(n)[None, :] * 1e-12
     masked = rows                                                      # blanked in place; X is its own copy
 
-    nmasked = run_z(a, names, loci, X, S, W, m, m_hi, m_xs, plateaus, rate, tie, masked, K_eff, M_eff)
+    nmasked = run_z(a, names, loci, X, S, W, iu, diag_pos, m, m_hi, m_xs, plateaus, rate, tie, masked, K_eff, M_eff)
 
     out = write_masked(a.aln, a.out, fmt, names, masked, nexus)
     print(f"masked {nmasked} cells -> {out}\ndone {time.time() - t0:.0f}s", file=sys.stderr)
 
 
 # ------------------------------------------------------------------ the counting test
-def run_z(a, names, loci, X, S, W, m, m_hi, m_xs, plateaus, rate, tie, masked, K_eff, M_eff):
+def run_z(a, names, loci, X, S, W, iu, diag_pos, m, m_hi, m_xs, plateaus, rate, tie, masked, K_eff, M_eff):
     n = len(names); nloc = len(loci)
     mj = np.where(np.isfinite(m), m, np.inf) + tie
     mask_hi = not a.mask_similar_only
@@ -691,8 +698,8 @@ def run_z(a, names, loci, X, S, W, m, m_hi, m_xs, plateaus, rate, tie, masked, K
     # pre-pass: count distinct comparisons so the Bonferroni bar is known before any test runs
     Npairs = 0; sel = []
     for li in range(nloc):
-        ov = W[li]
-        nres = ov.diagonal().astype(int)
+        ov = _expand(W[li], n, iu)
+        nres = W[li][diag_pos].astype(int)
         need = np.minimum(a.fit_overlap, nres)[:, None]
         score = np.where((ov >= need) & np.isfinite(mj), -mj, -np.inf)
         np.fill_diagonal(score, -np.inf)
@@ -730,7 +737,7 @@ def run_z(a, names, loci, X, S, W, m, m_hi, m_xs, plateaus, rate, tie, masked, K
 
     def locus_pairs(li):
         """the comparator pairs of a locus and the locus's rate; None when the locus is skipped"""
-        ov, sm = W[li], S[li]
+        ov, sm = _expand(W[li], n, iu), _expand(S[li], n, iu)
         top, valid, ncomp, nres = sel[li]
         idx = np.flatnonzero(ncomp > 0)
         if len(idx) == 0: return "skipped-no-cells"
