@@ -188,31 +188,177 @@ def parse_raxml_partitions(path, L):
     return loci
 
 
+class _Unsupported(Exception):
+    """the fast NEXUS reader met something it does not handle; Bio.Nexus takes over"""
+
+
+class NexusInfo:
+    """what the writer needs from a NEXUS file read by the fast path"""
+    def __init__(self, datatype, missing, gap, charsets, taxsets):
+        self.datatype, self.missing, self.gap, self.charsets, self.taxsets = datatype, missing, gap, charsets, taxsets
+
+
+_NEX_PUNCT = "()[]{}\\,;:=*\\'\"`+-<>"
+_NEX_VALID = {"dna": "GATCRYWSMKHBVDN", "nucleotide": "GATCRYWSMKHBVDN", "rna": "GAUCRYWSMKHBVDN", "protein": "BZXACDEFGHIKLMNPQRSTVWY*"}
+
+
+def _safename(name):
+    """a taxon or set name as Bio.Nexus writes it: quoted when it holds whitespace or punctuation"""
+    safe = name.replace("'", "''")
+    return "'" + safe + "'" if set(safe) & set(" \t\n" + _NEX_PUNCT) else safe
+
+
+def _compact4nexus(orig_list):
+    """site list (0-based) -> NEXUS ranges (1-based), exactly as Bio.Nexus writes them"""
+    if not orig_list: return ""
+    orig_list = sorted(set(orig_list)); shortlist = []
+    clist = orig_list[:]; clist.append(clist[-1] + 0.5)
+    while len(clist) > 1:
+        step = 1
+        for i, x in enumerate(clist):
+            if x == clist[0] + i * step: continue
+            elif i == 1 and len(clist) > 3 and clist[i + 1] - x == x - clist[0]: step = x - clist[0]
+            else:
+                sub = clist[:i]
+                if len(sub) == 1: shortlist.append(str(sub[0] + 1))
+                elif step == 1: shortlist.append("%d-%d" % (sub[0] + 1, sub[-1] + 1))
+                else: shortlist.append("%d-%d\\%d" % (sub[0] + 1, sub[-1] + 1, step))
+                clist = clist[i:]; break
+    return " ".join(shortlist)
+
+
+def read_nexus_fast(path):
+    """a NEXUS alignment read straight into byte rows: one DATA or CHARACTERS block (plain names, no comments, no
+    quoting, format options limited to datatype / missing / gap / interleave) and at most one SETS block of charset
+    and taxset statements with plain site ranges. Anything else raises _Unsupported and Bio.Nexus is used instead.
+    Returns names, rows (bytearrays), charsets (name -> sorted 0-based sites), NexusInfo."""
+    data = open(path, "rb").read()
+    if b"[" in data or b"'" in data or b'"' in data or b"(" in data or b"{" in data: raise _Unsupported("comments, quotes or ambiguity sets")
+    text = data.decode("ascii")                                   # NEXUS is ASCII; anything else goes to Bio.Nexus
+    blocks = re.split(r"(?i)\bbegin\s+", text)
+    if not blocks[0].strip().upper().startswith("#NEXUS") or len(blocks[0].split()) != 1: raise _Unsupported("text before the first block")
+    datab = setsb = None
+    for b in blocks[1:]:
+        m = re.match(r"(\w+)\s*;", b)
+        if not m: raise _Unsupported("block header")
+        kind = m.group(1).lower(); body = b[m.end():]
+        endm = re.search(r"(?i)\bend(?:block)?\s*;", body)
+        if not endm or body[endm.end():].strip(): raise _Unsupported("block end")
+        body = body[:endm.start()]
+        if kind in ("data", "characters"):
+            if datab is not None: raise _Unsupported("two data blocks")
+            datab = body
+        elif kind == "sets":
+            if setsb is not None: raise _Unsupported("two sets blocks")
+            setsb = body
+        else: raise _Unsupported("block " + kind)
+    if datab is None: raise _Unsupported("no data block")
+    # the data block: dimensions, format, matrix
+    mi = re.search(r"(?i)\bmatrix\b", datab)
+    if not mi: raise _Unsupported("no matrix")
+    header = datab[:mi.start()]; mtext = datab[mi.end():]
+    cmds = [c.strip() for c in header.split(";") if c.strip()]
+    ntax = nchar = None; opts = {}
+    for c in cmds:
+        w = c.split(None, 1); key = w[0].lower(); rest = w[1] if len(w) > 1 else ""
+        if key == "dimensions":
+            for k, v in re.findall(r"(\w+)\s*=\s*(\d+)", rest):
+                if k.lower() == "ntax": ntax = int(v)
+                elif k.lower() == "nchar": nchar = int(v)
+                else: raise _Unsupported("dimensions " + k)
+            if len(re.findall(r"\w+\s*=", rest)) != len(rest.split()): raise _Unsupported("dimensions")
+        elif key == "format":
+            for tok in re.findall(r"\w+(?:\s*=\s*\S+)?", rest):
+                kv = [t.strip() for t in tok.split("=", 1)]
+                k = kv[0].lower(); v = kv[1] if len(kv) > 1 else None
+                if k in ("datatype", "missing", "gap") and v is not None: opts[k] = v
+                elif k == "interleave": opts[k] = (v or "yes").lower()
+                else: raise _Unsupported("format option " + k)
+        else: raise _Unsupported("command " + key)
+    if ntax is None or nchar is None: raise _Unsupported("dimensions")
+    dt = opts.get("datatype", "").lower()
+    if dt not in _NEX_VALID: raise _Unsupported("datatype")
+    missing = opts.get("missing", "?")[0] if "missing" in opts else None
+    gap = opts.get("gap", "-")[0] if "gap" in opts else None
+    interleave = opts.get("interleave", "no") in ("yes", "")
+    end = mtext.find(";")
+    if end < 0: raise _Unsupported("matrix end")
+    if mtext[end + 1:].strip(): raise _Unsupported("text after the matrix")
+    names = []; rows = {}
+    lines = [ln for ln in mtext[:end].split("\n") if ln.strip()]
+    if interleave:
+        for ln in lines:
+            w = ln.split(None, 1)
+            if len(w) != 2: raise _Unsupported("interleaved line")
+            if w[0] not in rows: names.append(w[0]); rows[w[0]] = bytearray()
+            rows[w[0]] += "".join(w[1].split()).encode()
+    else:
+        i = 0
+        while i < len(lines):
+            w = lines[i].split(None, 1); i += 1
+            if w[0] in rows: raise _Unsupported("duplicate taxon")
+            chars = "".join(w[1].split()) if len(w) > 1 else ""
+            while len(chars) < nchar and i < len(lines): chars += "".join(lines[i].split()); i += 1
+            names.append(w[0]); rows[w[0]] = bytearray(chars.encode())
+    if len(names) != ntax or any(len(rows[t]) != nchar for t in names): raise _Unsupported("matrix dimensions")
+    seen = np.zeros(256, bool)
+    for t in names: seen |= np.bincount(np.frombuffer(rows[t], dtype=np.uint8), minlength=256) > 0
+    valid = _NEX_VALID[dt]; valid = valid + valid.lower() + (missing or "") + (gap or "")
+    if any(chr(c) not in valid for c in np.flatnonzero(seen)): raise _Unsupported("characters outside the datatype")
+    # the sets block
+    charsets = {}; taxsets = {}
+    for c in (setsb or "").split(";"):
+        c = c.strip()
+        if not c: continue
+        m = re.match(r"(?is)(charset|taxset)\s+(\S+)\s*=\s*(.*)$", c)
+        if not m: raise _Unsupported("sets statement")
+        kind, nm, body = m.group(1).lower(), m.group(2), m.group(3).split()
+        if kind == "charset":
+            sites = []
+            for tok in body:
+                r = re.match(r"^(\d+)(?:-(\d+))?(?:\\(\d+))?$", tok)
+                if not r: raise _Unsupported("charset range " + tok)
+                a_, b_, st = int(r.group(1)), int(r.group(2) or r.group(1)), int(r.group(3) or 1)
+                if a_ < 1 or b_ < a_ or b_ > nchar: raise _Unsupported("charset range")
+                sites.extend(range(a_ - 1, b_, st))
+            if nm in charsets: raise _Unsupported("charset twice")
+            charsets[nm] = sorted(set(sites))
+        else:
+            if any(t not in rows for t in body): raise _Unsupported("taxset member")
+            taxsets[nm] = sorted(set(body))                           # as Bio.Nexus stores them
+    return names, [rows[t] for t in names], charsets, NexusInfo(dt, missing, gap, charsets, taxsets)
+
+
 def read_input(path, partitions):
-    """returns names, seqs, loci, format, datatype declared by a NEXUS file (or None), nexus"""
+    """returns names, rows (one bytearray per taxon), loci, format, datatype declared by a NEXUS file (or None), and
+    the NEXUS record the writer needs (a Bio.Nexus object, or NexusInfo from the fast reader)"""
     head = open(path).read(64).lstrip()[:7].upper()
     nexus = None; declared = None
     if head.startswith("#NEXUS"):
-        from Bio.Nexus import Nexus
         try:
-            nexus = Nexus.Nexus(path)
-        except Exception as e:
-            sys.exit(f"Bio.Nexus could not parse {path}:\n  {e}\n"
-                     "This tool reads NEXUS with Biopython and accepts only what Bio.Nexus accepts. Common causes: "
-                     "commas inside CHARSET site lists (NEXUS wants whitespace: 'CHARSET x = 1-10 21-30;'), "
-                     "taxon names with '-' or other punctuation that are not quoted, or unusual block formatting. "
-                     "Check for commas in the SETS block, and/or supply the alignment as FASTA with a RAxML-style "
-                     "partition file (--partitions).")
-        names = list(nexus.taxlabels); seqs = [str(nexus.matrix[t]) for t in names]; fmt = "nexus"
-        if nexus.charsets and partitions:
+            names, rows, charsets, nexus = read_nexus_fast(path); dt = nexus.datatype
+        except _Unsupported:
+            from Bio.Nexus import Nexus
+            try:
+                nexus = Nexus.Nexus(path)
+            except Exception as e:
+                sys.exit(f"Bio.Nexus could not parse {path}:\n  {e}\n"
+                         "This tool reads NEXUS with Biopython and accepts only what Bio.Nexus accepts. Common causes: "
+                         "commas inside CHARSET site lists (NEXUS wants whitespace: 'CHARSET x = 1-10 21-30;'), "
+                         "taxon names with '-' or other punctuation that are not quoted, or unusual block formatting. "
+                         "Check for commas in the SETS block, and/or supply the alignment as FASTA with a RAxML-style "
+                         "partition file (--partitions).")
+            names = list(nexus.taxlabels); rows = [bytearray(str(nexus.matrix[t]).encode()) for t in names]
+            charsets = nexus.charsets; dt = (nexus.datatype or "").lower()
+        fmt = "nexus"
+        if charsets and partitions:
             sys.exit("the NEXUS file has charsets and a partition file was given: use one or the other, not both")
-        if nexus.charsets:
-            loci = [(k, np.array(sorted(v), dtype=int)) for k, v in nexus.charsets.items()]
+        if charsets:
+            loci = [(k, np.array(sorted(v), dtype=int)) for k, v in charsets.items()]
         elif partitions:
-            loci = parse_raxml_partitions(partitions, len(seqs[0]))
+            loci = parse_raxml_partitions(partitions, len(rows[0]))
         else:
             sys.exit("the NEXUS file has no charsets: add a SETS block or give --partitions")
-        dt = (nexus.datatype or "").lower()
         if dt in ("dna", "rna", "nucleotide"): declared = "dna"
         elif dt == "protein": declared = "aa"
     else:
@@ -220,30 +366,43 @@ def read_input(path, partitions):
         txt = open(path).read()
         names, seqs = read_fasta(txt) if head.startswith(">") else read_phylip(txt)
         fmt = "fasta" if head.startswith(">") else "phylip"
-        loci = parse_raxml_partitions(partitions, len(seqs[0]))
-    L = len(seqs[0])
-    bad = [t for t, s in zip(names, seqs) if len(s) != L]
+        rows = [bytearray(s.encode()) for s in seqs]; del seqs, txt
+        loci = parse_raxml_partitions(partitions, len(rows[0]))
+    L = len(rows[0])
+    bad = [t for t, r in zip(names, rows) if len(r) != L]
     if bad: sys.exit(f"sequences differ in length (e.g. {bad[0]}): the input must be an alignment")
     dup = sorted(t for t, c in collections.Counter(names).items() if c > 1)
     if dup: sys.exit(f"duplicate taxon names: {dup[:5]}{' ...' if len(dup) > 5 else ''}")
     if not loci: sys.exit("no loci defined")
-    return names, seqs, loci, fmt, declared, nexus
+    return names, rows, loci, fmt, declared, nexus
 
 
 # ------------------------------------------------------------------ output
-def write_masked(path, out_dir, fmt, names, seqs, nexus):
+def write_masked(path, out_dir, fmt, names, rows, nexus):
     stem, ext = os.path.splitext(os.path.basename(path)); out = os.path.join(out_dir, f"{stem}.masked{ext or '.' + fmt}")
-    if fmt == "nexus":
+    if fmt == "nexus" and isinstance(nexus, NexusInfo):
+        with open(out, "wb") as fh:
+            fh.write(b"#NEXUS\nbegin data;\n" + f"dimensions ntax={len(names)} nchar={len(rows[0])};\n".encode())
+            fh.write(("format datatype=" + nexus.datatype + (" missing=" + nexus.missing if nexus.missing else "")
+                      + (" gap=" + nexus.gap if nexus.gap else "") + ";\nmatrix\n").encode())
+            pad = max(len(_safename(t)) for t in names)
+            for t, r in zip(names, rows): fh.write(_safename(t).ljust(pad + 1).encode() + r + b"\n")
+            fh.write(b";\nend;\n")
+            if nexus.charsets or nexus.taxsets:
+                lines = ["\nbegin sets"] + [f"charset {_safename(k)} = {_compact4nexus(v)}" for k, v in nexus.charsets.items() if v] + \
+                        [f"taxset {_safename(k)} = {' '.join(_safename(t) for t in v)}" for k, v in nexus.taxsets.items() if v] + ["end;\n"]
+                fh.write(";\n".join(lines).encode())
+    elif fmt == "nexus":
         from Bio.Seq import Seq
-        for t, s in zip(names, seqs): nexus.matrix[t] = Seq(s)
+        for t, r in zip(names, rows): nexus.matrix[t] = Seq(r.decode())
         nexus.write_nexus_data(filename=out, interleave=False, append_sets=True)
     elif fmt == "fasta":
-        with open(out, "w") as fh:
-            for t, s in zip(names, seqs): fh.write(f">{t}\n{s}\n")
+        with open(out, "wb") as fh:
+            for t, r in zip(names, rows): fh.write(f">{t}\n".encode() + r + b"\n")
     else:
-        with open(out, "w") as fh:
-            fh.write(f"{len(names)} {len(seqs[0])}\n")
-            for t, s in zip(names, seqs): fh.write(f"{t} {s}\n")
+        with open(out, "wb") as fh:
+            fh.write(f"{len(names)} {len(rows[0])}\n".encode())
+            for t, r in zip(names, rows): fh.write(f"{t} ".encode() + r + b"\n")
     return out
 
 
@@ -376,13 +535,13 @@ def main():
     if a.mask_similar_only and a.mask_different_only:
         sys.exit("--mask-similar-only and --mask-different-only are mutually exclusive")
     os.makedirs(a.out, exist_ok=True); t0 = time.time()
-    names, seqs, loci, fmt, declared, nexus = read_input(a.aln, a.partitions)
+    names, rows, loci, fmt, declared, nexus = read_input(a.aln, a.partitions)
     if declared and declared != a.datatype:
         sys.exit(f"--datatype {a.datatype} was given but the NEXUS file declares {declared}")
     dtype = a.datatype
     if len(loci) < 10:
         sys.exit(f"only {len(loci)} loci defined: this is a phylogenomic test and needs at least 10")
-    n, L = len(names), len(seqs[0]); alphabet = DNA if dtype == "dna" else PROTEIN
+    n, L = len(names), len(rows[0]); alphabet = DNA if dtype == "dna" else PROTEIN
     if n < 5: sys.exit(f"only {n} taxa: the test needs at least 5")
     K_eff = min(K, n - 1); K_eff -= 1 - K_eff % 2                    # largest odd <= min(K, n-1)
     M_eff = (K_eff + 1) // 2                                          # fails that make a majority
@@ -393,7 +552,8 @@ def main():
     lut = np.full(256, -1, dtype=np.int8)
     for i, c in enumerate(alphabet): lut[ord(c)] = i; lut[ord(c.lower())] = i
     if dtype == "dna": lut[ord("U")] = lut[ord("u")] = alphabet.index("T")
-    X = lut[np.frombuffer("".join(seqs).encode(), dtype=np.uint8).reshape(n, L)]
+    X = np.empty((n, L), dtype=np.int8)                               # one row at a time: no joined copy of the alignment
+    for i, r in enumerate(rows): X[i] = lut[np.frombuffer(r, dtype=np.uint8)]
 
     # ---- pass 1: per-locus shared/same counts; alignment-wide identity falls out of the sums
     nloc = len(loci)
@@ -470,11 +630,11 @@ def main():
 
     # deterministic tie-break for comparator ranking: pooled divergence, then taxon order
     tie = np.nan_to_num(100.0 - ani, nan=100.0) * 1e-9 + np.arange(n)[None, :] * 1e-12
-    masked = [bytearray(s.encode()) for s in seqs]
+    masked = rows                                                      # blanked in place; X is its own copy
 
     nmasked = run_z(a, names, loci, X, S, W, m, m_hi, m_xs, plateaus, rate, tie, masked, K_eff, M_eff)
 
-    out = write_masked(a.aln, a.out, fmt, names, [mb.decode() for mb in masked], nexus)
+    out = write_masked(a.aln, a.out, fmt, names, masked, nexus)
     print(f"masked {nmasked} cells -> {out}\ndone {time.time() - t0:.0f}s", file=sys.stderr)
 
 
