@@ -999,8 +999,8 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, plateau
                              f"\t{names[recip] if recip is not None else 'NA'}\t{side}\n")
 
         gd = expect(grid_m)
-        trends_block = "".join(f"{name}\t{gm:.4f}\t{100 - gdv:.4f}\t{100 - min(a.min_ratio * gdv, plateaus[li]):.4f}\t{100 - gdv / 3:.4f}\n"
-                               for gm, gdv in zip(grid_m, gd))
+        trends_block = (lname + "\t%.4f\t%.4f\t%.4f\t%.4f\n") * len(grid_m) % tuple(chain.from_iterable(zip(
+            grid_m.tolist(), (100 - gd).tolist(), (100 - np.minimum(a.min_ratio * gd, plateaus[li])).tolist(), (100 - gd / 3).tolist())))
         nflag = sum(fcount.values()); fstr = "/".join(str(fcount[j]) for j in range(M_eff, K_eff + 1))
         per_line = (f"{name}\t{len(sites)}\t{int((nres > 0).sum())}\t{len(idx)}\t{len(gi)}\t"
                     f"{rate[li]:.3f}\t{plateaus[li]:.1f}\t{kq:.2f}\t{nflag}\t"
