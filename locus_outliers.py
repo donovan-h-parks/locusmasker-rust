@@ -553,7 +553,17 @@ def _expand(tri, n, iu):
     M = np.empty((n, n), tri.dtype); M[iu] = tri; M[iu[1], iu[0]] = tri; return M
 
 
-def pair_divergences(S, W, n, iu, rr=None, ok_r=None, chunk_bytes=256 << 20, threads=1):
+def _mem_available():
+    """bytes of memory the run can take without swapping: Linux MemAvailable, else the free physical pages, else 2 GB"""
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemAvailable:"): return int(line.split()[1]) * 1024
+    except OSError: pass
+    try: return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_AVPHYS_PAGES")
+    except (ValueError, OSError, AttributeError): return 2 << 30
+
+
+def pair_divergences(S, W, n, iu, rr=None, ok_r=None, threads=1):
     """for every taxon pair (flattened n*n): the site-weighted median over loci of the pair's divergence
     (rate-normalised by rr when given), the same median of the resolution floor (half a mismatch per locus),
     and the number of loci contributing; pairs with fewer than MIN_LOCI_FOR_M loci get NaN. Self pairs carry
@@ -563,8 +573,15 @@ def pair_divergences(S, W, n, iu, rr=None, ok_r=None, chunk_bytes=256 << 20, thr
     nloc, npair = S.shape                                               # the pairs are the upper triangle, diagonal included
     m = np.full(npair, np.nan); m_fl = np.full(npair, np.nan); nl = np.zeros(npair, dtype=np.int64)
     diag = np.flatnonzero(iu[0] == iu[1])
-    chunk = max(int(chunk_bytes // (8 * 8 * max(nloc, 1) * max(threads, 1))), 1)   # the budget is shared by the threads' chunks
-    if threads > 1: chunk = max(min(chunk, -(-npair // (4 * threads))), 1)      # enough chunks to keep the workers busy
+    # chunk size from the machine: each chunk's temporaries are about 64 bytes per locus x pair, the in-flight chunks
+    # (one per thread) may take a quarter of the memory available now, and no chunk is below 8 MB (the per-chunk
+    # Python overhead must stay negligible against the sorts) or above 256 MB (nothing is gained beyond it)
+    threads = max(threads, 1)
+    per_chunk = min(256 << 20, max(8 << 20, _mem_available() // (4 * threads)))
+    chunk = max(int(per_chunk // (64 * max(nloc, 1))), 1)
+    if threads > 1: chunk = max(min(chunk, -(-npair // (4 * threads))), 1)      # at least four chunks per thread
+    chunk = min(chunk, npair)
+    print(f"pair stage: {-(-npair // chunk)} chunk{'s' if npair > chunk else ''} of {chunk} pairs, about {max(chunk * 64 * nloc >> 20, 1)} MB each, {threads} thread{'s' if threads > 1 else ''}", file=sys.stderr)
     def do_chunk(c0):
         c1 = min(c0 + chunk, npair)
         Sc = S[:, c0:c1].astype(np.float32); Wc = W[:, c0:c1].astype(np.float32)
@@ -670,10 +687,15 @@ def main():
         cnt = np.bincount(Xm[Xm >= 0], minlength=len(alphabet)).astype(float)
         f = cnt / max(cnt.sum(), 1.0)
         plateaus[li] = max(100.0 * (1.0 - float((f ** 2).sum())), 1.0)
-    if a.threads > 1:
-        with ThreadPoolExecutor(a.threads) as ex: list(ex.map(locus_counts, range(nloc), chunksize=max(1, nloc // (8 * a.threads))))
+    # loci in flight at once: the threads, but no more than a quarter of the memory available now allows, each
+    # locus needing about three taxa x taxa float32 matrices plus two one-hot copies of its sites
+    per_locus = 3 * n * n * 4 + 2 * n * max(len(sites) for _, sites in loci) * 4
+    workers = max(1, min(a.threads, int((_mem_available() // 4) // per_locus)))
+    if workers > 1:
+        with ThreadPoolExecutor(workers) as ex: list(ex.map(locus_counts, range(nloc), chunksize=max(1, nloc // (8 * workers))))
     else:
         for li in range(nloc): locus_counts(li)
+    if workers < a.threads: print(f"pass one: {workers} of {a.threads} threads used, to keep the loci in flight within a quarter of the memory available", file=sys.stderr)
     present = (W[:, diag_pos] >= a.fit_overlap).sum(0)
     thin = np.flatnonzero(present < MIN_LOCI_PER_TAXON)
     open(f"{a.out}/excluded_taxa.txt", "w").write("".join(f"{names[i]}\t{int(present[i])}\n" for i in thin))
