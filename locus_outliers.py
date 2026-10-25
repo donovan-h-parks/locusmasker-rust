@@ -121,6 +121,9 @@ MIN_LOCI_PER_TAXON = 10 # a taxon needs this many loci with >= fit-overlap resid
 MIN_FIT_PAIRS = 8       # a locus needs this many fit pairs to be tested (or to get a rate)
 LR_BAR = 10.0           # |2 ln LR| above which a similar event's direction is attributed
 TEST_THREAD_PAIRS = 4000  # --threads applies to the test stage only when a locus has this many comparisons on average
+PASS1_FLOPS_PER_THREAD = 3e7    # pass one adds a thread per this many floating-point operations per locus: below it the
+                                # interpreter lock around the small matrix products costs more than the thread gains
+                                # (measured: 90 taxa x 590 sites, 2e8 flops per locus, is fastest at 4-8 threads, slower at 13+)
 
 
 # ------------------------------------------------------------------ input
@@ -553,6 +556,12 @@ def _expand(tri, n, iu):
     M = np.empty((n, n), tri.dtype); M[iu] = tri; M[iu[1], iu[0]] = tri; return M
 
 
+def _cpus():
+    """CPUs this process may run on (its affinity mask on Linux), else the machine's count"""
+    try: return max(1, len(os.sched_getaffinity(0)))
+    except (AttributeError, OSError): return max(1, os.cpu_count() or 1)
+
+
 def _mem_available():
     """bytes of memory the run can take without swapping: Linux MemAvailable, else the free physical pages, else 2 GB"""
     try:
@@ -577,10 +586,11 @@ def pair_divergences(S, W, n, iu, rr=None, ok_r=None, threads=1):
     # (one per thread) may take a quarter of the memory available now, and no chunk is below 8 MB (the per-chunk
     # Python overhead must stay negligible against the sorts) or above 256 MB (nothing is gained beyond it)
     threads = max(threads, 1)
-    per_chunk = min(256 << 20, max(8 << 20, _mem_available() // (4 * threads)))
+    per_chunk = min(256 << 20, max(32 << 20, _mem_available() // (4 * threads)))
     chunk = max(int(per_chunk // (64 * max(nloc, 1))), 1)
-    if threads > 1: chunk = max(min(chunk, -(-npair // (4 * threads))), 1)      # at least four chunks per thread
+    if threads > 1: chunk = max(min(chunk, -(-npair // (4 * threads))), int((32 << 20) // (64 * max(nloc, 1))), 1)   # four chunks per thread, but never below 32 MB
     chunk = min(chunk, npair)
+    threads = max(1, min(threads, -(-npair // chunk)))                       # no more workers than chunks
     print(f"pair stage: {-(-npair // chunk)} chunk{'s' if npair > chunk else ''} of {chunk} pairs, about {max(chunk * 64 * nloc >> 20, 1)} MB each, {threads} thread{'s' if threads > 1 else ''}", file=sys.stderr)
     def do_chunk(c0):
         c1 = min(c0 + chunk, npair)
@@ -642,8 +652,10 @@ def main():
     ap.add_argument("--n-comp", type=int, default=5); ap.add_argument("--fit-overlap", type=int, default=20)
     ap.add_argument("--alpha", type=float, default=0.05); ap.add_argument("--min-ratio", type=float, default=2.0)
     ap.add_argument("--mask-similar-only", action="store_true"); ap.add_argument("--mask-different-only", action="store_true")
-    ap.add_argument("--threads", type=int, default=1, help="worker threads for the per-locus counts and the pair divergences")
-    a = ap.parse_args(); K = a.n_comp; a.threads = max(1, a.threads)
+    ap.add_argument("--threads", type=int, default=1, help="worker threads (0: every CPU available); each stage uses as many as pay off, never more than the CPUs")
+    a = ap.parse_args(); K = a.n_comp
+    ncpu = _cpus(); asked = a.threads; a.threads = ncpu if asked <= 0 else max(1, min(asked, ncpu))
+    if asked > ncpu: print(f"threads: {asked} asked, {ncpu} CPUs available to this process: using {a.threads}", file=sys.stderr)
     if K < 3 or K % 2 == 0: sys.exit("--n-comp must be an odd number of at least 3")
     if a.mask_similar_only and a.mask_different_only:
         sys.exit("--mask-similar-only and --mask-different-only are mutually exclusive")
@@ -690,12 +702,13 @@ def main():
     # loci in flight at once: the threads, but no more than a quarter of the memory available now allows, each
     # locus needing about three taxa x taxa float32 matrices plus two one-hot copies of its sites
     per_locus = 3 * n * n * 4 + 2 * n * max(len(sites) for _, sites in loci) * 4
-    workers = max(1, min(a.threads, int((_mem_available() // 4) // per_locus)))
+    flops = 2.0 * n * n * float(np.mean([len(sites) for _, sites in loci])) * (len(alphabet) + 1)   # matrix-product work of a typical locus
+    workers = max(1, min(a.threads, nloc, int((_mem_available() // 4) // per_locus), int(round(flops / PASS1_FLOPS_PER_THREAD))))
     if workers > 1:
         with ThreadPoolExecutor(workers) as ex: list(ex.map(locus_counts, range(nloc), chunksize=max(1, nloc // (8 * workers))))
     else:
         for li in range(nloc): locus_counts(li)
-    if workers < a.threads: print(f"pass one: {workers} of {a.threads} threads used, to keep the loci in flight within a quarter of the memory available", file=sys.stderr)
+    if workers < a.threads: print(f"pass one: {workers} of {a.threads} threads (the loci are small, few, or large in memory)", file=sys.stderr)
     present = (W[:, diag_pos] >= a.fit_overlap).sum(0)
     thin = np.flatnonzero(present < MIN_LOCI_PER_TAXON)
     open(f"{a.out}/excluded_taxa.txt", "w").write("".join(f"{names[i]}\t{int(present[i])}\n" for i in thin))
@@ -776,7 +789,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, plateau
     # each taxon's candidates in order of pair divergence (the tie-break makes every row a strict order), computed
     # once: a locus's comparators are the first K candidates that share enough sites with the taxon at that locus
     big = n >= 1000
-    prepool = ThreadPoolExecutor(a.threads) if a.threads > 1 and big else None
+    prepool = ThreadPoolExecutor(min(a.threads, nloc)) if a.threads > 1 and big else None
     order = np.empty((n, n), np.int32)
     def sort_rows(b0):
         b1 = min(b0 + 256, n); order[b0:b1] = np.argsort(mj[b0:b1], axis=1)
@@ -864,7 +877,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, plateau
     # worker threads pay off in the test only when a locus's arrays are large (thousands of pairs): with small loci
     # the per-call interpreter-lock traffic of many small numpy operations makes threads slower than one
     ntested = sum(1 for t in sel if (t[2] > 0).any())
-    pool = ThreadPoolExecutor(a.threads) if a.threads > 1 and Npairs / max(ntested, 1) >= TEST_THREAD_PAIRS else None
+    pool = ThreadPoolExecutor(min(a.threads, nloc)) if a.threads > 1 and Npairs / max(ntested, 1) >= TEST_THREAD_PAIRS else None
     # dispersion pre-pass: the robust spread of observed/expected among each locus's resolved comparator
     # pairs with enough expected mismatches, with the Poisson part removed: Var(O/E) = 1/E + phi
     def locus_phi(li):
