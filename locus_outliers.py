@@ -125,9 +125,10 @@ LR_BAR = 10.0           # |2 ln LR| above which a similar event's direction is a
 TEST_THREAD_PAIRS = 4000  # --threads applies to the test stage only when a locus has this many comparisons on average
 PAIRS_DTYPE = np.dtype([("locus", "i4"), ("taxon", "i4"), ("rank", "i1"), ("comparator", "i4"), ("pair_div", "f4"), ("overlap", "i4"),
                         ("identity", "f4"), ("expected", "f4"), ("excess", "f4"), ("fail", "i1"), ("fail_similar", "i1")])
-PASS1_FLOPS_PER_THREAD = 3e7    # pass one adds a thread per this many floating-point operations per locus: below it the
+PASS1_FLOPS_PER_THREAD = 2e7    # pass one adds a thread per this many floating-point operations per locus: below it the
                                 # interpreter lock around the small matrix products costs more than the thread gains
-                                # (measured: 90 taxa x 590 sites, 2e8 flops per locus, is fastest at 4-8 threads, slower at 13+)
+                                # (measured: 90 taxa x 590 sites, 4e7 flops per locus with the per-letter products, is
+                                # fastest at 1-2 threads and slower at 4 or more)
 
 
 # ------------------------------------------------------------------ input
@@ -720,7 +721,11 @@ def main():
     # loci in flight at once: the threads, but no more than a quarter of the memory available now allows, each
     # locus needing about three taxa x taxa float32 matrices plus two one-hot copies of its sites
     per_locus = 3 * n * n * 4 + 2 * n * max(len(sites) for _, sites in loci) * 4
-    flops = 2.0 * n * n * float(np.mean([len(sites) for _, sites in loci])) * (len(alphabet) + 1)   # matrix-product work of a typical locus
+    # the matrix-product work of a typical locus: the presence product plus one product per letter over the sites where
+    # the letter occurs, so the mean number of distinct letters per site (from a sample of loci) sets the width
+    sample = [loci[i][1] for i in np.linspace(0, nloc - 1, min(nloc, 64)).astype(int)]
+    kbar = float(np.mean([np.mean([(X[:, st] == i).any(0).mean() for i in range(len(alphabet))]) * len(alphabet) for st in sample]))
+    flops = 2.0 * n * n * float(np.mean([len(sites) for _, sites in loci])) * (1.0 + kbar)
     workers = max(1, min(a.threads, nloc, int((_mem_available() // 4) // per_locus), int(round(flops / PASS1_FLOPS_PER_THREAD))))
     if workers > 1:
         with ThreadPoolExecutor(workers) as ex: list(ex.map(locus_counts, range(nloc), chunksize=max(1, nloc // (8 * workers))))
