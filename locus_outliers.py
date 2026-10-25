@@ -105,7 +105,7 @@ Options
   (constants in the code: HALF = 0.5 mismatch for the resolution floor and the rate
   pseudocount; dispersion from pairs with >= 10 expected mismatches, shrinkage weight 30)
 """
-import argparse, collections, csv, math, os, re, sys, time
+import argparse, base64, collections, csv, hashlib, io, json, math, os, platform, re, subprocess, sys, threading, time, zipfile
 for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):   # BLAS stays single-threaded (its matrices are
     os.environ.setdefault(_v, "1")                                          # small); --threads parallelises over loci and pairs
 import numpy as np
@@ -123,6 +123,14 @@ MIN_LOCI_PER_TAXON = 10 # a taxon needs this many loci with >= fit-overlap resid
 MIN_FIT_PAIRS = 8       # a locus needs this many fit pairs to be tested (or to get a rate)
 LR_BAR = 10.0           # |2 ln LR| above which a similar event's direction is attributed
 TEST_THREAD_PAIRS = 4000  # --threads applies to the test stage only when a locus has this many comparisons on average
+__version__ = "0.9.0"
+REPORT_FORMAT = 1                 # bundle format version; the viewer refuses a newer one
+DENSE_CELLS_MAX = 8_000_000       # per-cell numeric report columns are dense (taxa x loci) up to this many cells, sparse beyond
+BEST_MATCH_ALL_MAX_TAXA = 2000    # best matches for every tested cell up to this many taxa; beyond, only for cells with a fail
+BEST_MATCH_MIN_SITES = 30         # a best match needs this many focal residues (as plot_panels.best_matches)
+REPORT_SEQ_ALL_MAX = 32 << 20     # --report-sequences auto carries the whole alignment up to this many bytes, else the cells' rows
+REPORT_INLINE_MAX = 64 << 20      # base64 characters that still go inside report.html; above it the data goes to report_data.js
+CODE_SIMILAR, CODE_TICK, CODE_ABSENT = 128, 254, 255   # site-code bytes beyond the 0..K mismatch counts
 PAIRS_DTYPE = np.dtype([("locus", "i4"), ("taxon", "i4"), ("rank", "i1"), ("comparator", "i4"), ("pair_div", "f4"), ("overlap", "i4"),
                         ("identity", "f4"), ("expected", "f4"), ("excess", "f4"), ("fail", "i1"), ("fail_similar", "i1")])
 PASS1_FLOPS_PER_THREAD = 2e7    # pass one adds a thread per this many floating-point operations per locus: below it the
@@ -376,7 +384,8 @@ def read_input(path, partitions):
         try:
             names, rows, charsets, nexus = read_nexus_fast(path); dt = nexus.datatype
         except _Unsupported:
-            from Bio.Nexus import Nexus
+            try: from Bio.Nexus import Nexus
+            except ImportError: sys.exit(f"{path} is a NEXUS file the fast reader does not handle (comments, quoted names, duplicates); parsing it needs Biopython, which is not installed: install biopython, or supply plain NEXUS or FASTA/PHYLIP plus a partition file")
             try:
                 nexus = Nexus.Nexus(path)
             except Exception as e:
@@ -431,7 +440,8 @@ def write_masked(path, out_dir, fmt, names, rows, nexus):
                         [f"taxset {_safename(k)} = {' '.join(_safename(t) for t in v)}" for k, v in nexus.taxsets.items() if v] + ["end;\n"]
                 fh.write(";\n".join(lines).encode())
     elif fmt == "nexus":
-        from Bio.Seq import Seq
+        try: from Bio.Seq import Seq
+        except ImportError: sys.exit("writing the masked alignment back into this NEXUS file needs Biopython, which is not installed")
         for t, r in zip(names, rows): nexus.matrix[t] = Seq(r.decode())
         nexus.write_nexus_data(filename=out, interleave=False, append_sets=True)
     elif fmt == "fasta":
@@ -583,7 +593,181 @@ def _mem_available():
     except (ValueError, OSError, AttributeError): return 2 << 30
 
 
-def pair_divergences(S, W, n, iu, rr=None, ok_r=None, threads=1):
+
+class _Log:
+    """stderr prose that also goes to run.log; per-locus detail lines reach the terminal only when no progress bar is drawn"""
+    def __init__(self): self.real = sys.stderr; self.fh = None; self.bar = False
+    def open(self, path): self.fh = open(path, "w", encoding="utf-8")
+    def __call__(self, msg):
+        if self.bar: self.real.write("\r\x1b[K")
+        self.real.write(msg + "\n"); self.real.flush()
+        if self.fh: self.fh.write(msg + "\n"); self.fh.flush()
+    def detail(self, msg):
+        if self.fh: self.fh.write(msg + "\n")
+        if not self.bar: self.real.write(msg + "\n")
+    def close(self):
+        if self.fh: self.fh.close(); self.fh = None
+LOG = _Log()
+
+
+class Progress:
+    """stage progress for the terminal and the website. `bar` draws one updating line per stage; `lines` prints
+    progress<TAB>stage<TAB>done<TAB>total<TAB>elapsed_s<TAB>extra at most twice a second (what the website reads);
+    `auto` is a bar on a terminal and lines at 2% steps otherwise; `none` is silent. Ticks may come from worker threads."""
+    def __init__(self, mode="none", t0=None):
+        self.mode = ("bar" if sys.stderr.isatty() else "sparse") if mode == "auto" else mode
+        self.t0 = time.time() if t0 is None else t0; self.lock = threading.Lock(); self.stage = None; self.out = sys.stderr
+        self.durations = {}
+        enc = (getattr(self.out, "encoding", "") or "").lower().replace("-", "")
+        self.fill, self.empty = ("\u2588", "\u2591") if enc == "utf8" else ("#", ".")
+    def start(self, stage, total, extra=""):
+        with self.lock:
+            if self.stage is not None: self._finish()
+            self.stage, self.total, self.done, self.extra = stage, max(int(total), 1), 0, extra
+            self.ts = time.time(); self.last = 0.0; self.next_frac = 0.02
+            self._emit(self.ts)
+    def tick(self, k=1, extra=None):
+        if self.stage is None: return
+        with self.lock:
+            self.done += k
+            if extra is not None: self.extra = extra
+            now = time.time()
+            if self.mode == "sparse":
+                if self.done >= self.total or self.done / self.total >= self.next_frac:
+                    self.next_frac = math.floor(self.done / self.total * 50 + 1) / 50; self._emit(now)
+            elif now - self.last >= 0.5 or self.done >= self.total: self._emit(now)
+    def finish(self):
+        with self.lock: self._finish()
+    def event(self, *fields):
+        """a structured line for the website (lines mode only): event<TAB>kind<TAB>..."""
+        if self.mode == "lines": self.out.write("event\t" + "\t".join(str(f) for f in fields) + "\n"); self.out.flush()
+    def _finish(self):
+        if self.stage is None: return
+        self.done = self.total; now = time.time(); self.durations[self.stage] = round(now - self.ts, 2); self._emit(now, final=True); self.stage = None
+    def _emit(self, now, final=False):
+        if self.mode == "none": return
+        el = now - self.t0; st = now - self.ts
+        if self.mode in ("lines", "sparse"):
+            self.out.write(f"progress\t{self.stage}\t{self.done}\t{self.total}\t{el:.1f}\t{self.extra}\n"); self.out.flush(); self.last = now; return
+        frac = self.done / self.total; w = 28; filled = int(round(frac * w))
+        eta = (st / frac - st) if 0 < frac < 1 else 0.0
+        left = "" if final else (f"{eta:4.0f} s left" if frac > 0 else "")
+        line = f"\r{self.stage:<12s} {self.fill * filled}{self.empty * (w - filled)} {self.done:>8,}/{self.total:<8,} {st:5.0f} s {left:>11s}  {self.extra}"
+        self.out.write(line[:220] + "\x1b[K" + ("\n" if final else "")); self.out.flush(); self.last = now
+PROG = Progress("none")
+
+
+def _git_commit():
+    """the short commit of the script's checkout, when it is one"""
+    try:
+        return subprocess.run(["git", "-C", os.path.dirname(os.path.abspath(__file__)), "rev-parse", "--short", "HEAD"],
+                              capture_output=True, text=True, timeout=5).stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _ranges(sites):
+    """a locus's site indices as [start, end, step] runs (0-based, inclusive): one run for a contiguous locus"""
+    sites = np.asarray(sites); runs = []; i = 0
+    while i < len(sites):
+        j = i + 1; step = int(sites[j] - sites[i]) if j < len(sites) else 1
+        while j + 1 < len(sites) and sites[j + 1] - sites[j] == step: j += 1
+        if j == i + 1 and step != 1 and j < len(sites):           # two sites with an odd gap: emit the first alone
+            runs.append([int(sites[i]), int(sites[i]), 1]); i += 1; continue
+        if j >= len(sites): j = len(sites) - 1
+        runs.append([int(sites[i]), int(sites[j]), step if j > i else 1]); i = j + 1
+    return runs
+
+
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for blk in iter(lambda: fh.read(1 << 20), b""): h.update(blk)
+    return h.hexdigest()
+
+
+def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
+    """report.npz, a ZIP of .npy members and JSON that np.load opens like an .npz, and report.html, the viewer with
+    the bundle inline as base64 (or beside it in report_data.js when it is too large for one file)"""
+    n, nloc = len(names), len(loci)
+    dense = rep["dense"]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        def put(name, arr):
+            b = io.BytesIO(); np.lib.format.write_array(b, np.ascontiguousarray(arr), version=(1, 0)); zf.writestr(name, b.getvalue())
+        def put_json(name, obj): zf.writestr(name, json.dumps(obj, indent=1))
+        for k in ("n_comp", "n_fail", "n_similar", "side", "focal_sites"): put(f"cells/{k}.npy", rep[k])
+        numcols = ("med_identity", "med_expected", "excess_m", "closest", "closest_overlap", "closest_identity", "closest_expected",
+                   "best_match", "best_match_identity", "partner", "lam", "lam_p")
+        if dense:
+            for k in numcols: put(f"cells/{k}.npy", rep[k])
+            put("cells/comparators.npy", rep["comparators"])
+        else:
+            put("cells/sparse_locus.npy", rep["sparse_locus"]); put("cells/sparse_taxon.npy", rep["sparse_taxon"])
+            for k in numcols: put(f"cells/{k}.npy", rep[k])
+            put("cells/comparators.npy", rep["comparators"])
+        for li, (cells_, blk) in rep["codes"].items():
+            put(f"codes/{li}.npy", blk); put(f"codes/{li}_cells.npy", cells_)
+        for li, (rows_, blk) in rep["seqs"].items():
+            put(f"seq/{li}.npy", blk); put(f"seq/{li}_taxa.npy", rows_)
+        put("taxa/closest.npy", rep["closest"])
+        side = rep["side"]; n_comp = rep["n_comp"]; n_fail = rep["n_fail"]
+        tested = n_comp > 0
+        counts = dict(taxa=n, loci=nloc, cells=int(tested.sum()), present=int((rep["focal_sites"] > 0).sum()),
+                      masked=int(((side & 3) > 0).sum()), masked_divergent=int((side & 1 > 0).sum()), masked_similar=int((side & 2 > 0).sum()),
+                      masked_both=int(((side & 3) == 3).sum()), ambiguous=int((side & 4 > 0).sum()),
+                      near_miss={str(j): int(((n_fail == j) & tested & ((side & 1) == 0)).sum()) for j in range(1, M_eff)},
+                      excluded_taxa=int(len(rep["thin"])), skipped_loci=int(sum(1 for st in rep["loc_status"] if st != "tested")))
+        thin = set(int(t) for t in rep["thin"])
+        put_json("taxa.json", dict(
+            names=list(names),
+            status=[("excluded: %d loci with at least %d residues, %d needed" % (int(rep["present"][i]), a.fit_overlap, MIN_LOCI_PER_TAXON)) if i in thin else "tested" for i in range(n)],
+            loci_present=[int(v) for v in (rep["focal_sites"] > 0).sum(1)]))
+        put_json("loci.json", dict(
+            names=[nm for nm, _ in loci], length=[int(len(st)) for _, st in loci], ranges=[_ranges(st) for _, st in loci],
+            status=list(rep["loc_status"]), rate=[None if not np.isfinite(v) else round(float(v), 5) for v in rep["rate"]],
+            plateau=[round(float(v), 3) for v in rep["plateaus"]], phi=[None if not np.isfinite(v) else round(float(v), 5) for v in rep["phi"]]))
+        put_json("manifest.json", dict(
+            format_version=REPORT_FORMAT, tool="LocusMasker", version=__version__, commit=_git_commit(),
+            python=platform.python_version(), numpy=np.__version__, platform=("pyodide" if sys.platform == "emscripten" else "native"),
+            system=platform.platform(), date=time.strftime("%Y-%m-%d %H:%M:%S"), command=" ".join(sys.argv),
+            options=dict(datatype=dtype, n_comp=K, K_eff=K_eff, M_eff=M_eff, fit_overlap=a.fit_overlap, alpha=a.alpha, min_ratio=a.min_ratio,
+                         mask_similar_only=a.mask_similar_only, mask_different_only=a.mask_different_only, threads=a.threads,
+                         report_codes=a.report_codes, report_sequences=rep["seq_policy"]),
+            input=dict(file=os.path.basename(a.aln), bytes=os.path.getsize(a.aln), sha256=_sha256(a.aln), format=fmt,
+                       partitions=os.path.basename(a.partitions) if a.partitions else None),
+            dataset=a.name or (os.path.basename(os.path.dirname(os.path.abspath(a.aln))) if os.path.splitext(os.path.basename(a.aln))[0].lower() == "alignment" and os.path.basename(os.path.dirname(os.path.abspath(a.aln))) not in ("", ".", "work") else os.path.splitext(os.path.basename(a.aln))[0]),
+            counts=counts, test=dict(comparisons=int(rep["Npairs"]), bonferroni_k=round(float(rep["kq"]), 4), log_bar=round(float(rep["logbar"]), 4),
+                                     phi_dataset=round(float(rep["phi_bar"]), 6), lr_bar=LR_BAR, half=HALF),
+            carried=dict(numeric_columns="dense" if dense else "sparse", codes=a.report_codes, sequences=rep["seq_policy"],
+                         best_match_cells="all" if n <= BEST_MATCH_ALL_MAX_TAXA else "fails"),
+            code_map=dict(mismatch_count_max=K_eff, similar_base=CODE_SIMILAR, tick=CODE_TICK, absent=CODE_ABSENT),
+            side_bits=dict(masked_divergent=1, masked_similar=2, ambiguous=4, direction_identified=8, flagged_not_masked=16, similar_not_masked=32),
+            timings=dict(PROG.durations, total=round(time.time() - t0, 2))))
+    data = buf.getvalue()
+    with open(f"{a.out}/report.npz", "wb") as fh: fh.write(data)
+    tpl_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer"); tpl = os.path.join(tpl_dir, "viewer.html")
+    if not os.path.exists(tpl):
+        LOG(f"report.html not written: the viewer template is not beside the script ({tpl}); report.npz holds the data"); return
+    html = open(tpl, encoding="utf-8").read()
+    def inline_script(mt):
+        src = os.path.join(tpl_dir, mt.group(1)); return "<script>\n" + open(src, encoding="utf-8").read() + "\n</script>"
+    def inline_style(mt):
+        src = os.path.join(tpl_dir, mt.group(1)); return "<style>\n" + open(src, encoding="utf-8").read() + "\n</style>"
+    b64 = base64.b64encode(data).decode("ascii")
+    if len(b64) <= REPORT_INLINE_MAX:                              # the markers first, so nothing inlined afterwards can carry them
+        html = html.replace("@@BUNDLE@@", b64).replace("@@SIDECAR@@", "")
+    else:
+        with open(f"{a.out}/report_data.js", "w") as fh: fh.write('window.LM_BUNDLE_B64 = "' + b64 + '";\n')
+        html = html.replace("@@BUNDLE@@", "").replace("@@SIDECAR@@", '<script src="report_data.js"></script>')
+        LOG(f"report.html: the data ({len(b64) >> 20} MB as text) is beside the page in report_data.js; keep the two files together")
+    html = re.sub(r'<script src="([^"]+)"></script>', inline_script, html)
+    html = re.sub(r'<link rel="stylesheet" href="([^"]+)">', inline_style, html)
+    with open(f"{a.out}/report.html", "w", encoding="utf-8") as fh: fh.write(html)
+    LOG(f"report: report.html ({os.path.getsize(f'{a.out}/report.html') >> 20} MB), report.npz ({len(data) >> 20} MB)")
+
+
+def pair_divergences(S, W, n, iu, rr=None, ok_r=None, threads=1, progress=None, stage="pairs"):
     """for every taxon pair (flattened n*n): the site-weighted median over loci of the pair's divergence
     (rate-normalised by rr when given), the same median of the resolution floor (half a mismatch per locus),
     and the number of loci contributing; pairs with fewer than MIN_LOCI_FOR_M loci get NaN. Self pairs carry
@@ -602,7 +786,7 @@ def pair_divergences(S, W, n, iu, rr=None, ok_r=None, threads=1):
     if threads > 1: chunk = max(min(chunk, -(-npair // (4 * threads))), int((32 << 20) // (64 * max(nloc, 1))), 1)   # four chunks per thread, but never below 32 MB
     chunk = min(chunk, npair)
     threads = max(1, min(threads, -(-npair // chunk)))                       # no more workers than chunks
-    print(f"pair stage: {-(-npair // chunk)} chunk{'s' if npair > chunk else ''} of {chunk} pairs, about {max(chunk * 64 * nloc >> 20, 1)} MB each, {threads} thread{'s' if threads > 1 else ''}", file=sys.stderr)
+    LOG(f"pair stage: {-(-npair // chunk)} chunk{'s' if npair > chunk else ''} of {chunk} pairs, about {max(chunk * 64 * nloc >> 20, 1)} MB each, {threads} thread{'s' if threads > 1 else ''}")
     def do_chunk(c0):
         c1 = min(c0 + chunk, npair)
         Sc = S[:, c0:c1].astype(np.float32); Wc = W[:, c0:c1].astype(np.float32)
@@ -618,11 +802,14 @@ def pair_divergences(S, W, n, iu, rr=None, ok_r=None, threads=1):
         nan_fb = np.full(c1 - c0, np.nan)
         m[c0:c1], nl[c0:c1] = pair_median(Dv, Wm, MIN_LOCI_FOR_M, nan_fb)
         m_fl[c0:c1], _ = pair_median(Wfl, Wm, MIN_LOCI_FOR_M, nan_fb)
+        if progress: progress.tick()
     starts = range(0, npair, chunk)
+    if progress: progress.start(stage, len(starts))
     if threads > 1:
         with ThreadPoolExecutor(threads) as ex: list(ex.map(do_chunk, starts))
     else:
         for c0 in starts: do_chunk(c0)
+    if progress: progress.finish()
     return _expand(m, n, iu), _expand(m_fl, n, iu), _expand(nl, n, iu)
 
 
@@ -656,14 +843,27 @@ def main():
     ap.add_argument("--alpha", type=float, default=0.05); ap.add_argument("--min-ratio", type=float, default=2.0)
     ap.add_argument("--mask-similar-only", action="store_true"); ap.add_argument("--mask-different-only", action="store_true")
     ap.add_argument("--threads", type=int, default=1, help="worker threads (0: every CPU available); each stage uses as many as pay off, never more than the CPUs")
+    ap.add_argument("--progress", choices=("auto", "bar", "lines", "none"), default="auto",
+                    help="auto: a progress bar on a terminal, progress lines at 2%% steps otherwise; lines: progress<TAB>stage<TAB>done<TAB>total<TAB>elapsed<TAB>extra at most twice a second")
+    ap.add_argument("--report-codes", choices=("fails", "masked", "none"), default="fails", help="site codes in the report: for every cell with a failing comparator (default), masked cells only, or none")
+    ap.add_argument("--report-sequences", choices=("auto", "all", "fails", "masked", "none"), default="auto",
+                    help="sequences in the report: the whole alignment, the rows of every cell with a failing comparator, of masked cells only, or none; auto: all when the alignment is small, else fails")
+    ap.add_argument("--no-report", action="store_true", help="write no report.html / report.npz")
+    ap.add_argument("--name", help="dataset name shown in the report (default: the alignment file's stem, or its folder when the file is called alignment.*)")
     a = ap.parse_args(); K = a.n_comp
+    global PROG
+    os.makedirs(a.out, exist_ok=True); t0 = time.time(); LOG.open(f"{a.out}/run.log")
+    PROG = Progress(a.progress, t0); LOG.bar = PROG.mode == "bar"
+    LOG(f"LocusMasker {__version__} ({_git_commit()}) on {time.strftime('%Y-%m-%d %H:%M:%S')}; python {platform.python_version()}, numpy {np.__version__}, {platform.platform()}")
+    LOG("command: " + " ".join(sys.argv))
     ncpu = _cpus(); asked = a.threads; a.threads = ncpu if asked <= 0 else max(1, min(asked, ncpu))
-    if asked > ncpu: print(f"threads: {asked} asked, {ncpu} CPUs available to this process: using {a.threads}", file=sys.stderr)
+    if asked > ncpu: LOG(f"threads: {asked} asked, {ncpu} CPUs available to this process: using {a.threads}")
     if K < 3 or K % 2 == 0: sys.exit("--n-comp must be an odd number of at least 3")
     if a.mask_similar_only and a.mask_different_only:
         sys.exit("--mask-similar-only and --mask-different-only are mutually exclusive")
-    os.makedirs(a.out, exist_ok=True); t0 = time.time()
+    PROG.start("read", 1)
     names, rows, loci, fmt, declared, nexus = read_input(a.aln, a.partitions)
+    PROG.finish()
     if declared and declared != a.datatype:
         sys.exit(f"--datatype {a.datatype} was given but the NEXUS file declares {declared}")
     dtype = a.datatype
@@ -673,8 +873,8 @@ def main():
     if n < 5: sys.exit(f"only {n} taxa: the test needs at least 5")
     K_eff = min(K, n - 1); K_eff -= 1 - K_eff % 2                    # largest odd <= min(K, n-1)
     M_eff = (K_eff + 1) // 2                                          # fails that make a majority
-    if K_eff < K: print(f"n-comp shrunk to {K_eff} ({n} taxa)", file=sys.stderr)
-    print(f"{n} taxa, {L} sites, {len(loci)} loci, {dtype}, {fmt}", file=sys.stderr)
+    if K_eff < K: LOG(f"n-comp shrunk to {K_eff} ({n} taxa)")
+    LOG(f"{n} taxa, {L} sites, {len(loci)} loci, {dtype}, {fmt}")
     open(f"{a.out}/taxa.txt", "w").write("\n".join(names) + "\n")
 
     lut = np.full(256, -1, dtype=np.int8)
@@ -710,6 +910,7 @@ def main():
         cnt = np.bincount(Xm[Xm >= 0], minlength=len(alphabet)).astype(float)
         f = cnt / max(cnt.sum(), 1.0)
         plateaus[li] = max(100.0 * (1.0 - float((f ** 2).sum())), 1.0)
+        PROG.tick()
     # loci in flight at once: the threads, but no more than a quarter of the memory available now allows, each
     # locus needing about three taxa x taxa float32 matrices plus two one-hot copies of its sites
     per_locus = 3 * n * n * 4 + 2 * n * max(len(sites) for _, sites in loci) * 4
@@ -719,19 +920,22 @@ def main():
     kbar = float(np.mean([np.mean([(X[:, st] == i).any(0).mean() for i in range(len(alphabet))]) * len(alphabet) for st in sample]))
     flops = 2.0 * n * n * float(np.mean([len(sites) for _, sites in loci])) * (1.0 + kbar)
     workers = max(1, min(a.threads, nloc, int((_mem_available() // 4) // per_locus), int(round(flops / PASS1_FLOPS_PER_THREAD))))
+    PROG.start("counts", nloc)
     if workers > 1:
         with ThreadPoolExecutor(workers) as ex: list(ex.map(locus_counts, range(nloc), chunksize=max(1, nloc // (8 * workers))))
     else:
         for li in range(nloc): locus_counts(li)
-    if workers < a.threads: print(f"pass one: {workers} of {a.threads} threads (the loci are small, few, or large in memory)", file=sys.stderr)
+    PROG.finish()
+    if workers < a.threads: LOG(f"pass one: {workers} of {a.threads} threads (the loci are small, few, or large in memory)")
+    focal_sites = np.ascontiguousarray(W[:, diag_pos].T).astype(np.uint32)   # each taxon's residues at each locus, before the exclusion zeroes anything
     present = (W[:, diag_pos] >= a.fit_overlap).sum(0)
     thin = np.flatnonzero(present < MIN_LOCI_PER_TAXON)
     open(f"{a.out}/excluded_taxa.txt", "w").write("".join(f"{names[i]}\t{int(present[i])}\n" for i in thin))
     if len(thin):
         drop = np.isin(iu[0], thin) | np.isin(iu[1], thin)
         S[:, drop] = 0; W[:, drop] = 0                                     # out of the test entirely
-        print(f"{len(thin)} taxa with fewer than {MIN_LOCI_PER_TAXON} loci present are excluded from the test "
-              f"(listed in excluded_taxa.txt, left unmasked)", file=sys.stderr)
+        LOG(f"{len(thin)} taxa with fewer than {MIN_LOCI_PER_TAXON} loci present are excluded from the test "
+              f"(listed in excluded_taxa.txt, left unmasked)")
     tot_same = _expand(S.sum(0, dtype=np.float64), n, iu); tot_shared = _expand(W.sum(0, dtype=np.float64), n, iu)
     with np.errstate(invalid="ignore", divide="ignore"):
         ani = np.where(tot_shared > 0, 100.0 * tot_same / tot_shared, np.nan)
@@ -740,7 +944,7 @@ def main():
     # deterministic tie-break for comparator ranking: pooled divergence, then taxon order
     tie = np.nan_to_num(100.0 - ani, nan=100.0) * 1e-9 + np.arange(n)[None, :] * 1e-12
     del ani
-    print(f"per-locus identities done, {time.time() - t0:.0f}s", file=sys.stderr)
+    LOG(f"per-locus identities done, {time.time() - t0:.0f}s")
 
     # ---- pair divergence m: capped site-weighted median across loci of rate-normalised divergence
     # ONE rate per locus, estimated once and used everywhere (to normalise loci inside m and as the
@@ -748,7 +952,7 @@ def main():
     # by the provisional pair divergence m0 (the raw site-weighted median over loci, available before rates exist), one equal
     # vote per neighbour pair resolved beyond its floor, of the multiple-hit-corrected ratio
     # c(d + half a mismatch) / c(m0), m0 the provisional pair divergence (raw site-weighted median).
-    m0, m0_fl, _ = pair_divergences(S, W, n, iu, threads=a.threads)   # the floor: the imputed half mismatch per locus, as a percentage
+    m0, m0_fl, _ = pair_divergences(S, W, n, iu, threads=a.threads, progress=PROG, stage="pairs0")   # the floor: the imputed half mismatch per locus, as a percentage
     m0_hi = np.maximum(m0, m0_fl); res0 = m0 > m0_fl
     dist = np.where(np.isfinite(m0), m0, np.inf); np.fill_diagonal(dist, np.inf)   # neighbours by the provisional pair divergence (a median over loci, not swayed by one long fast locus)
     Kn = min(K_eff, n - 1)
@@ -759,7 +963,9 @@ def main():
     m0n = m0_hi[gi0, ci0]
     rate = np.full(nloc, np.nan)
     t0i = tri_idx[gi0, ci0]
+    PROG.start("rates", nloc)
     for li in range(nloc):
+        PROG.tick()
         o_, s_ = W[li][t0i].astype(np.float32), S[li][t0i].astype(np.float32)
         with np.errstate(invalid="ignore", divide="ignore"):
             d_ = np.where(o_ > 0, 100.0 * (1.0 - s_ / np.maximum(o_, 1)), np.nan)
@@ -768,6 +974,7 @@ def main():
         P_ = plateaus[li]
         corr = lambda p: -P_ * np.log(1.0 - np.minimum(np.asarray(p, np.float64), 0.98 * P_) / P_)   # float64 under every numpy (1.x kept float32 here when p was float32, 2.x promotes)
         rate[li] = float(np.median(corr(d_[val] + 100.0 * HALF / o_[val]) / corr(m0n[val])))
+    PROG.finish()
     del m0, m0_fl, m0_hi, res0, dist, nb, m0n
     lsites = np.array([len(s) for _, s in loci], dtype=float)
     ok_r = np.isfinite(rate) & (rate > 0)
@@ -775,7 +982,7 @@ def main():
         scale = wmedian_stack(rate[ok_r, None], lsites[ok_r, None])[0]
         rate = rate / max(scale, 1e-6)
     rr = np.where(ok_r, rate, np.nan)
-    m, m_fl, nl = pair_divergences(S, W, n, iu, rr, ok_r, threads=a.threads)
+    m, m_fl, nl = pair_divergences(S, W, n, iu, rr, ok_r, threads=a.threads, progress=PROG, stage="pairs")
     np.fill_diagonal(m, np.nan); np.save(f"{a.out}/m.npy", m)
     # resolution floor of the pair: the median over its loci of half a mismatch per locus (rate-normalised);
     # the divergence used on the too-divergent side is the larger of the measured median and this floor
@@ -786,22 +993,30 @@ def main():
     nlk = nl[np.ix_(keep, keep)][np.triu_indices(int(keep.sum()), 1)]
     fb = float((nlk < MIN_LOCI_FOR_M).mean()) if len(nlk) else 0.0
     del nl, nlk
-    print(f"pair divergences done, {time.time() - t0:.0f}s"
+    LOG(f"pair divergences done, {time.time() - t0:.0f}s"
           + (f"; note: {fb:.0%} of taxon pairs overlap in <{MIN_LOCI_FOR_M} loci and are never compared"
-             if fb > 0.05 else ""), file=sys.stderr)
+             if fb > 0.05 else ""))
 
     mj = np.where(np.isfinite(m), m, np.inf) + tie                    # the comparator ranking key: m with the tie-break
     del tie
     masked = rows                                                      # blanked in place; X is its own copy
 
-    nmasked = run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, plateaus, rate, masked, K_eff, M_eff)
+    seq_policy = a.report_sequences if a.report_sequences != "auto" else ("all" if n * L <= REPORT_SEQ_ALL_MAX else "fails")
+    rep = dict(focal_sites=focal_sites, thin=thin, present=present, seq_policy=seq_policy if not a.no_report else "none",
+               codes_policy=a.report_codes if not a.no_report else "none", no_report=a.no_report)
+    nmasked = run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, plateaus, rate, masked, K_eff, M_eff, rep)
 
+    PROG.start("write", 2)
     out = write_masked(a.aln, a.out, fmt, names, masked, nexus)
-    print(f"masked {nmasked} cells -> {out}\ndone {time.time() - t0:.0f}s", file=sys.stderr)
+    PROG.tick()
+    if not a.no_report: write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0)
+    PROG.finish()
+    LOG(f"masked {nmasked} cells -> {out}\ndone {time.time() - t0:.0f}s")
+    LOG.close()
 
 
 # ------------------------------------------------------------------ the counting test
-def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, plateaus, rate, masked, K_eff, M_eff):
+def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, plateaus, rate, masked, K_eff, M_eff, rep):
     n = len(names); nloc = len(loci)
     mask_hi = not a.mask_similar_only
     mask_lo = not a.mask_different_only
@@ -836,11 +1051,14 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
             exhausted = ~np.isfinite(mjc[:, -1])                                  # non-finite candidates sort last: nothing beyond
             rows = rows[(cnt[rows] < K_eff) & ~exhausted]
             start = stop; width *= 4
+        PROG.tick()
         return top, top >= 0, cnt, nres
 
     # pre-pass: count distinct comparisons so the Bonferroni bar is known before any test runs
+    PROG.start("comparators", nloc)
     sel = list(prepool.map(choose_comparators, range(nloc))) if prepool else [choose_comparators(li) for li in range(nloc)]
     if prepool: prepool.shutdown()
+    PROG.finish()
     Npairs = 0
     for top, valid, ncomp, nres in sel:
         idx = np.flatnonzero(ncomp > 0)
@@ -848,7 +1066,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
             gi, ci, _ = flatten_pairs(idx, top, valid, K_eff)
             Npairs += len(np.unique(np.minimum(gi, ci) * n + np.maximum(gi, ci)))
     kq = norm_quantile(1 - a.alpha / max(2 * Npairs, 1))              # two one-sided tests per pair
-    print(f"{Npairs} distinct comparisons, two-sided; Bonferroni k = {kq:.2f} at alpha {a.alpha}", file=sys.stderr)
+    LOG(f"{Npairs} distinct comparisons, two-sided; Bonferroni k = {kq:.2f} at alpha {a.alpha}")
 
     cells = open(f"{a.out}/cells.tsv", "w")
     cells.write("locus\ttaxon\tn_comp\tcomparator\tpair_div\tfocal_sites\toverlap\tidentity\texpected\texcess"
@@ -863,11 +1081,13 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     grid_m = np.logspace(np.log10(0.05), np.log10(80.0), 200)
     mrows = {}                                                        # (locus, taxon) -> masked.csv row
 
+    tally = collections.Counter()
     def mask_cell(name, g, sites, side, evidence):
         key = (name, g)
         if key in mrows:
-            if mrows[key][3] != side: mrows[key][3] = "both"
+            if mrows[key][3] != side: mrows[key][3] = "both"; tally[side] += 1
             return
+        tally[side] += 1
         v = views[g][sites]; cnt = int((v != 45).sum()); views[g][sites] = 45   # 45 = '-'
         mrows[key] = [name, names[g], cnt, side] + evidence
 
@@ -905,7 +1125,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     keep_pairs = nrows_all * 120 < _mem_available() // 4
     cache = {}
     def locus_phi(li):
-        L = locus_pairs(li)
+        L = locus_pairs(li); PROG.tick()
         if keep_pairs: cache[li] = L
         if isinstance(L, str): return np.nan, 0.0, 0
         nrow = len(L["gi"])
@@ -916,16 +1136,32 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         s_ = 1.4826 * float(np.median(np.abs(r - np.median(r))))
         return max(s_ ** 2 - float(np.median(1.0 / E[use])), 0.0), float(use.sum()), nrow
     phi_hat = np.full(nloc, np.nan); phi_n = np.zeros(nloc); nrow = np.zeros(nloc, np.int64)
+    PROG.start("dispersion", nloc)
     for li, (h, c, r_) in enumerate(pool.map(locus_phi, range(nloc)) if pool else map(locus_phi, range(nloc))):
         phi_hat[li] = h; phi_n[li] = c; nrow[li] = r_
+    PROG.finish()
     pairs_fh = open(f"{a.out}/pairs.npy", "wb")                                   # a plain .npy file written locus by locus, in order: no memmap, so it needs no mmap support and no page cache
     np.lib.format.write_array_header_1_0(pairs_fh, {"descr": np.lib.format.dtype_to_descr(PAIRS_DTYPE), "fortran_order": False, "shape": (int(nrow.sum()),)})
     okp = phi_n > 0
     phi_bar = wmedian1(phi_hat[okp], phi_n[okp]) if okp.any() else 0.0
-    print(f"dispersion: dataset-wide phi {phi_bar:.4f} (robust SD of O/E beyond Poisson {math.sqrt(phi_bar):.2f}); "
-          f"per-locus phi 10/50/90%: {np.nanpercentile(phi_hat[okp], [10, 50, 90]).round(4).tolist() if okp.any() else 'n/a'}", file=sys.stderr)
+    LOG(f"dispersion: dataset-wide phi {phi_bar:.4f} (robust SD of O/E beyond Poisson {math.sqrt(phi_bar):.2f}); "
+          f"per-locus phi 10/50/90%: {np.nanpercentile(phi_hat[okp], [10, 50, 90]).round(4).tolist() if okp.any() else 'n/a'}")
     logbar = math.log(a.alpha / max(2 * Npairs, 1))
     zeros = "\t".join("0" for _ in range(M_eff, K_eff + 1))
+
+
+    # ---- the report's per-cell columns: dense taxa x loci while the grid is small enough, else rows for cells with a fail
+    dense = n * nloc <= DENSE_CELLS_MAX
+    NUMCOLS = (("med_identity", np.float32, np.nan), ("med_expected", np.float32, np.nan), ("excess_m", np.float32, np.nan),
+               ("closest", np.int32, -1), ("closest_overlap", np.uint32, 0), ("closest_identity", np.float32, np.nan), ("closest_expected", np.float32, np.nan),
+               ("best_match", np.int32, -1), ("best_match_identity", np.float32, np.nan), ("partner", np.int32, -1), ("lam", np.float32, np.nan), ("lam_p", np.float32, np.nan))
+    for k in ("n_comp", "n_fail", "n_similar", "side"): rep[k] = np.zeros((n, nloc), np.uint8)
+    for k, dt, fill in NUMCOLS: rep[k] = np.full((n, nloc), fill, dt) if dense else []
+    rep["comparators"] = np.full((n, nloc, K_eff), -1, np.int32) if dense else []
+    rep["dense"] = dense; sparse_loc, sparse_tax = [], []
+    rep["codes"] = {}; rep["seqs"] = {}; rep["loc_status"] = ["tested"] * nloc; rep["phi"] = np.full(nloc, np.nan)
+    codes_policy, seq_policy = rep["codes_policy"], rep["seq_policy"]
+    bm_all = n <= BEST_MATCH_ALL_MAX_TAXA
 
     def process_locus(li):
         """everything the test decides and writes for one locus, as text blocks and mask actions; touches no shared
@@ -995,7 +1231,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
                               [int(nf[q]), int(nsim[q]), c_c[q], "%.3f" % mph[s0[q]], "%.2f" % med_i[q], "%.2f" % med_e[q], "%.1f" % med_x[q], "", "%.3f" % exm[q]]))
 
         # ---- similar side: any failing pair; LR direction attribution on shared sites
-        simpairs = {}
+        simpairs = {}; sim_info = {}
         for j in np.flatnonzero(fail_lo):
             key = (int(min(gi[j], ci[j])), int(max(gi[j], ci[j])))
             simpairs.setdefault(key, j)
@@ -1008,12 +1244,80 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
             targets = ([recip] if recip is not None else [A, B]) if mask_lo else []
             side = ("both" if recip is None else names[recip]) if mask_lo else "none"
             for g in targets:
+                sim_info.setdefault(int(g), (int(B if g == A else A), abs(float(lam)), recip is not None))
                 masks.append((g, "similar",
                               ["", "", names[B if g == A else A], f"{m[A, B]:.3f}", f"{id_ab:.2f}", f"{100 - exp_ab:.2f}",
                                f"{-defi_ab:.1f}", f"{lam:.1f}", f"{float((corr(100 - id_ab) - corr(exp_ab)) / rate_c):.3f}"]))
             sim_lines.append(f"{name}\t{names[A]}\t{names[B]}\t{m[A, B]:.3f}\t{int(o_ab)}\t{id_ab:.2f}\t{100 - exp_ab:.2f}"
                              f"\t{defi_ab:.1f}\t{lam:.1f}\t{names[donor] if donor is not None else 'NA'}"
                              f"\t{names[recip] if recip is not None else 'NA'}\t{side}\n")
+
+
+        # ---- the report's view of this locus: cell columns, best matches, site codes, sequence rows
+        ncell = len(idx); pos = {int(g): q for q, g in enumerate(idx.tolist())}
+        top = sel[li][0]
+        side_ = np.zeros(ncell, np.uint8)
+        dflag = flag | amb
+        side_ |= np.where(dflag, 1 if mask_hi else 16, 0).astype(np.uint8); side_ |= (amb.astype(np.uint8) << 2)
+        masked_q = dflag.copy() if mask_hi else np.zeros(ncell, bool)
+        partner_ = np.full(ncell, -1, np.int32); lam_ = np.full(ncell, np.nan, np.float32); lamp_ = np.full(ncell, np.nan, np.float32)
+        for g, (B_, lam_abs, ident_dir) in sim_info.items():
+            q = pos[g]; side_[q] |= 2 | (8 if ident_dir else 0); masked_q[q] = True
+            partner_[q] = B_; lam_[q] = lam_abs; lamp_[q] = math.erfc(math.sqrt(lam_abs / 2.0)) if lam_abs > 0 else 1.0
+        if not mask_lo and simpairs:
+            for (A_, B_) in simpairs:
+                for g in (A_, B_):
+                    if g in pos: side_[pos[g]] |= 32
+        fail_q = (nf >= 1) | (nsim >= 1) | masked_q
+        rep_q = fail_q if codes_policy == "fails" else masked_q if codes_policy == "masked" else np.zeros(ncell, bool)
+        # best match: the taxon with the most same residues over the focal's sites (a missing site is a mismatch), ties to the closest by m
+        rows_bm = idx if bm_all else idx[fail_q]
+        best_ = np.full(ncell, -1, np.int32); bident_ = np.full(ncell, np.nan, np.float32)
+        if len(rows_bm):
+            srow = Sl[tri_idx[rows_bm]].astype(np.int64); nres_b = nres[rows_bm].astype(np.int64)
+            mism = nres_b[:, None] - srow; mism[np.arange(len(rows_bm)), rows_bm] = nres_b + 1
+            lo = mism.min(1); mm = np.where(np.isfinite(m[rows_bm]), m[rows_bm], np.inf)
+            best = np.where(mism == lo[:, None], mm, np.inf).argmin(1)
+            okb = nres_b >= BEST_MATCH_MIN_SITES
+            qb = np.array([pos[int(g)] for g in rows_bm.tolist()], dtype=np.intp) if len(rows_bm) else np.zeros(0, np.intp)
+            best_[qb] = np.where(okb, best, -1); bident_[qb] = np.where(okb, 100.0 * (1.0 - lo / np.maximum(nres_b, 1)), np.nan)
+        codes_out = None
+        if rep_q.any():
+            Xs_ = Xs if Xs is not None else X[:, sites]
+            qs = np.flatnonzero(rep_q); blk_c = np.full((len(qs), len(sites)), CODE_ABSENT, np.uint8)
+            for r_, q in enumerate(qs.tolist()):
+                g = int(idx[q]); fx = Xs_[g]; pres = fx >= 0
+                if g in sim_info and not dflag[q]:                                   # similar-only cell: the pair against the others
+                    B_ = sim_info[g][0]; comps = [int(c) for c in top[g] if c >= 0 and c != B_]
+                    xb = Xs_[B_]; both = pres & (xb >= 0)
+                    nd = ((Xs_[comps] != fx[None, :]) & (Xs_[comps] >= 0)).sum(0) if comps else np.zeros(len(sites), int)
+                    row = np.zeros(len(sites), np.uint8)
+                    shared = both & (fx == xb) & (nd >= 2)
+                    row[shared] = (CODE_SIMILAR + np.minimum(nd[shared], 125)).astype(np.uint8)
+                    row[both & (fx != xb)] = CODE_TICK
+                    row[~pres] = CODE_ABSENT
+                else:
+                    comps = [int(c) for c in top[g] if c >= 0]
+                    k_ = ((Xs_[comps] != fx[None, :]) & (Xs_[comps] >= 0)).sum(0) if comps else np.zeros(len(sites), int)
+                    row = np.where(pres, np.minimum(k_, 127), CODE_ABSENT).astype(np.uint8)
+                blk_c[r_] = row
+            codes_out = (idx[qs].astype(np.int32), blk_c)
+        seq_out = None
+        if seq_policy != "none":
+            if seq_policy == "all": rows_s = np.flatnonzero(nres > 0)
+            else:
+                want = fail_q if seq_policy == "fails" else masked_q
+                rs = set()
+                for q in np.flatnonzero(want).tolist():
+                    g = int(idx[q]); rs.add(g); rs.update(int(c) for c in top[g] if c >= 0)
+                    if partner_[q] >= 0: rs.add(int(partner_[q]))
+                rows_s = np.array(sorted(rs), dtype=np.int64)
+            if len(rows_s):
+                seq_out = (rows_s.astype(np.int32), np.stack([views[g][sites] for g in rows_s.tolist()]))
+        repblk = dict(idx=idx, n_comp=kc.astype(np.uint8), n_fail=nf.astype(np.uint8), n_similar=nsim.astype(np.uint8), side=side_,
+                      med_identity=med_i, med_expected=med_e, excess_m=exm, closest=ci[s0].astype(np.int32), closest_overlap=o[s0].astype(np.uint32),
+                      closest_identity=ident[s0], closest_expected=100.0 - dhat[s0], best_match=best_, best_match_identity=bident_,
+                      partner=partner_, lam=lam_, lam_p=lamp_, comparators=top[idx].astype(np.int32), fail_q=fail_q, codes=codes_out, seq=seq_out)
 
         gd = expect(grid_m)
         trends_block = (lname + "\t%.4f\t%.4f\t%.4f\t%.4f\n") * len(grid_m) % tuple(chain.from_iterable(zip(
@@ -1027,17 +1331,33 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         log = (f"{name}: {len(idx)} cells, {len(gi)} pairs, flagged {nflag} "
                f"(fails {M_eff}..{K_eff} of {K_eff}: {fstr}), ambiguous {namb}, similar {len(simpairs)}")
         return dict(skipped=False, pairs=blk, cells=cells_block, masks=masks, simf="".join(sim_lines),
-                    trends=trends_block, per=per_line, disp=disp_line, log=log)
+                    trends=trends_block, per=per_line, disp=disp_line, log=log, rep=repblk, phi=phi)
 
     def consume(li, R):
         name, sites = loci[li]
         if R["skipped"]:
-            per.write(R["per"]); print(R["log"], file=sys.stderr); return
+            per.write(R["per"]); LOG.detail(R["log"]); rep["loc_status"][li] = R["log"].split(": ", 1)[1]; PROG.event("locus", li, name, "", "", ""); PROG.tick(); return
         assert len(R["pairs"]) == nrow[li]; pairs_fh.write(R["pairs"].tobytes()); cells.write(R["cells"])
         for g, side, ev in R["masks"]: mask_cell(name, g, sites, side, ev)
         simf.write(R["simf"]); trends.write(R["trends"]); per.write(R["per"]); disp.write(R["disp"])
-        print(R["log"], file=sys.stderr)
+        LOG.detail(R["log"])
+        r = R["rep"]; idx_ = r["idx"]; rep["phi"][li] = R["phi"]
+        for k in ("n_comp", "n_fail", "n_similar", "side"): rep[k][idx_, li] = r[k]
+        if dense:
+            for k, _, _ in NUMCOLS: rep[k][idx_, li] = r[k]
+            rep["comparators"][idx_, li] = r["comparators"]
+        else:
+            sel_ = r["fail_q"]; sparse_loc.append(np.full(int(sel_.sum()), li, np.int32)); sparse_tax.append(idx_[sel_].astype(np.int32))
+            for k, _, _ in NUMCOLS: rep[k].append(np.asarray(r[k])[sel_])
+            rep["comparators"].append(r["comparators"][sel_])
+        if r["codes"] is not None: rep["codes"][li] = r["codes"]
+        if r["seq"] is not None: rep["seqs"][li] = r["seq"]
+        if PROG.mode == "lines":
+            tb = np.zeros(n, bool); tb[idx_] = True
+            PROG.event("locus", li, name, np.packbits(tb).tobytes().hex(), ",".join(map(str, idx_[(r["side"] & 1) > 0].tolist())), ",".join(map(str, idx_[(r["side"] & 2) > 0].tolist())))
+        PROG.tick(extra=f"{tally['divergent']} divergent, {tally['similar']} similar masked")
 
+    PROG.start("test", nloc, "0 divergent, 0 similar masked")
     if pool:
         batch = 8 * a.threads                                           # loci in flight, so the text blocks do not pile up
         for b0 in range(0, nloc, batch):
@@ -1045,8 +1365,17 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         pool.shutdown()
     else:
         for li in range(nloc): consume(li, process_locus(li))
+    PROG.finish()
     for fh in (cells, per, trends, simf, disp): fh.close()
     pairs_fh.close()
+    # the report's remaining pieces: sparse rows stacked, the closest taxa by m, the test's constants
+    if not dense:
+        rep["sparse_locus"] = np.concatenate(sparse_loc) if sparse_loc else np.zeros(0, np.int32)
+        rep["sparse_taxon"] = np.concatenate(sparse_tax) if sparse_tax else np.zeros(0, np.int32)
+        for k, dt, _ in NUMCOLS: rep[k] = np.concatenate(rep[k]).astype(dt) if rep[k] else np.zeros(0, dt)
+        rep["comparators"] = np.concatenate(rep["comparators"]) if rep["comparators"] else np.zeros((0, K_eff), np.int32)
+    cl = order[:, :min(5, n)].astype(np.int32); cl[~np.isfinite(m[np.arange(n)[:, None], cl])] = -1
+    rep.update(closest=cl, rate=rate, plateaus=plateaus, Npairs=Npairs, kq=kq, logbar=logbar, phi_bar=phi_bar)
     with open(f"{a.out}/masked.csv", "w", newline="") as fh:
         mw = csv.writer(fh)
         mw.writerow(["locus", "taxon", "sites_masked", "side", "n_fail", "n_similar", "partner",

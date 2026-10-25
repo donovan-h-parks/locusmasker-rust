@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LocusMasker</title>
+<link rel="stylesheet" href="../viewer/viewer.css">
+<style>
+  .run { max-width: 980px; margin: 0 auto; padding: 24px 20px 40px; }
+  .run h1 { font-size: 24px; margin: 0 0 4px; }
+  .run .lead { color: var(--muted); margin: 0 0 18px; }
+  .form { display: grid; grid-template-columns: 180px 1fr; gap: 10px 14px; align-items: center; background: var(--surface-2); border: 1px solid var(--grid); border-radius: 10px; padding: 16px 18px; }
+  .form label { color: var(--muted); }
+  .form .opt { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  .form .opt input[type=number] { width: 80px; }
+  .form .files { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .estimate { margin: 14px 0; padding: 10px 14px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--grid); }
+  .estimate.refuse { border-color: var(--red-2); }
+  .estimate pre { margin: 6px 0 0; font: 12px var(--mono); white-space: pre-wrap; }
+  .actions { display: flex; gap: 10px; align-items: center; margin-top: 14px; }
+  .progress { margin-top: 18px; display: none; }
+  .stage { display: grid; grid-template-columns: 110px 1fr 180px; gap: 10px; align-items: center; margin: 4px 0; font-size: 12.5px; }
+  .stage .bar { height: 12px; background: var(--surface-3); border-radius: 6px; overflow: hidden; }
+  .stage .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.25s; }
+  .stage .lab { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .stage.done .bar i { background: var(--grey-3); }
+  .live { margin-top: 14px; }
+  .live canvas { display: block; width: 100%; height: 160px; border: 1px solid var(--spine); image-rendering: pixelated; background: var(--surface); }
+  .live .tally { display: flex; gap: 18px; margin: 6px 0; font-size: 13px; }
+  .live .tally b { font-size: 18px; }
+  .log { font: 11.5px var(--mono); color: var(--muted); white-space: pre-wrap; max-height: 160px; overflow: auto; background: var(--surface-2); border: 1px solid var(--grid); border-radius: 8px; padding: 8px 10px; margin-top: 10px; }
+  .errbox { color: var(--red-2); white-space: pre-wrap; font: 12px var(--mono); margin-top: 10px; }
+  .downloads { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 6px 16px; border-bottom: 1px solid var(--spine); background: var(--surface-2); }
+  .downloads .k { color: var(--muted); }
+  details.help { margin-top: 18px; color: var(--muted); }
+  details.help summary { cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="run" class="run">
+  <h1>LocusMasker</h1>
+  <p class="lead">Finds and masks the sequences in a multi-locus alignment that do not belong: too divergent from their closest relatives at a locus, or too similar to one of them. The whole analysis runs here in your browser; nothing is uploaded.</p>
+  <div class="form">
+    <label>alignment</label>
+    <div class="files"><input type="file" id="aln" accept=".nex,.nexus,.fasta,.fa,.fas,.phy,.phylip,.txt"> <span class="k" id="alnInfo"></span></div>
+    <label>partitions</label>
+    <div class="files"><input type="file" id="parts" accept=".txt,.part,.partitions,.nex"> <span class="k">RAxML-style partition file; not needed when the NEXUS file has charsets</span></div>
+    <label>data type</label>
+    <div class="opt"><label><input type="radio" name="dt" value="dna" checked> DNA</label> <label><input type="radio" name="dt" value="aa"> protein</label></div>
+    <label>options</label>
+    <div class="opt">
+      <label title="comparators per cell (odd, at least 3)">comparators <input type="number" id="ncomp" value="5" min="3" step="2"></label>
+      <label title="minimum shared sites for a comparison">fit overlap <input type="number" id="fit" value="20" min="5"></label>
+      <label title="family-wise error rate">alpha <input type="number" id="alpha" value="0.05" min="0.0001" max="0.5" step="0.01"></label>
+      <label title="a pair must exceed this multiple of its expectation">min ratio <input type="number" id="ratio" value="2" min="1" step="0.1"></label>
+      <label><input type="checkbox" id="simonly"> mask too-similar only</label>
+      <label><input type="checkbox" id="divonly"> mask too-divergent only</label>
+    </div>
+  </div>
+  <div class="estimate" id="estimate" style="display:none"></div>
+  <div class="actions">
+    <button class="primary" id="go" disabled>run</button>
+    <button id="cancel" style="display:none">cancel</button>
+    <span class="k" id="status"></span>
+    <span style="flex:1"></span>
+    <label>or open a finished report: <input type="file" id="openReport" accept=".html,.npz"></label>
+  </div>
+  <div class="progress" id="progress"></div>
+  <div class="live" id="live" style="display:none">
+    <div class="tally"><span><b id="tDiv">0</b> too divergent</span><span><b id="tSim">0</b> too similar</span><span><b id="tLoci">0</b> loci tested</span></div>
+    <canvas id="liveCanvas"></canvas>
+    <div class="k" style="font-size: 11.5px; margin-top: 4px">the alignment as a matrix of taxa (rows) by loci (columns), painted as each locus is tested: greys pass, reds masked as too divergent, blues as too similar</div>
+  </div>
+  <div class="errbox" id="err"></div>
+  <div class="log" id="log" style="display:none"></div>
+  <details class="help"><summary>what runs here, and the limits</summary>
+    <p>The page loads a Python runtime (Pyodide) and numpy, about 20 MB on the first visit and cached afterwards, and runs the tool's own script unchanged, single-threaded, on a copy of your files kept in the browser's memory. The result is the same as a server run: the same masks, the same tables, the same report. Datasets up to about a hundred taxa and a few million sites take a minute or two; beyond the memory a browser tab can hold, the page tells you so and gives the command line to run instead, with the memory and time it needs.</p>
+    <p>Nothing leaves your computer. The report you download opens from a double-click, with no server.</p>
+  </details>
+</div>
+<div id="app" style="display:none"></div>
+<script type="application/octet-stream" id="lm-bundle"></script>
+<script src="../viewer/vendor/d3.v7.min.js"></script>
+<script src="../viewer/viewer.js"></script>
+<script src="website.js"></script>
+</body>
+</html>
