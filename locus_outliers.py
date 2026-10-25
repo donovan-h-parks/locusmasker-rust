@@ -88,14 +88,16 @@ Outputs (in --out; <stem> is the alignment file's name without extension)
                        excess_m: the cell's extra divergence beyond expectation as corrected distance
                        in units of m (a typical locus's divergence) — a foreign or paralogous sequence
                        adds a constant here whatever its comparators, so cells with one cause share it
-  pairs.tsv            every comparison
+  pairs.npy            every comparison, as a numpy structured array (np.load): locus and taxon / comparator
+                       as 0-based indices into per_locus.tsv's row order and taxa.txt, rank, pair_div,
+                       overlap, identity, expected, excess, fail, fail_similar
   similar.tsv          every similar-side event: pair, deficit, lambda, donor/recipient call
   per_locus.tsv        one row per locus, skipped loci included (status column)
   trends.tsv           expectation and both effect floors (too divergent / too similar) on a grid
   dispersion.tsv       per locus: raw dispersion estimate, pairs it used, dispersion applied
   ani.npy, m.npy       alignment-wide identity (%) and pair divergence m (points); m_hi.npy is
                        max(m, m_res), the divergence the too-divergent test is evaluated at
-                       (pair_div in pairs.tsv, cells.tsv and masked.csv reports this value);
+                       (pair_div in pairs.npy, cells.tsv and masked.csv reports this value);
                        taxa.txt
 Options
   --datatype dna|aa (required)  --n-comp 5 (odd >= 3)  --fit-overlap 20
@@ -121,6 +123,8 @@ MIN_LOCI_PER_TAXON = 10 # a taxon needs this many loci with >= fit-overlap resid
 MIN_FIT_PAIRS = 8       # a locus needs this many fit pairs to be tested (or to get a rate)
 LR_BAR = 10.0           # |2 ln LR| above which a similar event's direction is attributed
 TEST_THREAD_PAIRS = 4000  # --threads applies to the test stage only when a locus has this many comparisons on average
+PAIRS_DTYPE = np.dtype([("locus", "i4"), ("taxon", "i4"), ("rank", "i1"), ("comparator", "i4"), ("pair_div", "f4"), ("overlap", "i4"),
+                        ("identity", "f4"), ("expected", "f4"), ("excess", "f4"), ("fail", "i1"), ("fail_similar", "i1")])
 PASS1_FLOPS_PER_THREAD = 3e7    # pass one adds a thread per this many floating-point operations per locus: below it the
                                 # interpreter lock around the small matrix products costs more than the thread gains
                                 # (measured: 90 taxa x 590 sites, 2e8 flops per locus, is fastest at 4-8 threads, slower at 13+)
@@ -849,8 +853,6 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     kq = norm_quantile(1 - a.alpha / max(2 * Npairs, 1))              # two one-sided tests per pair
     print(f"{Npairs} distinct comparisons, two-sided; Bonferroni k = {kq:.2f} at alpha {a.alpha}", file=sys.stderr)
 
-    pairs = open(f"{a.out}/pairs.tsv", "w")
-    pairs.write("locus\ttaxon\trank\tcomparator\tpair_div\toverlap\tidentity\texpected\texcess\tfail\tfail_similar\n")
     cells = open(f"{a.out}/cells.tsv", "w")
     cells.write("locus\ttaxon\tn_comp\tcomparator\tpair_div\tfocal_sites\toverlap\tidentity\texpected\texcess"
                 "\tmed_identity\tmed_expected\tmed_excess\tn_fail\tn_similar\tflag\tambiguous\texcess_m\n")
@@ -908,16 +910,19 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     def locus_phi(li):
         L = locus_pairs(li)
         if keep_pairs: cache[li] = L
-        if isinstance(L, str): return np.nan, 0.0
+        if isinstance(L, str): return np.nan, 0.0, 0
+        nrow = len(L["gi"])
         E = L["o"] * L["expect"](L["mph"]) / 100.0
         use = L["fit"] & (E >= PHI_MIN_E)
-        if use.sum() < 10: return np.nan, 0.0
+        if use.sum() < 10: return np.nan, 0.0, nrow
         r = np.log((L["mis"][use] + HALF) / E[use])
         s_ = 1.4826 * float(np.median(np.abs(r - np.median(r))))
-        return max(s_ ** 2 - float(np.median(1.0 / E[use])), 0.0), float(use.sum())
-    phi_hat = np.full(nloc, np.nan); phi_n = np.zeros(nloc)
-    for li, (h, c) in enumerate(pool.map(locus_phi, range(nloc)) if pool else map(locus_phi, range(nloc))):
-        phi_hat[li] = h; phi_n[li] = c
+        return max(s_ ** 2 - float(np.median(1.0 / E[use])), 0.0), float(use.sum()), nrow
+    phi_hat = np.full(nloc, np.nan); phi_n = np.zeros(nloc); nrow = np.zeros(nloc, np.int64)
+    for li, (h, c, r_) in enumerate(pool.map(locus_phi, range(nloc)) if pool else map(locus_phi, range(nloc))):
+        phi_hat[li] = h; phi_n[li] = c; nrow[li] = r_
+    row_off = np.cumsum(nrow) - nrow
+    pairs_npy = np.lib.format.open_memmap(f"{a.out}/pairs.npy", mode="w+", dtype=PAIRS_DTYPE, shape=(int(nrow.sum()),))
     okp = phi_n > 0
     phi_bar = wmedian1(phi_hat[okp], phi_n[okp]) if okp.any() else 0.0
     print(f"dispersion: dataset-wide phi {phi_bar:.4f} (robust SD of O/E beyond Poisson {math.sqrt(phi_bar):.2f}); "
@@ -956,11 +961,11 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         if fail_lo.any():
             fail_lo[fail_lo] = bb_tails(mis[fail_lo], o[fail_lo], E_lo[fail_lo], phi, False) < logbar
 
-        # pairs.tsv: one %-format of the whole locus's rows (the locus name is part of the format)
-        lname = name.replace("%", "%%"); c_g = [names[i] for i in gi.tolist()]; c_c = [names[i] for i in ci.tolist()]
-        pairs_block = (lname + "\t%s\t%d\t%s\t%.3f\t%d\t%.2f\t%.2f\t%.1f\t%d\t%d\n") * len(gi) % tuple(chain.from_iterable(zip(
-            c_g, (rk + 1).tolist(), c_c, mph.tolist(), o.astype(np.int64).tolist(), ident.tolist(), (100 - dhat).tolist(), excess.tolist(),
-            fail_hi.astype(np.int64).tolist(), fail_lo.astype(np.int64).tolist())))
+        # pairs.npy: the locus's comparisons as one block of the structured array
+        lname = name.replace("%", "%%")
+        blk = np.empty(len(gi), PAIRS_DTYPE)
+        blk["locus"] = li; blk["taxon"] = gi; blk["rank"] = rk + 1; blk["comparator"] = ci; blk["pair_div"] = mph; blk["overlap"] = o
+        blk["identity"] = ident; blk["expected"] = 100 - dhat; blk["excess"] = excess; blk["fail"] = fail_hi; blk["fail_similar"] = fail_lo
 
         # ---- divergent side: majority over comparators, every cell at once
         kc = ncomp[idx]; ncell = len(idx)
@@ -1024,14 +1029,14 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         disp_line = f"{name}\t{(phi_hat[li] if okp[li] else float('nan')):.4f}\t{int(phi_n[li])}\t{phi:.4f}\n"
         log = (f"{name}: {len(idx)} cells, {len(gi)} pairs, flagged {nflag} "
                f"(fails {M_eff}..{K_eff} of {K_eff}: {fstr}), ambiguous {namb}, similar {len(simpairs)}")
-        return dict(skipped=False, pairs=pairs_block, cells=cells_block, masks=masks, simf="".join(sim_lines),
+        return dict(skipped=False, pairs=blk, cells=cells_block, masks=masks, simf="".join(sim_lines),
                     trends=trends_block, per=per_line, disp=disp_line, log=log)
 
     def consume(li, R):
         name, sites = loci[li]
         if R["skipped"]:
             per.write(R["per"]); print(R["log"], file=sys.stderr); return
-        pairs.write(R["pairs"]); cells.write(R["cells"])
+        pairs_npy[row_off[li]:row_off[li] + len(R["pairs"])] = R["pairs"]; cells.write(R["cells"])
         for g, side, ev in R["masks"]: mask_cell(name, g, sites, side, ev)
         simf.write(R["simf"]); trends.write(R["trends"]); per.write(R["per"]); disp.write(R["disp"])
         print(R["log"], file=sys.stderr)
@@ -1043,7 +1048,8 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         pool.shutdown()
     else:
         for li in range(nloc): consume(li, process_locus(li))
-    for fh in (pairs, cells, per, trends, simf, disp): fh.close()
+    for fh in (cells, per, trends, simf, disp): fh.close()
+    pairs_npy.flush(); del pairs_npy
     with open(f"{a.out}/masked.csv", "w", newline="") as fh:
         mw = csv.writer(fh)
         mw.writerow(["locus", "taxon", "sites_masked", "side", "n_fail", "n_similar", "partner",

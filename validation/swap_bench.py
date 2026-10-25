@@ -80,7 +80,7 @@ def baseline(ds):
               if f.rstrip().endswith("\ttested")]
     json.dump({"flags": sorted(map(list, flags)), "tested_loci": tested,
                "runtime": time.time() - t0}, open(f"{d}/baseline.json", "w"))
-    for f in ("pairs.tsv", "cells.tsv", "trends.tsv"):                 # keep the small files only
+    for f in ("pairs.npy", "cells.tsv", "trends.tsv"):                 # keep the small files only
         p = f"{out}/{f}"
         if os.path.getsize(p) > 50e6: os.remove(p)
     open(f"{out}/.done", "w").close()
@@ -155,9 +155,11 @@ def swap_job(ds, rep):
         for ev in events: evloc.setdefault(ev["locus"], set()).update((ev["a"], ev["b"]))
         comp = {tuple(k): set() for k in fp}
         if comp:
-            for ln in open(f"{out}/pairs.tsv"):
-                f = ln.split("\t", 4)
-                if (f[0], f[1]) in comp: comp[(f[0], f[1])].add(f[3])
+            P = np.load(f"{out}/pairs.npy"); taxa = open(f"{out}/taxa.txt").read().split()
+            lnames = [r.split("\t", 1)[0] for r in open(f"{out}/per_locus.tsv").read().splitlines()[1:]]
+            for q in P:
+                k = (lnames[q["locus"]], taxa[q["taxon"]])
+                if k in comp: comp[k].add(taxa[q["comparator"]])
             for ln in open(f"{out}/similar.tsv"):
                 f = ln.split("\t", 3)
                 for k in ((f[0], f[1]), (f[0], f[2])):

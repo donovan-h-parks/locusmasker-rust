@@ -3,7 +3,7 @@
 
     python plot_pair.py DIR TAXON_A TAXON_B [--out FILE] [--label N]
 
-Reads pairs.tsv (so the pair must have been compared: one must be among the other's comparators)
+Reads pairs.npy (so the pair must have been compared: one must be among the other's comparators)
 and masked.csv. Left: one point per locus, x = the divergence the locus expects for this pair
 (its rate at the pair's m), y = what it shows; the diagonal is the expectation, the dashed lines
 the effect floors (2x above, 1/3 below). Right: the same ratios as a histogram. Colours are the
@@ -16,10 +16,16 @@ from matplotlib.lines import Line2D
 ap = argparse.ArgumentParser(); ap.add_argument("dir"); ap.add_argument("a"); ap.add_argument("b")
 ap.add_argument("--out"); ap.add_argument("--label", type=int, default=6)
 a = ap.parse_args()
+if not os.path.exists(f"{a.dir}/pairs.npy"): raise SystemExit(f"{a.dir}/pairs.npy not found: it is written by every run of locus_outliers.py")
+P = np.load(f"{a.dir}/pairs.npy"); taxa = open(f"{a.dir}/taxa.txt").read().split()
+lnames = [r.split("\t", 1)[0] for r in open(f"{a.dir}/per_locus.tsv").read().splitlines()[1:]]
+ia, ib = taxa.index(a.a), taxa.index(a.b)
 rows = {}
-for r in csv.DictReader(open(f"{a.dir}/pairs.tsv"), delimiter="\t"):
-    if (r["taxon"], r["comparator"]) == (a.a, a.b) or ((r["taxon"], r["comparator"]) == (a.b, a.a) and r["locus"] not in rows):
-        rows[r["locus"]] = r
+for q in P[((P["taxon"] == ia) & (P["comparator"] == ib)) | ((P["taxon"] == ib) & (P["comparator"] == ia))]:
+    l = lnames[q["locus"]]
+    if q["taxon"] == ia or l not in rows:
+        rows[l] = dict(locus=l, taxon=taxa[q["taxon"]], comparator=taxa[q["comparator"]], pair_div=str(q["pair_div"]), overlap=str(int(q["overlap"])),
+                       identity=str(q["identity"]), expected=str(q["expected"]), excess=str(q["excess"]), fail=str(int(q["fail"])), fail_similar=str(int(q["fail_similar"])))
 if not rows: raise SystemExit(f"{a.a} and {a.b} were never compared (neither is among the other's comparators)")
 masked = {}
 if os.path.exists(f"{a.dir}/masked.csv"):
