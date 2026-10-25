@@ -735,6 +735,10 @@ def main():
     with np.errstate(invalid="ignore", divide="ignore"):
         ani = np.where(tot_shared > 0, 100.0 * tot_same / tot_shared, np.nan)
     np.fill_diagonal(ani, np.nan); np.save(f"{a.out}/ani.npy", ani)
+    del tot_same, tot_shared
+    # deterministic tie-break for comparator ranking: pooled divergence, then taxon order
+    tie = np.nan_to_num(100.0 - ani, nan=100.0) * 1e-9 + np.arange(n)[None, :] * 1e-12
+    del ani
     print(f"per-locus identities done, {time.time() - t0:.0f}s", file=sys.stderr)
 
     # ---- pair divergence m: capped site-weighted median across loci of rate-normalised divergence
@@ -763,6 +767,7 @@ def main():
         P_ = plateaus[li]
         corr = lambda p: -P_ * np.log(1.0 - np.minimum(p, 0.98 * P_) / P_)
         rate[li] = float(np.median(corr(d_[val] + 100.0 * HALF / o_[val]) / corr(m0n[val])))
+    del m0, m0_fl, m0_hi, res0, dist, nb, m0n
     lsites = np.array([len(s) for _, s in loci], dtype=float)
     ok_r = np.isfinite(rate) & (rate > 0)
     if ok_r.sum() >= 3:
@@ -775,27 +780,28 @@ def main():
     # the divergence used on the too-divergent side is the larger of the measured median and this floor
     m_hi = np.maximum(m, m_fl); np.fill_diagonal(m_hi, np.nan); np.save(f"{a.out}/m_hi.npy", m_hi)
     m_xs = np.maximum(m - m_fl, 0.0)                                  # divergence resolved beyond the floor: the rate-vote weight
+    del m_fl
     keep = np.ones(n, bool); keep[thin] = False
     nlk = nl[np.ix_(keep, keep)][np.triu_indices(int(keep.sum()), 1)]
     fb = float((nlk < MIN_LOCI_FOR_M).mean()) if len(nlk) else 0.0
+    del nl, nlk
     print(f"pair divergences done, {time.time() - t0:.0f}s"
           + (f"; note: {fb:.0%} of taxon pairs overlap in <{MIN_LOCI_FOR_M} loci and are never compared"
              if fb > 0.05 else ""), file=sys.stderr)
 
-    # deterministic tie-break for comparator ranking: pooled divergence, then taxon order
-    tie = np.nan_to_num(100.0 - ani, nan=100.0) * 1e-9 + np.arange(n)[None, :] * 1e-12
+    mj = np.where(np.isfinite(m), m, np.inf) + tie                    # the comparator ranking key: m with the tie-break
+    del tie
     masked = rows                                                      # blanked in place; X is its own copy
 
-    nmasked = run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, plateaus, rate, tie, masked, K_eff, M_eff)
+    nmasked = run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, plateaus, rate, masked, K_eff, M_eff)
 
     out = write_masked(a.aln, a.out, fmt, names, masked, nexus)
     print(f"masked {nmasked} cells -> {out}\ndone {time.time() - t0:.0f}s", file=sys.stderr)
 
 
 # ------------------------------------------------------------------ the counting test
-def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, plateaus, rate, tie, masked, K_eff, M_eff):
+def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, plateaus, rate, masked, K_eff, M_eff):
     n = len(names); nloc = len(loci)
-    mj = np.where(np.isfinite(m), m, np.inf) + tie
     mask_hi = not a.mask_similar_only
     mask_lo = not a.mask_different_only
     views = [np.frombuffer(mb, dtype=np.uint8) for mb in masked]        # writable views for blanking
