@@ -76,7 +76,7 @@ async function run() {
   args.push("--name", f.name.replace(/\.[^.]+$/, ""));
   $("#go").disabled = true; $("#cancel").style.display = ""; $("#err").textContent = ""; $("#status").textContent = "starting…";
   const prog = $("#progress"); prog.replaceChildren(...STAGES.map(([k, l]) => stageRow(k, l))); prog.style.display = "block";
-  $("#log").style.display = ""; $("#log").textContent = ""; $("#live").style.display = "none"; live = null; t0 = performance.now();
+  $("#log").style.display = ""; $("#log").textContent = ""; logLines = []; $("#live").style.display = "none"; live = null; t0 = performance.now();
   const tool = await (await fetch(TOOL_URL)).text();
   const files = { alignment: { name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) } };
   if (parts) files.partitions = { name: parts.name, bytes: new Uint8Array(await parts.arrayBuffer()) };
@@ -99,8 +99,10 @@ function onLine(line) {
     $("#status").textContent = `${STAGES.find(s => s[0] === stage)?.[1] || stage}…`; return; }
   if (line.startsWith("event\tlocus\t")) { onLocus(line.split("\t")); return; }
   const m = /^(\d+) taxa, (\d+) sites, (\d+) loci/.exec(line); if (m) initLive(+m[1], +m[3]);
-  const log = $("#log"); log.textContent += line + "\n"; log.scrollTop = log.scrollHeight;
+  logLines.push(line); if (logLines.length > 400) logLines.splice(0, logLines.length - 300);
+  if (!logTimer) logTimer = setTimeout(() => { logTimer = null; const log = $("#log"); log.textContent = logLines.join("\n"); log.scrollTop = log.scrollHeight; }, 250);
 }
+let logLines = [], logTimer = null;
 // ---- the live matrix: painted as each locus's result arrives
 function initLive(n, nloc) {
   const cv = $("#liveCanvas"); const s = Math.max(1, Math.ceil(Math.sqrt(n * nloc / 4e6))); const W = Math.ceil(nloc / s), H = Math.ceil(n / s);

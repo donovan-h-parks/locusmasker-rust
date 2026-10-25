@@ -329,7 +329,7 @@ const Overview = (() => {
     return { el: P.el, redraw, render };
   }
   function setTab(t) { tabs = t; for (const b of P.body.querySelectorAll("[data-tab]")) b.className = b.dataset.tab === t ? "primary" : ""; viewEl.matrixParts.forEach(e => e.style.display = t === "matrix" ? "" : "none"); viewEl.hist.style.display = t === "histograms" ? "" : "none"; viewEl.table.style.display = t === "table" ? "" : "none"; P.body.style.overflowY = t === "histograms" ? "auto" : "hidden"; if (t === "histograms") Hist.render(viewEl.hist); if (t === "table") Table.render(viewEl.table); if (t === "matrix") redraw(); }
-  function render() { renderTiles(); renderWorst(); autoSummary(); fitAll(); redraw(); }
+  function render() { renderTiles(); renderWorst(); autoSummary(); fitAll(); redraw(); if (tabs === "histograms") Hist.render(viewEl.hist); if (tabs === "table") Table.render(viewEl.table); }
   function renderTiles() {
     const D = App.D, c = D.man.counts; const t = viewEl.tiles; t.replaceChildren();
     const tile = (v, k, title) => el("div", { class: "tile", title: title || "" }, el("div", { class: "v" }, v), el("div", { class: "k" }, k));
@@ -859,13 +859,13 @@ const Hist = (() => {
     const D = App.D; const N = by === "locus" ? D.nloc : D.n; const cnt = by === "locus" ? D.locCount : D.taxCount; const names = by === "locus" ? D.loci.names : D.taxa.names;
     const units = d3.range(N).filter(u => cnt.present[u] > 0); const kof = units.map(u => cnt.masked[u]);
     const B = bins(kof); const heights = B.map(([lo, hi]) => units.filter((u, j) => kof[j] >= lo && kof[j] <= hi));
-    const W = Math.max(420, Math.min(900, Overview_width() - 40)), H = 220, m = { l: 48, r: 10, t: 26, b: 42 };
+    const rotated = B.length > 14; const W = Math.max(420, Math.min(900, Overview_width() - 40)), H = rotated ? 260 : 220, m = { l: 48, r: 10, t: 26, b: rotated ? 82 : 42 };
     const xs = d3.scaleBand().domain(B.map((b, i) => i)).range([m.l, W - m.r]).padding(0.15);
     const ymax = d3.max(heights, h => h.length) || 1; const ys = d3.scaleSymlog().constant(2).domain([0, ymax * 1.15]).range([H - m.b, m.t]);
     const card = el("div", { class: "card", style: "margin-bottom: 10px" }, el("h3", null, `${by === "locus" ? "loci" : "taxa"} by the number of masked sequences they hold`, el("span", { class: "sub" }, `${fmtInt(units.filter((u, j) => kof[j] > 0).length)} of ${fmtInt(units.length)} have a masked sequence`)));
     const svg = d3.create("svg").attr("width", W).attr("height", H);
     svg.append("g").attr("class", "axis").attr("transform", `translate(${m.l},0)`).call(d3.axisLeft(ys).tickValues([0, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000].filter(v => v <= ymax * 1.15)).tickFormat(d3.format(",")));
-    svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(xs).tickFormat(i => { const [lo, hi] = B[i]; return lo === hi ? String(lo) : `${lo}–${hi}`; })).selectAll("text").attr("transform", B.length > 14 ? "rotate(-60)" : null).attr("text-anchor", B.length > 14 ? "end" : "middle");
+    svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(xs).tickFormat(i => { const [lo, hi] = B[i]; return lo === hi ? String(lo) : `${lo}–${hi}`; })).selectAll("text").attr("transform", rotated ? "rotate(-60)" : null).attr("text-anchor", rotated ? "end" : "middle").attr("dx", rotated ? "-0.5em" : null).attr("dy", rotated ? "0.1em" : null);
     svg.append("text").attr("x", (m.l + W - m.r) / 2).attr("y", H - 4).attr("text-anchor", "middle").text(`sequences masked in the ${by}`);
     svg.append("text").attr("transform", `translate(12,${(m.t + H - m.b) / 2}) rotate(-90)`).attr("text-anchor", "middle").text(by === "locus" ? "loci" : "taxa");
     B.forEach(([lo, hi], i) => {
