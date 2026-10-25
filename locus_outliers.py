@@ -259,7 +259,11 @@ def read_nexus_fast(path):
             if data[pos:].strip(): raise _Unsupported("text between blocks")
             break
         kind = m.group(1).lower().decode("ascii"); body_start = m.end()
-        e = _RE_END.search(data, body_start)
+        from_ = body_start
+        if kind in ("data", "characters"):                             # skip the matrix itself: its closing ';' is a plain find
+            mi = _RE_MATRIX.search(data, body_start); semi = data.find(b";", mi.end()) if mi else -1
+            if semi >= 0: from_ = semi
+        e = _RE_END.search(data, from_)
         if not e: raise _Unsupported("block end")
         span = (body_start, e.start())
         if kind in ("data", "characters"):
