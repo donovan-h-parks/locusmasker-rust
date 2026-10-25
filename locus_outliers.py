@@ -626,14 +626,6 @@ def pair_divergences(S, W, n, iu, rr=None, ok_r=None, threads=1):
     return _expand(m, n, iu), _expand(m_fl, n, iu), _expand(nl, n, iu)
 
 
-def top_comparators(score, kk, nres):
-    """rank comparators by score (higher = closer); returns top indices, validity, counts"""
-    top = np.argpartition(-score, kk - 1, axis=1)[:, :kk]
-    top = np.take_along_axis(top, np.argsort(-np.take_along_axis(score, top, 1), axis=1), 1)
-    valid = np.isfinite(np.take_along_axis(score, top, 1)) & (nres > 0)[:, None]
-    return top, valid, valid.sum(1)
-
-
 def flatten_pairs(idx, top, valid, kk):
     gi = np.repeat(idx, kk); ci = top[idx].ravel(); vi = valid[idx].ravel(); rk = np.tile(np.arange(kk), len(idx))
     return gi[vi], ci[vi], rk[vi]
@@ -760,7 +752,7 @@ def main():
     m0_hi = np.maximum(m0, m0_fl); res0 = m0 > m0_fl
     dist = np.where(np.isfinite(m0), m0, np.inf); np.fill_diagonal(dist, np.inf)   # neighbours by the provisional pair divergence (a median over loci, not swayed by one long fast locus)
     Kn = min(K_eff, n - 1)
-    nb = np.argsort(dist, axis=1)[:, :Kn]
+    nb = np.argsort(dist, axis=1, kind="stable")[:, :Kn]      # stable: a tie goes to the lower index on every platform (numpy's default sort is unstable and its tie order differs with the CPU's SIMD level)
     gi0 = np.repeat(np.arange(n), Kn); ci0 = nb.ravel()
     okn = np.isfinite(dist[gi0, ci0]) & res0[gi0, ci0]
     gi0, ci0 = gi0[okn], ci0[okn]
@@ -821,7 +813,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     prepool = ThreadPoolExecutor(min(a.threads, nloc)) if a.threads > 1 and big else None
     order = np.empty((n, n), np.int32)
     def sort_rows(b0):
-        b1 = min(b0 + 256, n); order[b0:b1] = np.argsort(mj[b0:b1], axis=1)
+        b1 = min(b0 + 256, n); order[b0:b1] = np.argsort(mj[b0:b1], axis=1, kind="stable")
     if prepool: list(prepool.map(sort_rows, range(0, n, 256)))
     else:
         for b0 in range(0, n, 256): sort_rows(b0)
@@ -1073,7 +1065,7 @@ def attribute(A, B, Xs, m, ovA, ovB, expect, fit_overlap, nthird=10):
     cand = np.flatnonzero(np.isfinite(mA) & np.isfinite(mB) & (ovA >= fit_overlap) & (ovB >= fit_overlap))
     cand = cand[(cand != A) & (cand != B)]
     if len(cand) < 3: return 0.0, None, None
-    cand = cand[np.argsort(np.minimum(mA[cand], mB[cand]))[:nthird]]
+    cand = cand[np.argsort(np.minimum(mA[cand], mB[cand]), kind="stable")[:nthird]]
     xa, xb = Xs[A], Xs[B]; both = (xa >= 0) & (xb >= 0)
     LL = {A: 0.0, B: 0.0}; used = 0
     for C in cand:
