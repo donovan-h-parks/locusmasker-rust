@@ -338,15 +338,16 @@ def load_alignment():
     """the alignment as the tool encodes it: state index per site, -1 for anything outside the alphabet"""
     import locus_outliers as lo
     names, seqs, loci, fmt, declared, nexus = lo.read_input(a.alignment, a.partitions)
+    seqs = [bytes(q) if isinstance(q, (bytes, bytearray)) else q.encode() for q in seqs]     # the readers return bytes
     dtype = a.datatype or declared
     if dtype is None:
-        probe = "".join(seqs)[:200000].upper(); letters = [c for c in probe if c.isalpha()]
+        probe = b"".join(seqs)[:200000].upper().decode("ascii", "replace"); letters = [c for c in probe if c.isalpha()]
         dtype = "dna" if letters and sum(c in "ACGTUN" for c in letters) / len(letters) >= 0.95 else "aa"
     alphabet = lo.DNA if dtype == "dna" else lo.PROTEIN
     lut = np.full(256, -1, dtype=np.int8)
     for i, c in enumerate(alphabet): lut[ord(c)] = i; lut[ord(c.lower())] = i
     if dtype == "dna": lut[ord("U")] = lut[ord("u")] = alphabet.index("T")
-    X = lut[np.frombuffer("".join(seqs).encode(), dtype=np.uint8).reshape(len(names), len(seqs[0]))]
+    X = lut[np.frombuffer(b"".join(seqs), dtype=np.uint8).reshape(len(names), len(seqs[0]))]
     return names, X, dict(loci)
 
 def best_matches(names, X, sites_of, taxon, min_sites=30):

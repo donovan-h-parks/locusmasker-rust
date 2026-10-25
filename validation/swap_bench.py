@@ -47,7 +47,7 @@ def prep(ds):
         return ds, f"unusable: {e}"
     if len(loci) < 3: return ds, f"unusable: {len(loci)} loci"
     with open(f"{out}/base.fasta", "w") as fh:
-        for t, s in zip(names, seqs): fh.write(f">{t}\n{s}\n")
+        for t, s in zip(names, seqs): fh.write(f">{t}\n{s.decode() if isinstance(s, (bytes, bytearray)) else s}\n")   # the readers return bytes
     with open(f"{out}/base.parts.txt", "w") as fh:
         for name, sites in loci: fh.write(f"DNA, {name} = {compress_ranges(sites)}\n")
     json.dump({"ntax": len(names), "nchar": len(seqs[0]), "nloci": len(loci), "dtype": dtype},
@@ -102,7 +102,7 @@ def swap_job(ds, rep):
     alphabet = lo.DNA if meta["dtype"] == "dna" else lo.PROTEIN
     lut = np.full(256, -1, dtype=np.int8)
     for i, c in enumerate(alphabet): lut[ord(c)] = i; lut[ord(c.lower())] = i
-    arr = np.frombuffer("".join(seqs).encode(), dtype=np.uint8).reshape(n, L).copy()
+    arr = np.frombuffer(b"".join(bytes(q) if isinstance(q, (bytes, bytearray)) else q.encode() for q in seqs), dtype=np.uint8).reshape(n, L).copy()
     pres = lut[arr] >= 0
     tested = [(nm, s) for nm, s in loci if nm in set(base["tested_loci"])]
     rng = np.random.default_rng(zlib.crc32(f"{ds}_rep{rep}".encode()))     # reproducible across processes

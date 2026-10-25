@@ -766,7 +766,7 @@ def main():
         val = np.isfinite(d_) & (o_ >= a.fit_overlap)
         if val.sum() < MIN_FIT_PAIRS: continue
         P_ = plateaus[li]
-        corr = lambda p: -P_ * np.log(1.0 - np.minimum(p, 0.98 * P_) / P_)
+        corr = lambda p: -P_ * np.log(1.0 - np.minimum(np.asarray(p, np.float64), 0.98 * P_) / P_)   # float64 under every numpy (1.x kept float32 here when p was float32, 2.x promotes)
         rate[li] = float(np.median(corr(d_[val] + 100.0 * HALF / o_[val]) / corr(m0n[val])))
     del m0, m0_fl, m0_hi, res0, dist, nb, m0n
     lsites = np.array([len(s) for _, s in loci], dtype=float)
