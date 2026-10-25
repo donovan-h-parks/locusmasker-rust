@@ -894,8 +894,14 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, plateau
     pool = ThreadPoolExecutor(min(a.threads, nloc)) if a.threads > 1 and Npairs / max(ntested, 1) >= TEST_THREAD_PAIRS else None
     # dispersion pre-pass: the robust spread of observed/expected among each locus's resolved comparator
     # pairs with enough expected mismatches, with the Poisson part removed: Var(O/E) = 1/E + phi
+    # the dispersion pass and the test both need a locus's comparator arrays; the dispersion pass keeps them for the
+    # test when they fit in a quarter of the memory available (about 120 bytes per comparison)
+    nrows_all = sum(int(t[2].sum()) for t in sel)
+    keep_pairs = nrows_all * 120 < _mem_available() // 4
+    cache = {}
     def locus_phi(li):
         L = locus_pairs(li)
+        if keep_pairs: cache[li] = L
         if isinstance(L, str): return np.nan, 0.0
         E = L["o"] * L["expect"](L["mph"]) / 100.0
         use = L["fit"] & (E >= PHI_MIN_E)
@@ -917,7 +923,8 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, plateau
         """everything the test decides and writes for one locus, as text blocks and mask actions; touches no shared
         state, so loci can be processed in parallel and written in order"""
         name, sites = loci[li]
-        L = locus_pairs(li)
+        L = cache.pop(li, None) if keep_pairs else None
+        if L is None: L = locus_pairs(li)
         if isinstance(L, str):
             nres = sel[li][3]
             return dict(skipped=True, log=f"{name}: {L}",
