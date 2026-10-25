@@ -480,8 +480,7 @@ def _block_terms(k0, cnt, n, d, a_, b_, cpair, phi, B):
     ksafe = np.where(valid, kk, 0); nk = np.where(valid, nint[:, None] - kk, 0)
     lchoose = lf[nint][:, None] - lf[ksafe] - lf[nk]
     kf = ksafe.astype(float); nf_ = n[:, None]
-    lbin = lchoose + kf * np.log(d)[:, None] + (nf_ - kf) * np.log(1 - d)[:, None]
-    if phi < 1e-8: lp = lbin
+    if phi < 1e-8: lp = lchoose + kf * np.log(d)[:, None] + (nf_ - kf) * np.log(1 - d)[:, None]
     else:
         k0f = k0.astype(float)
         base_a = lgamma_v(k0f + a_)                                            # lgamma(k0 + a), then + log(k0 + a + t)
@@ -492,8 +491,11 @@ def _block_terms(k0, cnt, n, d, a_, b_, cpair, phi, B):
         inc_b = np.log(np.maximum(x[:, None] - (j[None, :] + 1), 1e-300))
         cs_b = np.cumsum(inc_b, axis=1)
         lg_b = base_b[:, None] - np.concatenate([np.zeros((len(k0), 1)), cs_b[:, :-1]], axis=1)
-        lbb = lchoose + lg_a + lg_b + cpair[:, None]
-        lp = np.where((n >= 2)[:, None], lbb, lbin)
+        lp = lchoose + lg_a + lg_b + cpair[:, None]
+        small = n < 2                                                           # pairs with fewer than two sites stay binomial
+        if small.any():
+            lbin = lchoose + kf * np.log(d)[:, None] + (nf_ - kf) * np.log(1 - d)[:, None]
+            lp = np.where(small[:, None], lbin, lp)
     return np.where(valid, lp, -np.inf)
 
 
