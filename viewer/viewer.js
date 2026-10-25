@@ -930,7 +930,7 @@ function writeHash() {
     p.set("v", [V.x0, V.y0, V.cw, V.ch].map(v => +v.toFixed(3)).join(","));
     const dc = Detail.cur(); if (dc && App.panels.detail) p.set(dc.kind === "taxon" ? "t" : "l", dc.i);
     const sc = Sequence.cur(); if (sc && App.panels.sequence) p.set("c", `${sc.g},${sc.li}`);
-    history.replaceState(null, "", "#" + p.toString());
+    try { history.replaceState(null, "", "#" + p.toString()); } catch (e) { /* a sandboxed host may refuse: the state is cosmetic there */ }
   }, 150);
 }
 function readHash() {
