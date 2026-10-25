@@ -693,8 +693,16 @@ def main():
         sites = loci[li][1]
         Xm = X[:, sites]; Pm = (Xm >= 0).astype(np.float32)
         sh = Pm @ Pm.T; sm = np.zeros((n, n), np.float32)
-        for i in range(len(alphabet)):
-            Ai = (Xm == i).astype(np.float32); sm += Ai @ Ai.T
+        # each letter's product runs over the sites where the letter occurs at all: the other columns are zero and
+        # add nothing, and a site holds only a few of the letters (3 of 20 in a typical protein alignment)
+        if len(alphabet) > 4:
+            occ = np.zeros((len(alphabet) + 1, Xm.shape[1]), bool); occ[Xm + 1, np.arange(Xm.shape[1])] = True   # row 0: missing
+            where = [np.flatnonzero(occ[i + 1]) for i in range(len(alphabet))]
+        else:
+            where = [np.flatnonzero((Xm == i).any(0)) for i in range(len(alphabet))]
+        for i, cols in enumerate(where):
+            if len(cols):
+                Ai = (Xm[:, cols] == i).astype(np.float32); sm += Ai @ Ai.T
         S[li] = sm[iu]; W[li] = sh[iu]                                  # exact: float32 counts below 2^24
         cnt = np.bincount(Xm[Xm >= 0], minlength=len(alphabet)).astype(float)
         f = cnt / max(cnt.sum(), 1.0)
