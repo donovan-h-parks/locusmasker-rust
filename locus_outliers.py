@@ -926,8 +926,8 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     phi_hat = np.full(nloc, np.nan); phi_n = np.zeros(nloc); nrow = np.zeros(nloc, np.int64)
     for li, (h, c, r_) in enumerate(pool.map(locus_phi, range(nloc)) if pool else map(locus_phi, range(nloc))):
         phi_hat[li] = h; phi_n[li] = c; nrow[li] = r_
-    row_off = np.cumsum(nrow) - nrow
-    pairs_npy = np.lib.format.open_memmap(f"{a.out}/pairs.npy", mode="w+", dtype=PAIRS_DTYPE, shape=(int(nrow.sum()),))
+    pairs_fh = open(f"{a.out}/pairs.npy", "wb")                                   # a plain .npy file written locus by locus, in order: no memmap, so it needs no mmap support and no page cache
+    np.lib.format.write_array_header_1_0(pairs_fh, {"descr": np.lib.format.dtype_to_descr(PAIRS_DTYPE), "fortran_order": False, "shape": (int(nrow.sum()),)})
     okp = phi_n > 0
     phi_bar = wmedian1(phi_hat[okp], phi_n[okp]) if okp.any() else 0.0
     print(f"dispersion: dataset-wide phi {phi_bar:.4f} (robust SD of O/E beyond Poisson {math.sqrt(phi_bar):.2f}); "
@@ -973,9 +973,9 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         blk["identity"] = ident; blk["expected"] = 100 - dhat; blk["excess"] = excess; blk["fail"] = fail_hi; blk["fail_similar"] = fail_lo
 
         # ---- divergent side: majority over comparators, every cell at once
-        kc = ncomp[idx]; ncell = len(idx)
-        starts = np.r_[0, np.cumsum(kc)[:-1]]
-        nf = np.add.reduceat(fail_hi.astype(np.int64), starts); nsim = np.add.reduceat(fail_lo.astype(np.int64), starts)
+        kc = ncomp[idx].astype(np.intp); ncell = len(idx)
+        starts = np.r_[0, np.cumsum(kc)[:-1]].astype(np.intp)                   # the platform index type: reduceat, repeat and bincount refuse int64 on 32-bit builds (WebAssembly)
+        nf = np.add.reduceat(fail_hi.astype(np.intp), starts); nsim = np.add.reduceat(fail_lo.astype(np.intp), starts)
         flag = (kc >= K_eff) & (nf >= M_eff)
         amb = (kc < K_eff) & (nf >= kc // 2 + 1)
         fc = np.bincount(nf[flag], minlength=K_eff + 1); fcount = {j: int(fc[j]) for j in range(M_eff, K_eff + 1)}
@@ -1041,7 +1041,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         name, sites = loci[li]
         if R["skipped"]:
             per.write(R["per"]); print(R["log"], file=sys.stderr); return
-        pairs_npy[row_off[li]:row_off[li] + len(R["pairs"])] = R["pairs"]; cells.write(R["cells"])
+        assert len(R["pairs"]) == nrow[li]; pairs_fh.write(R["pairs"].tobytes()); cells.write(R["cells"])
         for g, side, ev in R["masks"]: mask_cell(name, g, sites, side, ev)
         simf.write(R["simf"]); trends.write(R["trends"]); per.write(R["per"]); disp.write(R["disp"])
         print(R["log"], file=sys.stderr)
@@ -1054,7 +1054,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     else:
         for li in range(nloc): consume(li, process_locus(li))
     for fh in (cells, per, trends, simf, disp): fh.close()
-    pairs_npy.flush(); del pairs_npy
+    pairs_fh.close()
     with open(f"{a.out}/masked.csv", "w", newline="") as fh:
         mw = csv.writer(fh)
         mw.writerow(["locus", "taxon", "sites_masked", "side", "n_fail", "n_similar", "partner",
