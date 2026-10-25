@@ -673,7 +673,7 @@ def main():
     # the same-residue and shared-site counts of every pair, per locus: symmetric, so the upper triangle (diagonal
     # included, row-major) is kept and a locus's full matrix is rebuilt when the test needs it
     iu = np.triu_indices(n); ntri = len(iu[0]); diag_pos = np.flatnonzero(iu[0] == iu[1])
-    tri_idx = np.empty((n, n), np.int64); tri_idx[iu] = np.arange(ntri); tri_idx[iu[1], iu[0]] = np.arange(ntri)
+    tri_idx = np.empty((n, n), np.int32); tri_idx[iu] = np.arange(ntri); tri_idx[iu[1], iu[0]] = np.arange(ntri)
     cdt = np.uint16 if max(len(sites) for _, sites in loci) < 65536 else np.uint32   # counts never exceed a locus's length
     S = np.empty((nloc, ntri), cdt); W = np.empty((nloc, ntri), cdt)
     plateaus = np.empty(nloc)
@@ -759,30 +759,56 @@ def main():
     tie = np.nan_to_num(100.0 - ani, nan=100.0) * 1e-9 + np.arange(n)[None, :] * 1e-12
     masked = rows                                                      # blanked in place; X is its own copy
 
-    nmasked = run_z(a, names, loci, X, S, W, iu, diag_pos, m, m_hi, m_xs, plateaus, rate, tie, masked, K_eff, M_eff)
+    nmasked = run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, plateaus, rate, tie, masked, K_eff, M_eff)
 
     out = write_masked(a.aln, a.out, fmt, names, masked, nexus)
     print(f"masked {nmasked} cells -> {out}\ndone {time.time() - t0:.0f}s", file=sys.stderr)
 
 
 # ------------------------------------------------------------------ the counting test
-def run_z(a, names, loci, X, S, W, iu, diag_pos, m, m_hi, m_xs, plateaus, rate, tie, masked, K_eff, M_eff):
+def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, plateaus, rate, tie, masked, K_eff, M_eff):
     n = len(names); nloc = len(loci)
     mj = np.where(np.isfinite(m), m, np.inf) + tie
     mask_hi = not a.mask_similar_only
     mask_lo = not a.mask_different_only
     views = [np.frombuffer(mb, dtype=np.uint8) for mb in masked]        # writable views for blanking
 
+    # each taxon's candidates in order of pair divergence (the tie-break makes every row a strict order), computed
+    # once: a locus's comparators are the first K candidates that share enough sites with the taxon at that locus
+    big = n >= 1000
+    prepool = ThreadPoolExecutor(a.threads) if a.threads > 1 and big else None
+    order = np.empty((n, n), np.int32)
+    def sort_rows(b0):
+        b1 = min(b0 + 256, n); order[b0:b1] = np.argsort(mj[b0:b1], axis=1)
+    if prepool: list(prepool.map(sort_rows, range(0, n, 256)))
+    else:
+        for b0 in range(0, n, 256): sort_rows(b0)
+
+    def choose_comparators(li):
+        """for every taxon at this locus: its first K_eff candidates (in order of m) that have the overlap the taxon
+        needs here, walking the sorted candidates in windows that grow until every taxon has K or runs out"""
+        Wl = W[li]; nres = Wl[diag_pos].astype(int); need = np.minimum(a.fit_overlap, nres)
+        top = np.full((n, K_eff), -1, np.int64); cnt = np.zeros(n, np.int64)
+        rows = np.flatnonzero(nres > 0); start = 0; width = 4 * K_eff
+        while len(rows) and start < n:
+            stop = min(start + width, n)
+            cand = order[rows, start:stop]
+            mjc = mj[rows[:, None], cand]
+            ok = np.isfinite(mjc) & (cand != rows[:, None]) & (Wl[tri_idx[rows[:, None], cand]] >= need[rows][:, None])
+            pos = cnt[rows][:, None] + np.cumsum(ok, axis=1) - ok                 # the comparator slot each accepted candidate takes
+            r_, j_ = np.nonzero(ok & (pos < K_eff))
+            top[rows[r_], pos[r_, j_]] = cand[r_, j_]
+            cnt[rows] = np.minimum(cnt[rows] + ok.sum(1), K_eff)
+            exhausted = ~np.isfinite(mjc[:, -1])                                  # non-finite candidates sort last: nothing beyond
+            rows = rows[(cnt[rows] < K_eff) & ~exhausted]
+            start = stop; width *= 4
+        return top, top >= 0, cnt, nres
+
     # pre-pass: count distinct comparisons so the Bonferroni bar is known before any test runs
-    Npairs = 0; sel = []
-    for li in range(nloc):
-        ov = _expand(W[li].astype(np.float32), n, iu)
-        nres = W[li][diag_pos].astype(int)
-        need = np.minimum(a.fit_overlap, nres)[:, None]
-        score = np.where((ov >= need) & np.isfinite(mj), -mj, -np.inf)
-        np.fill_diagonal(score, -np.inf)
-        top, valid, ncomp = top_comparators(score, K_eff, nres)
-        sel.append((top, valid, ncomp, nres))
+    sel = list(prepool.map(choose_comparators, range(nloc))) if prepool else [choose_comparators(li) for li in range(nloc)]
+    if prepool: prepool.shutdown()
+    Npairs = 0
+    for top, valid, ncomp, nres in sel:
         idx = np.flatnonzero(ncomp > 0)
         if len(idx):
             gi, ci, _ = flatten_pairs(idx, top, valid, K_eff)
@@ -815,12 +841,12 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, m, m_hi, m_xs, plateaus, rate, 
 
     def locus_pairs(li):
         """the comparator pairs of a locus and the locus's rate; None when the locus is skipped"""
-        ov, sm = _expand(W[li].astype(np.float32), n, iu), _expand(S[li].astype(np.float32), n, iu)
+        Wl, Sl = W[li], S[li]
         top, valid, ncomp, nres = sel[li]
         idx = np.flatnonzero(ncomp > 0)
         if len(idx) == 0: return "skipped-no-cells"
         gi, ci, rk = flatten_pairs(idx, top, valid, K_eff)
-        o = ov[gi, ci]; same = sm[gi, ci]; mis = o - same
+        t = tri_idx[gi, ci]; o = Wl[t].astype(np.float32); same = Sl[t].astype(np.float32); mis = o - same
         ident = 100.0 * same / o; dob = 100.0 - ident
         mp = m[gi, ci]; mph = m_hi[gi, ci]; mpx = m_xs[gi, ci]
         fit = (o >= a.fit_overlap) & (mpx > 0)
@@ -833,7 +859,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, m, m_hi, m_xs, plateaus, rate, 
             mvc = np.maximum(np.asarray(mv, float), 1e-4)
             return np.maximum(P_ * (1.0 - np.exp(-rate_c * corr(mvc) / P_)), 1e-4)
         return dict(idx=idx, gi=gi, ci=ci, rk=rk, o=o, same=same, mis=mis, ident=ident, dob=dob, mp=mp, mph=mph, fit=fit,
-                    ov=ov, sm=sm, ncomp=ncomp, nres=nres, expect=expect, corr=corr, rate_c=rate_c)
+                    Wl=Wl, Sl=Sl, ncomp=ncomp, nres=nres, expect=expect, corr=corr, rate_c=rate_c)
 
     # worker threads pay off in the test only when a locus's arrays are large (thousands of pairs): with small loci
     # the per-call interpreter-lock traffic of many small numpy operations makes threads slower than one
@@ -869,8 +895,8 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, m, m_hi, m_xs, plateaus, rate, 
             nres = sel[li][3]
             return dict(skipped=True, log=f"{name}: {L}",
                         per=f"{name}\t{len(sites)}\t{int((nres > 0).sum())}\t0\t0\t{rate[li]:.3f}\t{plateaus[li]:.1f}\t{kq:.2f}\t0\t{zeros}\t0\t0\t{L}\n")
-        idx, gi, ci, rk, o, same, mis, ident, dob, mp, mph, fit, ov, sm, ncomp, nres, expect, corr, rate_c = \
-            (L[k] for k in ("idx", "gi", "ci", "rk", "o", "same", "mis", "ident", "dob", "mp", "mph", "fit", "ov", "sm", "ncomp", "nres", "expect", "corr", "rate_c"))
+        idx, gi, ci, rk, o, same, mis, ident, dob, mp, mph, fit, Wl, Sl, ncomp, nres, expect, corr, rate_c = \
+            (L[k] for k in ("idx", "gi", "ci", "rk", "o", "same", "mis", "ident", "dob", "mp", "mph", "fit", "Wl", "Sl", "ncomp", "nres", "expect", "corr", "rate_c"))
         phi = (phi_n[li] * (phi_hat[li] if okp[li] else 0.0) + PHI_N0 * phi_bar) / (phi_n[li] + PHI_N0)
 
         # the count test with a quasi-Poisson variance: Var(O) = E + phi E^2, phi the locus's dispersion
@@ -934,9 +960,9 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, m, m_hi, m_xs, plateaus, rate, 
         Xs = X[:, sites] if simpairs else None
         sim_lines = []
         for (A, B) in sorted(simpairs):
-            lam, donor, recip = attribute(A, B, Xs, m, ov, expect, a.fit_overlap)
-            o_ab = float(ov[A, B]); id_ab = 100.0 * sm[A, B] / max(o_ab, 1.0)
-            exp_ab = float(expect(m[A, B])); defi_ab = o_ab * exp_ab / 100 - (o_ab - sm[A, B])
+            lam, donor, recip = attribute(A, B, Xs, m, Wl[tri_idx[A]], Wl[tri_idx[B]], expect, a.fit_overlap)
+            o_ab = float(Wl[tri_idx[A, B]]); s_ab = np.float32(Sl[tri_idx[A, B]]); id_ab = 100.0 * s_ab / max(o_ab, 1.0)
+            exp_ab = float(expect(m[A, B])); defi_ab = o_ab * exp_ab / 100 - (o_ab - s_ab)
             targets = ([recip] if recip is not None else [A, B]) if mask_lo else []
             side = ("both" if recip is None else names[recip]) if mask_lo else "none"
             for g in targets:
@@ -986,14 +1012,14 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, m, m_hi, m_xs, plateaus, rate, 
     return len(mrows)
 
 
-def attribute(A, B, Xs, m, ov, expect, fit_overlap, nthird=10):
+def attribute(A, B, Xs, m, ovA, ovB, expect, fit_overlap, nthird=10):
     """direction of a similar pair: likelihood ratio over up to nthird third parties, with both
     hypotheses evaluated on the SAME sites (those shared by A, B and C), so the comparison is
     not driven by how much data each party has. The shared sequence should fit the DONOR's
     expectations. |2 ln LR| > LR_BAR attributes; returns (lambda, donor, recipient) or
     (lambda, None, None) when unidentifiable."""
     mA, mB = m[A], m[B]
-    cand = np.flatnonzero(np.isfinite(mA) & np.isfinite(mB) & (ov[A] >= fit_overlap) & (ov[B] >= fit_overlap))
+    cand = np.flatnonzero(np.isfinite(mA) & np.isfinite(mB) & (ovA >= fit_overlap) & (ovB >= fit_overlap))
     cand = cand[(cand != A) & (cand != B)]
     if len(cand) < 3: return 0.0, None, None
     cand = cand[np.argsort(np.minimum(mA[cand], mB[cand]))[:nthird]]
