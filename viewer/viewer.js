@@ -912,7 +912,7 @@ function drawCophylo(host, D, entry, k, cell) {
   const collect = (n, out) => { if (n.children.length && n.split && n.set.size > 1 && n.set.size < tipsOf(exp).length - 1) out.add(n.split); n.children.forEach(c => collect(c, out)); }; collect(exp, expSplits); collect(obs, obsSplits);
   const labelOf = t => { const i = +t; return name(t) + (i === bm && !comps.has(i) ? "*" : ""); };          // * : the best match, brought in from outside the comparators
   const meas = document.createElement("canvas").getContext("2d"); meas.font = `11.5px ${cssVar("--sans")}`; const LAB = Math.ceil(d3.max(tipsOf(exp), t => meas.measureText(labelOf(t.name)).width) + 10);
-  const nTip = tipsOf(exp).length; const RH = 20, GAP = 44, W = Math.min(820, Math.max(2 * LAB + GAP + 220, host.getBoundingClientRect().width - 24)), TW = (W - 2 * LAB - GAP - 28) / 2, top = 10, H = top + nTip * RH + 40;
+  const nTip = tipsOf(exp).length; const RH = 20, GAP = 44, W = Math.min(820, Math.max(560, 2 * LAB + GAP + 240)), TW = (W - 2 * LAB - GAP - 28) / 2, top = 10, H = top + nTip * RH + 40;
   const maxD = Math.max(depthOf(exp), depthOf(obs), 1e-6); const sx = d3.scaleLinear().domain([0, maxD]).range([0, TW]);
   assignY(exp, { y: 0 }); assignY(obs, { y: 0 });
   const svg = d3.create("svg").attr("width", W).attr("height", H).attr("class", "tangle");
@@ -934,7 +934,7 @@ function drawCophylo(host, D, entry, k, cell) {
   const bar = Math.pow(10, Math.floor(Math.log10(maxD))) * (maxD / Math.pow(10, Math.floor(Math.log10(maxD))) >= 5 ? 2 : 1);
   const by = H - 12; svg.append("line").attr("x1", 8).attr("x2", 8 + sx(bar)).attr("y1", by).attr("y2", by).attr("stroke", cssVar("--ink")).attr("stroke-width", 1.5);
   svg.append("text").attr("x", 12 + sx(bar)).attr("y", by + 4).attr("font-size", 10.5).attr("fill", cssVar("--muted")).text(`${bar}% divergence`);
-  svg.append("text").attr("x", W / 2).attr("y", by + 4).attr("text-anchor", "middle").attr("font-size", 10.5).attr("fill", cssVar("--muted")).text("expected  ·  observed at this locus");
+  svg.append("text").attr("x", W - 36).attr("y", by + 4).attr("text-anchor", "end").attr("font-size", 10.5).attr("fill", cssVar("--muted")).text("expected  ·  observed at this locus");
   const q = svg.append("g").attr("transform", `translate(${W - 20},${by})`).style("cursor", "help");
   q.append("circle").attr("r", 8).attr("fill", "none").attr("stroke", cssVar("--muted")).attr("stroke-width", 1.2); q.append("text").attr("y", 4).attr("text-anchor", "middle").attr("font-size", 11).attr("font-weight", 700).attr("fill", cssVar("--muted")).text("?");
   const explain = el("div", { style: "max-width: 380px" },
