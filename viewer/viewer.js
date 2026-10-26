@@ -910,8 +910,7 @@ function drawCophylo(host, D, entry, k, cell) {
   const rank = new Map(); tipsOf(exp).forEach((t, i) => rank.set(t.name, i)); orderLike(obs, rank);
   splitsOf(exp); splitsOf(obs); const expSplits = new Set(), obsSplits = new Set();
   const collect = (n, out) => { if (n.children.length && n.split && n.set.size > 1 && n.set.size < tipsOf(exp).length - 1) out.add(n.split); n.children.forEach(c => collect(c, out)); }; collect(exp, expSplits); collect(obs, obsSplits);
-  const tag = t => { const i = +t; return i === g ? "focal" : i === partner ? "partner" : i === bm && !comps.has(i) ? `best match${bmId !== null ? ", " + fmt1(bmId) + "% identity" : ""}` : ""; };
-  const labelOf = t => name(t) + (tag(t) ? ` (${tag(t)})` : "");
+  const labelOf = t => { const i = +t; return name(t) + (i === bm && !comps.has(i) ? "*" : ""); };          // * : the best match, brought in from outside the comparators
   const meas = document.createElement("canvas").getContext("2d"); meas.font = `11.5px ${cssVar("--sans")}`; const LAB = Math.ceil(d3.max(tipsOf(exp), t => meas.measureText(labelOf(t.name)).width) + 10);
   const nTip = tipsOf(exp).length; const RH = 20, GAP = 44, W = Math.min(820, Math.max(2 * LAB + GAP + 220, host.getBoundingClientRect().width - 24)), TW = (W - 2 * LAB - GAP - 28) / 2, top = 10, H = top + nTip * RH + 40;
   const maxD = Math.max(depthOf(exp), depthOf(obs), 1e-6); const sx = d3.scaleLinear().domain([0, maxD]).range([0, TW]);
@@ -938,7 +937,12 @@ function drawCophylo(host, D, entry, k, cell) {
   svg.append("text").attr("x", W / 2).attr("y", by + 4).attr("text-anchor", "middle").attr("font-size", 10.5).attr("fill", cssVar("--muted")).text("expected  ·  observed at this locus");
   const q = svg.append("g").attr("transform", `translate(${W - 20},${by})`).style("cursor", "help");
   q.append("circle").attr("r", 8).attr("fill", "none").attr("stroke", cssVar("--muted")).attr("stroke-width", 1.2); q.append("text").attr("y", 4).attr("text-anchor", "middle").attr("font-size", 11).attr("font-weight", 700).attr("fill", cssVar("--muted")).text("?");
-  q.append("title").text("Two neighbour-joining trees over the focal sequence, its comparators, the partner of a too-similar pair and the best-match taxon. Left: the distances the test expects for every pair (its genome-wide divergence through this locus's expectation). Right: the mismatch fractions observed at this locus over shared sites. Both midpoint-rooted, same scale; negative branches drawn as zero. Thick branches are splits absent from the other tree; dotted lines join the same taxon on both sides. A long focal branch with its neighbours unchanged is a damaged copy of the right sequence; a focal that moves across to its best match points to contamination or a paralogue; a best match on its own long branch is merely the least different taxon, not a relative.");
+  const explain = el("div", { style: "max-width: 380px" },
+    el("div", null, el("b", null, "Two neighbour-joining trees"), " over the focal sequence (filled dot, in its mask colour), its comparators, the partner of a too-similar pair, and the best-match taxon, marked * when it is not one of the comparators" + (bmId !== null ? ` (identity ${fmt1(bmId)}%)` : "") + "."),
+    el("div", { style: "margin-top: 4px" }, el("b", null, "Left:"), " the distances the test expects for every pair, each pair's genome-wide divergence through this locus's expectation. ", el("b", null, "Right:"), " the mismatch fractions observed at this locus over shared sites. Both midpoint-rooted, one scale; negative branches drawn as zero."),
+    el("div", { style: "margin-top: 4px" }, "Thick branches are splits absent from the other tree; dotted lines join the same taxon on both sides."),
+    el("div", { style: "margin-top: 4px", class: "more" }, "A long focal branch with its neighbours unchanged is a damaged copy of the right sequence. A focal that moves across to its best match points to contamination or a paralogue. A whole clade pushed away from the rest on one long branch is a paralogue shared by the clade. A best match on its own long branch is merely the least different taxon, not a relative."));
+  q.on("mouseenter", ev => showHover(explain, ev.clientX, ev.clientY)).on("mouseleave", hideHover);
   return svg.node();
 }
 
