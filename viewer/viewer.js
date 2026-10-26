@@ -197,7 +197,7 @@ function stateReason(D, g, li) {
 }
 
 // ------------------------------------------------------------------ the app
-const App = { D: null, panels: {}, hover: null, sel: { rows: new Set(), cols: new Set(), cells: new Set() }, order: { taxa: null, loci: null, taxaMode: "input", lociMode: "input" }, hidePass: false, view: "matrix" };
+const App = { D: null, panels: {}, hover: null, sel: { rows: new Set(), cols: new Set(), cells: new Set() }, order: { taxa: null, loci: null, taxaMode: "input", lociMode: "input" }, hidePass: false, view: "summary" };
 
 function boot() {
   const tag = document.getElementById("lm-bundle"); let b64 = (tag && tag.textContent.trim()) || (window.LM_BUNDLE_B64 || "").trim();
