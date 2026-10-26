@@ -294,7 +294,7 @@ const Overview = (() => {
   let P, matrix, ctx, rowCanvas, colCanvas, strip, stripCtx, wrap, viewEl = {};
   const V = { x0: 0, y0: 0, cw: 4, ch: 4, user: false };      // first display row/col, the cell size in CSS px, and whether the user has zoomed
   let dragging = null;
-  const VIEWS = [["summary", "summary"], ["matrix", "matrix"], ["loci", "loci ribbons"], ["taxa", "taxon ribbons"], ["lochist", "locus histogram"], ["taxhist", "taxon histogram"], ["table", "table"]];
+  const VIEWS = [["summary", "summary"], ["matrix", "matrix"], ["loci", "loci ribbons"], ["taxa", "taxon ribbons"], ["table", "table"]];
   function create() {
     P = makePanel("overview", [App.D.man.dataset || App.D.man.input.file, "overview"]);
     P.el.classList.add("overview");
@@ -324,12 +324,11 @@ const Overview = (() => {
       el("span", { class: "fam" }, el("span", { class: "lab" }, "masked, too divergent, fails"), ...d3.range(D.M, D.K + 1).map(f => el("span", { class: "fam", title: D.labelOf(ST.RED + f) }, sw(D.reds[f - D.M]), String(f)))),
       el("span", { class: "fam" }, el("span", { class: "lab" }, "masked, too similar, pairs"), ...[1, 2, 3].map(k => el("span", { class: "fam", title: D.labelOf(ST.BLUE + k) }, sw(D.blues[k - 1]), k === 3 ? "3+" : String(k)))),
       el("span", { class: "fam", title: "present, not tested" }, sw("hatch"), "not tested"), el("span", { class: "fam", title: "no residue" }, sw(null), "absent"), el("span", { class: "lab" }, `of ${D.K} comparators`));
-    const help = el("button", { class: "help", title: "wheel: zoom · shift+wheel: loci only · alt+wheel: taxa only · drag: pan · shift+drag: zoom to box · double-click: reset · click a label: open its panel · click a cell: open the alignment · arrows pan, + and − zoom, / finds, Esc closes" }, "?");
+    const help = el("button", { class: "help", title: "pinch or ctrl+wheel: zoom (shift: loci only, alt: taxa only) · two-finger scroll or drag: move · shift+drag: zoom to a box · double-click: fit · click a label: open its panel · click a cell: open the alignment · arrows move, + and − zoom, / finds, Esc closes" }, "?");
     const stripWrap = el("div", { class: "strip-wrap" }); strip = el("canvas"); stripCtx = strip.getContext("2d");
     stripWrap.append(strip, legend, help);
     P.body.append(stripWrap);
     viewEl.ribbons = el("div", { class: "ribbons-view", style: "display:none" }); P.body.append(viewEl.ribbons);
-    viewEl.hist = el("div", { class: "hist-wrap", style: "display:none; padding: 6px 10px; flex: 1 1 auto; min-height: 0;" }); P.body.append(viewEl.hist);
     viewEl.table = el("div", { class: "table-wrap", style: "display:none; flex: 1 1 auto;" }); P.body.append(viewEl.table);
     viewEl.matrixParts = [wrap, stripWrap];
     P.body.style.display = "flex"; P.body.style.flexDirection = "column";
@@ -342,13 +341,12 @@ const Overview = (() => {
     viewEl.viewCtl.replaceChildren(); if (v === "matrix") viewEl.viewCtl.append(...viewEl.matrixCtl);
     viewEl.matrixParts.forEach(e => e.style.display = v === "matrix" ? "" : "none");
     viewEl.summary.style.display = v === "summary" ? "" : "none";
-    viewEl.ribbons.style.display = (v === "loci" || v === "taxa") ? "" : "none"; viewEl.hist.style.display = (v === "lochist" || v === "taxhist") ? "" : "none"; viewEl.table.style.display = v === "table" ? "" : "none";
+    viewEl.ribbons.style.display = (v === "loci" || v === "taxa") ? "" : "none"; viewEl.table.style.display = v === "table" ? "" : "none";
     refresh(); writeHash();
   }
   function refresh() {                                        // draw the open view at the panel's current size
     const v = App.view;
     if (v === "matrix") { if (!V.user) fitAll(); redraw(); } else if (v === "summary") { renderTiles(); renderWorst(); }
-    else if (v === "lochist") Hist.render(viewEl.hist, "locus"); else if (v === "taxhist") Hist.render(viewEl.hist, "taxon");
     else if (v === "loci" || v === "taxa") Ribbons.render(viewEl.ribbons, v === "loci" ? "locus" : "taxon", viewEl.viewCtl);
     else if (v === "table") Table.render(viewEl.table);
   }
@@ -381,8 +379,13 @@ const Overview = (() => {
       .sort((a, b) => b.v - a.v || b.div + b.sim - a.div - a.sim).slice(0, 10);
     const loci = d3.range(D.nloc).filter(l => D.locCount.masked[l] > 0).map(l => ({ i: l, kind: "col", name: D.loci.names[l], v: D.locCount.masked[l], div: D.locCount.div[l], sim: D.locCount.sim[l], label: fmtInt(D.locCount.masked[l]), title: `${D.locCount.masked[l]} of ${D.locCount.tested[l]} tested taxa masked` }))
       .sort((a, b) => b.v - a.v).slice(0, 10);
-    if (taxa.length) w.append(col("most masked taxa (share of tested loci)", taxa, g => Detail.open("taxon", g)));
-    if (loci.length) w.append(col("most masked loci (sequences)", loci, l => Detail.open("locus", l)));
+    const ct = col("most masked taxa (share of tested loci)", taxa, g => Detail.open("taxon", g)), cl = col("most masked loci (sequences)", loci, l => Detail.open("locus", l));
+    w.append(ct, cl);
+    // the histograms under the lists, sized to the room left in the panel
+    const room = P.body.getBoundingClientRect().height - viewEl.tiles.getBoundingClientRect().height - w.getBoundingClientRect().height - 60;
+    const hh = clamp(room, 190, 420), hw = (w.getBoundingClientRect().width || 800) / 2 - 20;
+    const ht = el("div", { class: "hist-wrap" }), hl = el("div", { class: "hist-wrap" }); ct.append(ht); cl.append(hl);
+    Hist.render(ht, "taxon", hw, hh); Hist.render(hl, "locus", hw, hh);
   }
   // ---- ordering
   function setOrder(axis, mode) {
@@ -408,7 +411,12 @@ const Overview = (() => {
   }
   // ---- geometry
   function size() { const r = wrap.getBoundingClientRect(); return { W: Math.max(50, r.width), H: Math.max(50, r.height) }; }
-  function labelSpace() { const rl = V.ch >= 10 ? 150 : 0, cl = V.cw >= 10 ? 90 : 0; wrap.style.setProperty("--rowlab", rl + "px"); wrap.style.setProperty("--collab", cl + "px"); return { rl, cl }; }
+  let nameW = null;                                           // the longest taxon and locus names at 12 px, measured once
+  function labelSpace() {
+    if (!nameW) { const c = rowCanvas.getContext("2d"); c.font = `12px ${cssVar("--sans")}`; nameW = { taxa: d3.max(App.D.taxa.names, nm => c.measureText(nm).width) || 40, loci: d3.max(App.D.loci.names, nm => c.measureText(nm).width) || 40 }; }
+    const rl = V.ch >= 10 ? Math.ceil(Math.min(260, nameW.taxa * Math.min(12, V.ch - 2) / 12 + 10)) : 0, cl = V.cw >= 10 ? Math.ceil(Math.min(160, nameW.loci * Math.min(12, V.cw - 2) / 12 + 10)) : 0;
+    wrap.style.setProperty("--rowlab", rl + "px"); wrap.style.setProperty("--collab", cl + "px"); return { rl, cl };
+  }
   function fitAll() { const D = App.D; const { W, H } = size(); let rl = 0, cl = 0; for (let k = 0; k < 3; k++) { V.cw = Math.max(0.1, (W - rl) / D.nloc); V.ch = Math.max(0.1, (H - cl) / D.n); ({ rl, cl } = labelSpace()); } V.x0 = 0; V.y0 = 0; }   // the label gutters depend on the cell size, so iterate to a fixed point
   function canvasArea() { const { W, H } = size(); const { rl, cl } = labelSpace(); return { w: Math.max(10, W - rl), h: Math.max(10, H - cl), rl, cl }; }
   function redraw() {
@@ -480,15 +488,20 @@ const Overview = (() => {
   // ---- interaction
   function cellAt(ev) { const r = matrix.getBoundingClientRect(); const x = ev.clientX - r.left, y = ev.clientY - r.top; return { x, y, col: Math.floor(V.x0 + x / V.cw), row: Math.floor(V.y0 + y / V.ch), cols: [Math.floor(V.x0 + x / V.cw), Math.max(Math.floor(V.x0 + x / V.cw), Math.ceil(V.x0 + (x + 1) / V.cw) - 1)], rows: [Math.floor(V.y0 + y / V.ch), Math.max(Math.floor(V.y0 + y / V.ch), Math.ceil(V.y0 + (y + 1) / V.ch) - 1)] }; }
   function bindMatrix() {
+    const zoomAt = (x, y, fx, fy) => { if (fx !== 1) { const ncw = clamp(V.cw * fx, 0.05, 40); V.x0 = V.x0 + x / V.cw - x / ncw; V.cw = ncw; } if (fy !== 1) { const nch = clamp(V.ch * fy, 0.05, 40); V.y0 = V.y0 + y / V.ch - y / nch; V.ch = nch; } V.user = true; labelSpace(); redraw(); writeHash(); };
     matrix.addEventListener("wheel", ev => {
-      ev.preventDefault(); const { x, y } = cellAt(ev); const f = Math.exp(-ev.deltaY * 0.002);
-      const zx = !ev.altKey, zy = !ev.shiftKey;
-      if (zx) { const ncw = clamp(V.cw * f, 0.05, 40); V.x0 = V.x0 + x / V.cw - x / ncw; V.cw = ncw; }
-      if (zy) { const nch = clamp(V.ch * f, 0.05, 40); V.y0 = V.y0 + y / V.ch - y / nch; V.ch = nch; }
-      V.user = true; labelSpace(); redraw(); writeHash();
+      ev.preventDefault(); const { x, y } = cellAt(ev);
+      if (ev.ctrlKey || ev.metaKey) { const f = Math.exp(-ev.deltaY * 0.01); zoomAt(x, y, ev.altKey ? 1 : f, ev.shiftKey ? 1 : f); return; }   // a pinch arrives as ctrl+wheel
+      V.x0 += ev.deltaX / V.cw; V.y0 += ev.deltaY / V.ch; redraw(); writeHash();                                                         // two fingers scroll
     }, { passive: false });
-    matrix.addEventListener("pointerdown", ev => { matrix.setPointerCapture(ev.pointerId); const c = cellAt(ev); dragging = { x: c.x, y: c.y, x0: V.x0, y0: V.y0, box: ev.shiftKey, moved: false }; });
+    const ptrs = new Map(); let pinch = null;
+    matrix.addEventListener("pointerdown", ev => { matrix.setPointerCapture(ev.pointerId); ptrs.set(ev.pointerId, [ev.clientX, ev.clientY]); const c = cellAt(ev);
+      if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), cw: V.cw, ch: V.ch, x0: V.x0, y0: V.y0, mid: cellAt({ clientX: (a[0] + b[0]) / 2, clientY: (a[1] + b[1]) / 2 }) }; dragging = null; }
+      else dragging = { x: c.x, y: c.y, x0: V.x0, y0: V.y0, box: ev.shiftKey, moved: false }; });
+    matrix.addEventListener("pointercancel", ev => { ptrs.delete(ev.pointerId); pinch = null; dragging = null; });
     matrix.addEventListener("pointermove", ev => {
+      if (ptrs.has(ev.pointerId)) ptrs.set(ev.pointerId, [ev.clientX, ev.clientY]);
+      if (pinch && ptrs.size === 2) { const [a, b] = [...ptrs.values()]; const d = Math.hypot(a[0] - b[0], a[1] - b[1]); if (pinch.d > 0) { const f = d / pinch.d; V.cw = pinch.cw; V.ch = pinch.ch; V.x0 = pinch.x0; V.y0 = pinch.y0; zoomAt(pinch.mid.x, pinch.mid.y, f, f); } return; }
       const c = cellAt(ev);
       if (dragging) { const dx = c.x - dragging.x, dy = c.y - dragging.y; if (Math.abs(dx) + Math.abs(dy) > 3) dragging.moved = true;
         if (dragging.box) { redraw(); const dpr = devicePixelRatio || 1; ctx.save(); ctx.scale(dpr, dpr); ctx.strokeStyle = cssVar("--focus"); ctx.setLineDash([4, 3]); ctx.strokeRect(dragging.x, dragging.y, dx, dy); ctx.restore(); }
@@ -497,6 +510,7 @@ const Overview = (() => {
       hoverAt(c, ev);
     });
     matrix.addEventListener("pointerup", ev => {
+      ptrs.delete(ev.pointerId); if (ptrs.size < 2) pinch = null;
       const c = cellAt(ev); const d = dragging; dragging = null; if (!d) return;
       if (d.box && d.moved) { const { w, h } = canvasArea(); const x0 = Math.min(d.x, c.x), x1 = Math.max(d.x, c.x), y0 = Math.min(d.y, c.y), y1 = Math.max(d.y, c.y);
         const c0 = V.x0 + x0 / V.cw, c1 = V.x0 + x1 / V.cw, r0 = V.y0 + y0 / V.ch, r1 = V.y0 + y1 / V.ch;
@@ -867,7 +881,7 @@ const SCHEME_LIST = {
   dna: [["codes", "site codes"], ["none", "plain letters"], ["nucleotide", "nucleotide"], ["purine", "purine / pyrimidine"]],
 };
 
-// ------------------------------------------------------------------ face-to-face distance trees of one cell (drawn from the tool's Newick strings)
+// ------------------------------------------------------------------ the two distance trees of one cell as a cophyloplot (drawn from the tool's Newick strings)
 function parseNewick(s) {
   let i = 0; const node = () => { const n = { children: [], length: 0, name: null };
     if (s[i] === "(") { i++; n.children.push(node()); while (s[i] === ",") { i++; n.children.push(node()); } i++; }
@@ -878,41 +892,53 @@ function parseNewick(s) {
 }
 function tipsOf(n, out = []) { if (!n.children.length) out.push(n); else n.children.forEach(c => tipsOf(c, out)); return out; }
 function depthOf(n, d = 0) { n.depth = d; return n.children.length ? Math.max(...n.children.map(c => depthOf(c, d + c.length))) : d; }
-function orderLike(n, rank) {                                     // rotate the observed tree's nodes to follow the expected tip order
+function orderLike(n, rank) {                                     // rotate a tree's nodes to follow the other tree's tip order
   if (!n.children.length) { n.rank = rank.get(n.name) ?? 0; return n.rank; }
   const r = n.children.map(c => orderLike(c, rank)); n.children = n.children.map((c, i) => [c, r[i]]).sort((a, b) => a[1] - b[1]).map(x => x[0]); n.rank = d3.mean(r); return n.rank;
 }
 function assignY(n, counter) { if (!n.children.length) { n.y = counter.y++; return n.y; } const ys = n.children.map(c => assignY(c, counter)); n.y = d3.mean(ys); return n.y; }
-function drawTanglegram(host, D, entry, k, cell) {
-  const { g, li } = cell; const tips = entry.tips[k]; const exp = parseNewick(entry.expected[k]), obs = parseNewick(entry.observed[k]);
-  const name = x => D.taxa.names[+x]; const partner = D.num("partner", g, li), bm = D.num("best_match", g, li); const comps = new Set(D.comps(g, li));
+function splitsOf(root) {                                         // the bipartition of every edge, keyed by the smaller side's sorted tip names
+  const all = tipsOf(root).map(t => t.name).sort(); const key = set => { const a = [...set].sort(); const b = all.filter(x => !set.has(x)); return (a.length < b.length || (a.length === b.length && a.join() < b.join()) ? a : b).join("|"); };
+  const walk = n => { if (!n.children.length) { n.set = new Set([n.name]); return n.set; } n.set = new Set(); for (const c of n.children) for (const x of walk(c)) n.set.add(x); n.split = key(n.set); return n.set; };
+  walk(root); return root;
+}
+function drawCophylo(host, D, entry, k, cell) {
+  const { g, li } = cell; const exp = parseNewick(entry.expected[k]), obs = parseNewick(entry.observed[k]);
+  const name = x => D.taxa.names[+x]; const partner = D.num("partner", g, li), bm = D.num("best_match", g, li), bmId = D.num("best_match_identity", g, li); const comps = new Set(D.comps(g, li));
+  // ladderise the expected tree, then rotate the observed tree to follow it; midpoint roots come from the tool
+  const ladder = n => { n.children.forEach(ladder); n.children.sort((a, b) => tipsOf(a).length - tipsOf(b).length); }; ladder(exp);
   const rank = new Map(); tipsOf(exp).forEach((t, i) => rank.set(t.name, i)); orderLike(obs, rank);
-  const nTip = tips.length; const RH = 20, W = Math.min(640, Math.max(420, host.getBoundingClientRect().width - 24)), LAB = 150, TW = (W - LAB - 20) / 2, top = 22, H = top + nTip * RH + 36;
+  splitsOf(exp); splitsOf(obs); const expSplits = new Set(), obsSplits = new Set();
+  const collect = (n, out) => { if (n.children.length && n.split && n.set.size > 1 && n.set.size < tipsOf(exp).length - 1) out.add(n.split); n.children.forEach(c => collect(c, out)); }; collect(exp, expSplits); collect(obs, obsSplits);
+  const tag = t => { const i = +t; return i === g ? "focal" : i === partner ? "partner" : i === bm && !comps.has(i) ? `best match${bmId !== null ? ", " + fmt1(bmId) + "% identity" : ""}` : ""; };
+  const labelOf = t => name(t) + (tag(t) ? ` (${tag(t)})` : "");
+  const meas = document.createElement("canvas").getContext("2d"); meas.font = `11.5px ${cssVar("--sans")}`; const LAB = Math.ceil(d3.max(tipsOf(exp), t => meas.measureText(labelOf(t.name)).width) + 10);
+  const nTip = tipsOf(exp).length; const RH = 20, GAP = 44, W = Math.min(820, Math.max(2 * LAB + GAP + 220, host.getBoundingClientRect().width - 24)), TW = (W - 2 * LAB - GAP - 28) / 2, top = 10, H = top + nTip * RH + 40;
   const maxD = Math.max(depthOf(exp), depthOf(obs), 1e-6); const sx = d3.scaleLinear().domain([0, maxD]).range([0, TW]);
   assignY(exp, { y: 0 }); assignY(obs, { y: 0 });
   const svg = d3.create("svg").attr("width", W).attr("height", H).attr("class", "tangle");
   const yOf = n => top + n.y * RH + RH / 2;
-  const draw = (root, x0, dir) => {                                 // dir +1 draws left to right, -1 right to left
+  const focalCol = D.colorOf(D.state[g * D.nloc + li]) || cssVar("--ink");
+  const draw = (root, x0, dir, otherSplits) => {                  // dir +1 draws left to right, -1 right to left
     const gg = svg.append("g"); const walk = n => { for (const c of n.children) { const xa = x0 + dir * sx(n.depth), xb = x0 + dir * sx(c.depth);
-      gg.append("path").attr("d", `M${xa},${yOf(n)}V${yOf(c)}H${xb}`).attr("fill", "none").attr("stroke", cssVar("--muted")).attr("stroke-width", 1.2);
-      if (!c.children.length) { const col = +c.name === g ? D.colorOf(D.state[g * D.nloc + li]) : null; gg.append("circle").attr("cx", xb).attr("cy", yOf(c)).attr("r", 3).attr("fill", col || cssVar("--surface")).attr("stroke", col || cssVar("--muted")).attr("stroke-width", 1.2); }
+      const conflict = c.children.length && c.split && c.set.size > 1 && c.set.size < nTip - 1 && !otherSplits.has(c.split);
+      gg.append("path").attr("d", `M${xa},${yOf(n)}V${yOf(c)}H${xb}`).attr("fill", "none").attr("stroke", conflict ? cssVar("--ink") : cssVar("--muted")).attr("stroke-width", conflict ? 2.6 : 1.2).append("title").text(conflict ? "this split is not in the other tree" : `branch length ${fmt1(c.length)}%`);
+      if (!c.children.length) { const isF = +c.name === g; gg.append("circle").attr("cx", xb).attr("cy", yOf(c)).attr("r", 3).attr("fill", isF ? focalCol : cssVar("--surface")).attr("stroke", isF ? focalCol : cssVar("--muted")).attr("stroke-width", 1.2);
+        const lab = gg.append("text").attr("x", xb + dir * 6).attr("y", yOf(c) + 4).attr("text-anchor", dir > 0 ? "start" : "end").attr("font-size", 11.5).attr("font-weight", isF ? 700 : 400).attr("fill", isF ? focalCol : cssVar("--ink")).text(labelOf(c.name));
+        lab.append("title").text(`${name(c.name)}: ${fmt1(c.depth)}% from the root of this tree`); }
       walk(c); } }; walk(root); return gg; };
-  draw(exp, 10, 1); draw(obs, W - 10, -1);
-  const mid = 10 + TW + 10; const obsTips = new Map(); tipsOf(obs).forEach(t => obsTips.set(t.name, t));
-  for (const t of tipsOf(exp)) {
-    const y = yOf(t); const o = obsTips.get(t.name); const isFocal = +t.name === g;
-    const tag = isFocal ? "focal" : +t.name === partner ? "partner" : +t.name === bm && !comps.has(+t.name) ? "best match" : "";
-    svg.append("line").attr("x1", 10 + sx(t.depth)).attr("x2", mid).attr("y1", y).attr("y2", y).attr("stroke", cssVar("--grid")).attr("stroke-dasharray", "2 3");
-    const lab = svg.append("text").attr("x", mid + LAB / 2).attr("y", y + 4).attr("text-anchor", "middle").attr("font-size", 11.5).attr("font-weight", isFocal ? 700 : 400).attr("fill", isFocal ? (D.colorOf(D.state[g * D.nloc + li]) || cssVar("--ink")) : cssVar("--ink")).text(name(t.name) + (tag ? ` (${tag})` : ""));
-    lab.append("title").text(`${name(t.name)}: expected ${fmt1(t.depth)}%, observed ${o ? fmt1(o.depth) : "?"}% from the root`);
-    if (o) svg.append("line").attr("x1", mid + LAB).attr("x2", W - 10 - sx(o.depth)).attr("y1", y).attr("y2", yOf(o)).attr("stroke", y === yOf(o) ? cssVar("--grid") : cssVar("--floor")).attr("stroke-dasharray", "2 3");
-  }
-  svg.append("text").attr("x", 10).attr("y", 14).attr("font-size", 11).attr("fill", cssVar("--muted")).text("expected");
-  svg.append("text").attr("x", W - 10).attr("y", 14).attr("text-anchor", "end").attr("font-size", 11).attr("fill", cssVar("--muted")).text("observed at this locus");
+  draw(exp, 8, 1, obsSplits); draw(obs, W - 8, -1, expSplits);
+  const obsTips = new Map(); tipsOf(obs).forEach(t => obsTips.set(t.name, t));
+  for (const t of tipsOf(exp)) { const o = obsTips.get(t.name); if (!o) continue;      // the connector runs through the gap between the two label columns
+    const x1 = 8 + sx(t.depth) + 6 + meas.measureText(labelOf(t.name)).width + 4, x2 = W - 8 - sx(o.depth) - 6 - meas.measureText(labelOf(t.name)).width - 4;
+    svg.append("line").attr("x1", x1).attr("x2", x2).attr("y1", yOf(t)).attr("y2", yOf(o)).attr("stroke", yOf(t) === yOf(o) ? cssVar("--grid") : cssVar("--floor")).attr("stroke-dasharray", "2 3"); }
   const bar = Math.pow(10, Math.floor(Math.log10(maxD))) * (maxD / Math.pow(10, Math.floor(Math.log10(maxD))) >= 5 ? 2 : 1);
-  const by = H - 14; svg.append("line").attr("x1", 10).attr("x2", 10 + sx(bar)).attr("y1", by).attr("y2", by).attr("stroke", cssVar("--ink")).attr("stroke-width", 1.5);
-  svg.append("text").attr("x", 14 + sx(bar)).attr("y", by + 4).attr("font-size", 10.5).attr("fill", cssVar("--muted")).text(`${bar}% divergence`);
-  if (entry.moved[k] > 0) svg.append("text").attr("x", W - 10).attr("y", by + 4).attr("text-anchor", "end").attr("font-size", 10.5).attr("fill", cssVar("--muted")).text(`observed tree rooted on the closest split (${entry.moved[k]} tip${entry.moved[k] > 1 ? "s" : ""} differ)`);
+  const by = H - 12; svg.append("line").attr("x1", 8).attr("x2", 8 + sx(bar)).attr("y1", by).attr("y2", by).attr("stroke", cssVar("--ink")).attr("stroke-width", 1.5);
+  svg.append("text").attr("x", 12 + sx(bar)).attr("y", by + 4).attr("font-size", 10.5).attr("fill", cssVar("--muted")).text(`${bar}% divergence`);
+  svg.append("text").attr("x", W / 2).attr("y", by + 4).attr("text-anchor", "middle").attr("font-size", 10.5).attr("fill", cssVar("--muted")).text("expected  ·  observed at this locus");
+  const q = svg.append("g").attr("transform", `translate(${W - 20},${by})`).style("cursor", "help");
+  q.append("circle").attr("r", 8).attr("fill", "none").attr("stroke", cssVar("--muted")).attr("stroke-width", 1.2); q.append("text").attr("y", 4).attr("text-anchor", "middle").attr("font-size", 11).attr("font-weight", 700).attr("fill", cssVar("--muted")).text("?");
+  q.append("title").text("Two neighbour-joining trees over the focal sequence, its comparators, the partner of a too-similar pair and the best-match taxon. Left: the distances the test expects for every pair (its genome-wide divergence through this locus's expectation). Right: the mismatch fractions observed at this locus over shared sites. Both midpoint-rooted, same scale; negative branches drawn as zero. Thick branches are splits absent from the other tree; dotted lines join the same taxon on both sides. A long focal branch with its neighbours unchanged is a damaged copy of the right sequence; a focal that moves across to its best match points to contamination or a paralogue; a best match on its own long branch is merely the least different taxon, not a relative.");
   return svg.node();
 }
 
@@ -974,9 +1000,7 @@ const Sequence = (() => {
       const entry = await D.trees(li); if (!treesCard) return; treesCard.replaceChildren();
       let k = -1; if (entry) for (let q = 0; q < entry.cells.length; q++) if (entry.cells[q] === g) { k = q; break; }
       if (k < 0) { treesCard.append(el("div", { class: "note", style: "padding: 8px" }, "trees were not carried for this cell")); return; }
-      treesCard.append(el("div", { class: "trees-head" }, el("b", null, "distances as trees"), el("span", { class: "k" }, " neighbour joining on the expected distances (left, midpoint-rooted) and on the observed mismatch fractions at this locus (right, rooted on the same split); same scale"), el("button", { class: "close", onclick: toggleTrees }, "✕")));
-      treesCard.append(drawTanglegram(treesCard, D, entry, k, { g, li }));
-      treesCard.append(el("div", { class: "note", style: "padding: 0 8px 6px" }, "tips: the focal sequence, its comparators, the partner of a too-similar pair and the best-match taxon. Negative neighbour-joining branches are drawn as zero. A long focal branch with unchanged neighbours is a damaged copy; a focal that moves across to its best match points to contamination or a paralogue."));
+      treesCard.append(el("button", { class: "close", title: "close", onclick: toggleTrees }, "✕"), drawCophylo(treesCard, D, entry, k, { g, li }));
     };
     if (showTrees) setTimeout(toggleTrees, 0);
     names.append(el("div", { class: "trk", style: `height:${RULER_H}px` }, "position"), el("div", { class: "trk", style: `height:${CONS_H}px`, title: "1 − normalised Shannon entropy of the column over the rows shown" }, "conservation"), el("div", { class: "trk", style: `height:${CODE_H + 4}px` }, "site codes"));
@@ -1077,20 +1101,20 @@ const Sequence = (() => {
 
 // ------------------------------------------------------------------ histograms: loci or taxa by masked count, one facet sized to the panel
 const Hist = (() => {
-  function render(root, by) { root.replaceChildren(); root.append(facet(by, root)); }
+  function render(root, by, width, height) { root.replaceChildren(); root.append(facet(by, root, width, height)); }
   function bins(kof) {
     const pos = kof.filter(k => k > 0); const kmax = d3.max(kof) || 0; let w = 1;
     if (pos.length >= 2) { const q = pos.slice().sort(d3.ascending); const iqr = d3.quantileSorted(q, 0.75) - d3.quantileSorted(q, 0.25); w = 2 * iqr / Math.cbrt(pos.length); if (w < 1) w = kmax / Math.max(1, 1 + Math.log2(pos.length)); w = Math.max(1, Math.ceil(w)); }
     const out = [[0, 0]]; for (let lo = 1; lo <= kmax; lo += w) out.push([lo, Math.min(lo + w - 1, kmax)]); return out;
   }
-  function facet(by, root) {
+  function facet(by, root, width, height) {
     const D = App.D; const N = by === "locus" ? D.nloc : D.n; const cnt = by === "locus" ? D.locCount : D.taxCount; const names = by === "locus" ? D.loci.names : D.taxa.names;
     const units = d3.range(N).filter(u => cnt.present[u] > 0); const kof = units.map(u => cnt.masked[u]);
     const B = bins(kof); const heights = B.map(([lo, hi]) => units.filter((u, j) => kof[j] >= lo && kof[j] <= hi));
-    const rr = root.getBoundingClientRect(); const rotated = B.length > 14; const W = Math.max(380, rr.width - 24), H = Math.max(200, rr.height - 70), m = { l: 48, r: 12, t: 26, b: rotated ? 82 : 42 };
+    const rotated = B.length > 14; const W = Math.max(300, width), H = Math.max(170, height), m = { l: 44, r: 12, t: 22, b: rotated ? 76 : 40 };
     const xs = d3.scaleBand().domain(B.map((b, i) => i)).range([m.l, W - m.r]).padding(0.15);
     const ymax = d3.max(heights, h => h.length) || 1; const ys = d3.scaleSymlog().constant(2).domain([0, ymax * 1.15]).range([H - m.b, m.t]);
-    const box = el("div", { class: "plot" }, el("h3", null, `${by === "locus" ? "loci" : "taxa"} by the number of masked sequences they hold`, el("span", { class: "sub" }, `${fmtInt(units.filter((u, j) => kof[j] > 0).length)} of ${fmtInt(units.length)} have a masked sequence`)));
+    const box = el("div", { class: "plot" }, el("h3", null, `${by === "locus" ? "loci" : "taxa"} by the number of masked sequences they hold`, el("span", { class: "sub" }, `${fmtInt(units.filter((u, j) => kof[j] > 0).length)} of ${fmtInt(units.length)}`)));
     const svg = d3.create("svg").attr("width", W).attr("height", H);
     svg.append("g").attr("class", "axis").attr("transform", `translate(${m.l},0)`).call(d3.axisLeft(ys).tickValues([0, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000].filter(v => v <= ymax * 1.15)).tickFormat(d3.format(",")));
     svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(xs).tickFormat(i => { const [lo, hi] = B[i]; return lo === hi ? String(lo) : `${lo}–${hi}`; })).selectAll("text").attr("transform", rotated ? "rotate(-60)" : null).attr("text-anchor", rotated ? "end" : "middle").attr("dx", rotated ? "-0.5em" : null).attr("dy", rotated ? "0.1em" : null);
@@ -1107,7 +1131,7 @@ const Hist = (() => {
         .on("mouseleave", hideHover).on("click", () => { if (by === "locus") { App.sel.cols = new Set(us); App.sel.rows.clear(); } else { App.sel.rows = new Set(us); App.sel.cols.clear(); } Overview.setView("matrix"); }); y0 -= h; }
       svg.append("text").attr("x", xs(i) + xs.bandwidth() / 2).attr("y", ys(us.length) - 3).attr("text-anchor", "middle").style("fill", cssVar("--ink")).text(fmtInt(us.length));
     });
-    box.append(svg.node(), el("div", { class: "note" }, "zero is its own bar; the other bars are coloured by the kinds of mask they hold. The y axis is linear near zero and logarithmic above. Click a bar to highlight its units in the matrix."));
+    box.append(svg.node()); svg.append("title").text("zero is its own bar; the other bars are coloured by the kinds of mask they hold. The y axis is linear near zero and logarithmic above. Click a bar to highlight its units in the matrix.");
     return box;
   }
   return { render };

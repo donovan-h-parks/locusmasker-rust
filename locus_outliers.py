@@ -713,18 +713,6 @@ def _nj(D):
     return adj
 
 
-def _tree_split(adj, u, v, ntips):
-    """the tips on u's side of the edge (u, v)"""
-    seen = {u}; stack = [u]; out = set()
-    while stack:
-        x = stack.pop()
-        if x < ntips: out.add(x)
-        for y, _ in adj[x]:
-            if (x == u and y == v) or y in seen: continue
-            seen.add(y); stack.append(y)
-    return frozenset(out)
-
-
 def _root_on_edge(adj, u, v, f):
     """a new root node on edge (u, v), the fraction f of the edge's length from u"""
     l = next(ln for y, ln in adj[u] if y == v); r = max(adj) + 1
@@ -761,22 +749,14 @@ def _newick(adj, root, labels):
 
 
 def cell_trees(D_exp, D_obs, labels):
-    """the face-to-face trees of one cell: neighbour joining on the expected and the observed distances, the
-    expected tree midpoint-rooted, the observed tree rooted on the edge with the same bipartition (or the edge
-    whose bipartition is closest). Returns (expected newick, observed newick, tips moved by the closest split)"""
+    """the face-to-face trees of one cell: neighbour joining on the expected and on the observed distances, each
+    midpoint-rooted. Returns (expected newick, observed newick)"""
     n = len(labels)
     if n < 2: return None
-    te = _nj(D_exp); u, v, f = _midpoint_edge(te, n); split = _tree_split(te, u, v, n); re_ = _root_on_edge(te, u, v, f)
-    to = _nj(D_obs); best = None; alltips = frozenset(range(n))
-    for x in list(to):
-        for y, _ in to[x]:
-            if x < y:
-                sx = _tree_split(to, x, y, n); moved = min(len(sx ^ split), len(sx ^ (alltips - split)))
-                if best is None or moved < best[0]: best = (moved, x, y, sx)
-    moved, x, y, sx = best
-    same_side = len(sx ^ split) <= len(sx ^ (alltips - split))      # orient the fraction from the side the expected root's u was on
-    ro = _root_on_edge(to, x, y, f if same_side else 1 - f)
-    return _newick(te, re_, labels), _newick(to, ro, labels), moved
+    out = []
+    for D in (D_exp, D_obs):
+        t = _nj(D); u, v, f = _midpoint_edge(t, n); r = _root_on_edge(t, u, v, f); out.append(_newick(t, r, labels))
+    return tuple(out)
 
 def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
     """report.npz, a ZIP of .npy members and JSON that np.load opens like an .npz, and report.html, the viewer with
@@ -1399,7 +1379,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         trees_out = None
         if masked_q.any():
             Xs_ = Xs if Xs is not None else X[:, sites]
-            tcells, texp, tobs, tmoved, ttips = [], [], [], [], []
+            tcells, texp, tobs, ttips = [], [], [], []
             for q in np.flatnonzero(masked_q).tolist():
                 g = int(idx[q]); tips = [g] + [int(c) for c in top[g] if c >= 0]
                 if partner_[q] >= 0 and int(partner_[q]) not in tips: tips.append(int(partner_[q]))
@@ -1414,8 +1394,8 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
                 if np.isnan(De).any(): De = np.where(np.isnan(De), np.nanmax(De) if np.isfinite(np.nanmax(De)) else 50.0, De)
                 if np.isnan(Do).any(): Do = np.where(np.isnan(Do), De, Do)
                 t = cell_trees(De, Do, [str(x) for x in tips])
-                if t: tcells.append(g); texp.append(t[0]); tobs.append(t[1]); tmoved.append(t[2]); ttips.append(tips)
-            if tcells: trees_out = dict(cells=tcells, expected=texp, observed=tobs, moved=tmoved, tips=ttips)
+                if t: tcells.append(g); texp.append(t[0]); tobs.append(t[1]); ttips.append(tips)
+            if tcells: trees_out = dict(cells=tcells, expected=texp, observed=tobs, tips=ttips)
         seq_out = None
         if seq_policy != "none":
             if seq_policy == "all": rows_s = np.flatnonzero(nres > 0)
