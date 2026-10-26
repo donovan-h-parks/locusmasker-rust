@@ -75,7 +75,35 @@ a { color: var(--accent); }
 .panel-body { flex: 1 1 auto; min-height: 0; min-width: 0; position: relative; overflow: hidden; }
 
 /* ---- overview */
-.controls { display: flex; gap: 10px; align-items: center; padding: 6px 10px; flex-wrap: wrap; border-bottom: 1px solid var(--grid); flex: 0 0 auto; }
+.controls { display: flex; gap: 10px; align-items: center; padding: 5px 10px; flex-wrap: wrap; border-bottom: 1px solid var(--grid); flex: 0 0 auto; }
+.controls.one-row { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; white-space: nowrap; scrollbar-width: thin; }
+.controls.one-row > * { flex: 0 0 auto; }
+.controls .viewctl { display: inline-flex; gap: 10px; align-items: center; }
+.controls .viewctl .k { color: var(--muted); }
+.panels .vsplit { flex: 0 0 6px; background: var(--surface-2); border-left: 1px solid var(--spine); border-right: 1px solid var(--spine); cursor: col-resize; }
+.panels .vsplit:hover { background: var(--accent); }
+.summary-view { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.crumb-ctl { font-weight: 400; color: var(--muted); margin-left: 10px; }
+.detail-body { padding: 8px 10px; overflow: hidden; }
+.detail-body .plot { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+.detail-body .plot h3 { margin: 0 0 4px; font-size: 12.5px; }
+.detail-body .plot h3 .sub { color: var(--muted); font-weight: 400; margin-left: 6px; }
+.detail-body .plot .note { color: var(--faint); font-size: 11.5px; margin-top: 4px; flex: 0 0 auto; }
+.detail-body .plot svg text { fill: var(--muted); font-size: 11px; }
+.detail-body .plot .axis path, .detail-body .plot .axis line { stroke: var(--spine); }
+.detail-body .ribbons-plot .ribbons-wrap { flex: 1 1 auto; min-height: 0; overflow: auto; max-height: none; }
+.hist-wrap .plot h3 { margin: 0 0 2px; font-size: 12.5px; }
+.hist-wrap .plot h3 .sub { color: var(--muted); font-weight: 400; margin-left: 6px; }
+.hist-wrap .plot .note { color: var(--faint); font-size: 11.5px; margin-top: 2px; }
+.hist-wrap .plot svg text { fill: var(--muted); font-size: 11px; }
+.hist-wrap .plot .axis path, .hist-wrap .plot .axis line { stroke: var(--spine); }
+.trees-card { position: absolute; right: 10px; top: 6px; background: var(--surface); border: 1px solid var(--spine); border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,0.14); z-index: 5; max-width: 680px; }
+.trees-card .trees-head { display: flex; gap: 8px; align-items: baseline; padding: 6px 10px 2px; font-size: 12px; }
+.trees-card .trees-head .k { color: var(--muted); flex: 1 1 auto; }
+.trees-card .trees-head .close { padding: 0 6px; }
+.trees-card svg { display: block; }
+.trees-card .tangle text { fill: var(--ink); }
+button.help { border-radius: 50%; width: 22px; height: 22px; padding: 0; font-weight: 700; color: var(--muted); }
 .controls label { color: var(--muted); display: inline-flex; gap: 5px; align-items: center; }
 .legend { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--ink); }
 .legend .fam { display: inline-flex; align-items: center; gap: 4px; }
@@ -101,8 +129,8 @@ a { color: var(--accent); }
 .matrix-wrap .rowlabels { grid-column: 1; grid-row: 2; }
 .matrix-wrap .collabels { grid-column: 2; grid-row: 1; }
 .matrix-wrap .matrix { grid-column: 2; grid-row: 2; cursor: crosshair; touch-action: none; }
-.strip-wrap { flex: 0 0 auto; padding: 4px 10px 6px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.strip-wrap .hint { flex: 1 1 260px; }
+.strip-wrap { flex: 0 0 auto; padding: 4px 10px 5px; display: flex; gap: 12px; align-items: center; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; border-top: 1px solid var(--grid); }
+.strip-wrap .legend { flex: 0 0 auto; flex-wrap: nowrap; }
 .strip-wrap canvas { display: block; border: 1px solid var(--spine); cursor: pointer; }
 .strip-wrap .hint { color: var(--faint); font-size: 11.5px; }
 .hover { position: fixed; z-index: 50; pointer-events: none; background: var(--surface); color: var(--ink); border: 1px solid var(--spine); border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,0.14); padding: 8px 10px; font-size: 12px; max-width: 420px; display: none; }
@@ -134,7 +162,6 @@ a { color: var(--accent); }
 .ribbons-wrap .rib-row2 canvas { position: static; display: block; height: 10px; width: 100%; pointer-events: auto; image-rendering: pixelated; }
 /* residual ribbons view: one row per locus or taxon */
 .ribbons-view { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
-.rib-head { display: flex; gap: 12px; align-items: center; padding: 6px 10px; color: var(--muted); font-size: 12px; flex-wrap: wrap; }
 .rib-axis { display: flex; align-items: flex-end; padding: 0 10px; border-bottom: 1px solid var(--grid); }
 .rib-axis svg text { fill: var(--muted); font-size: 10.5px; }
 .rib-axis .axis path, .rib-axis .axis line { stroke: var(--spine); }

@@ -132,6 +132,11 @@ async function loadBundle(bytes) {
     const p = (async () => { if (!zip.has(`seq/${li}.npy`)) return null; const b = await npy(`seq/${li}.npy`), t = await npy(`seq/${li}_taxa.npy`); return { taxa: t.data, blk: b.data, len: b.shape[1], rows: b.shape[0] }; })();
     D.cache.seq.set(li, p); return p;
   };
+  D.trees = async li => {                                     // {cells, expected, observed, moved, tips} or null
+    if (!D.cache.trees) D.cache.trees = new Map();
+    if (D.cache.trees.has(li)) return D.cache.trees.get(li);
+    const p = (async () => zip.has(`trees/${li}.json`) ? json(`trees/${li}.json`) : null)(); D.cache.trees.set(li, p); return p;
+  };
   deriveStates(D);
   return D;
 }
@@ -149,14 +154,14 @@ function deriveStates(D) {
     const s = sd[i];
     if (s & 1 || s & 16) { const f = clamp(nf[i], M, K); st[i] = ST.RED + f; sev[i] = 20 + f; }
     else if (s & 2) { const k = clamp(ns[i], 1, 3); st[i] = ST.BLUE + k; sev[i] = 40 + k; }
-    else { const f = Math.min(nf[i], M - 1); st[i] = ST.GREY + f; sev[i] = 2 + f; }
+    else { st[i] = ST.GREY; sev[i] = 2; }
   }
   D.state = st; D.sev = sev;
   const greys = ramp([cssVar("--grey-1"), cssVar("--grey-2"), cssVar("--grey-3")], M);
   const reds = ramp([cssVar("--red-1"), cssVar("--red-2"), cssVar("--red-3")], K - M + 1);
   const blues = [cssVar("--blue-1"), cssVar("--blue-2"), cssVar("--blue-3")];
   D.colorOf = code => code === ST.ABSENT ? null : code === ST.UNTESTED ? "hatch" : code < ST.RED ? greys[code - ST.GREY] : code < ST.BLUE ? reds[code - ST.RED - M] : blues[code - ST.BLUE - 1];
-  D.labelOf = code => code === ST.ABSENT ? "absent" : code === ST.UNTESTED ? "present, not tested" : code < ST.RED ? `not masked · fails ${code - ST.GREY} of ${K}` : code < ST.BLUE ? `masked, too divergent · fails ${code - ST.RED} of ${K}` : `masked, too similar · ${code - ST.BLUE}${code - ST.BLUE === 3 ? "+" : ""} pair${code - ST.BLUE > 1 ? "s" : ""}`;
+  D.labelOf = code => code === ST.ABSENT ? "absent" : code === ST.UNTESTED ? "present, not tested" : code < ST.RED ? "not masked" : code < ST.BLUE ? `masked, too divergent · fails ${code - ST.RED} of ${K}` : `masked, too similar · ${code - ST.BLUE}${code - ST.BLUE === 3 ? "+" : ""} pair${code - ST.BLUE > 1 ? "s" : ""}`;
   D.greys = greys; D.reds = reds; D.blues = blues;
   const surf = hexToRgb(cssVar("--surface")), hatch = hexToRgb(cssVar("--surface-3"));
   const lut = new Uint8ClampedArray(64 * 4);
@@ -249,6 +254,10 @@ function buildShell() {
   split.addEventListener("pointerdown", ev => { split.setPointerCapture(ev.pointerId); drag = { y: ev.clientY, h: bottom.getBoundingClientRect().height }; });
   split.addEventListener("pointermove", ev => { if (!drag) return; const h = clamp(drag.h - (ev.clientY - drag.y), 120, panels.getBoundingClientRect().height - 160); bottom.style.flexBasis = h + "px"; });
   split.addEventListener("pointerup", () => { drag = null; Overview.redraw(); for (const p of Object.values(App.panels)) if (p && p.redraw) p.redraw(); });
+  const vs = el("div", { class: "vsplit", style: "display:none" }); App.vsplitEl = vs; let vdrag = null;
+  vs.addEventListener("pointerdown", ev => { vs.setPointerCapture(ev.pointerId); vdrag = { x: ev.clientX, w: App.panels.overview.el.getBoundingClientRect().width }; });
+  vs.addEventListener("pointermove", ev => { if (!vdrag) return; const w = clamp(vdrag.w + (ev.clientX - vdrag.x), 260, top.getBoundingClientRect().width - 260); App.panels.overview.el.style.flex = `0 0 ${w}px`; });
+  vs.addEventListener("pointerup", () => { vdrag = null; relayout(); });
   App.hover = el("div", { class: "hover" }); document.body.append(App.hover);
   App.panels.overview = Overview.create(); top.append(App.panels.overview.el);
 }
@@ -276,79 +285,81 @@ function makePanel(key, crumbParts, onClose) {
 function closePanel(key) {
   const p = App.panels[key]; if (!p) return; p.el.remove(); App.panels[key] = null;
   if (key === "sequence") { App.bottomEl.style.display = "none"; App.splitEl.style.display = "none"; }
+  if (key === "detail") { App.vsplitEl.style.display = "none"; App.panels.overview.el.style.flex = ""; }
   App.panelsEl.classList.remove("has-max"); writeHash(); relayout();
 }
 
-// ------------------------------------------------------------------ the overview panel: matrix, ribbons, histograms, table
+// ------------------------------------------------------------------ the overview panel: one view at a time, sized to the panel
 const Overview = (() => {
-  let P, matrix, ctx, rowCanvas, colCanvas, strip, stripCtx, wrap, viewEl = {}, summaryUser = null, summaryShown = true, matrixCtl = [];
-  const V = { x0: 0, y0: 0, cw: 4, ch: 4 };                   // first display row/col and the cell size in CSS px
+  let P, matrix, ctx, rowCanvas, colCanvas, strip, stripCtx, wrap, viewEl = {};
+  const V = { x0: 0, y0: 0, cw: 4, ch: 4, user: false };      // first display row/col, the cell size in CSS px, and whether the user has zoomed
   let dragging = null;
-  function autoSummary() {
-    const h = P.body.getBoundingClientRect().height; const show = summaryUser === null ? h >= 640 : summaryUser;
-    summaryShown = show; viewEl.summary.style.display = show ? "" : "none"; viewEl.sumBtn.textContent = show ? "summary ▾" : "summary ▸";
-  }
+  const VIEWS = [["summary", "summary"], ["matrix", "matrix"], ["loci", "loci ribbons"], ["taxa", "taxon ribbons"], ["lochist", "locus histogram"], ["taxhist", "taxon histogram"], ["table", "table"]];
   function create() {
     P = makePanel("overview", [App.D.man.dataset || App.D.man.input.file, "overview"]);
     P.el.classList.add("overview");
     const D = App.D;
-    const viewSel = el("select", { onchange: e => setView(e.target.value) }, ...[["matrix", "matrix"], ["loci", "loci ribbons"], ["taxa", "taxon ribbons"], ["histograms", "histograms"], ["table", "table"]].map(([v, t]) => el("option", { value: v }, t)));
+    const viewSel = el("select", { onchange: e => setView(e.target.value) }, ...VIEWS.map(([v, t]) => el("option", { value: v }, t)));
     viewEl.viewSel = viewSel;
     const taxaSel = el("select", { onchange: e => setOrder("taxa", e.target.value) }, ...[["input", "input order"], ["masked", "most masked first"], ["name", "name"], ["grouped", "grouped by shared masks"]].map(([v, t]) => el("option", { value: v }, t)));
     const lociSel = el("select", { onchange: e => setOrder("loci", e.target.value) }, ...[["input", "input order"], ["masked", "most masked first"], ["name", "name"], ["length", "length"], ["grouped", "grouped by shared masks"]].map(([v, t]) => el("option", { value: v }, t)));
     viewEl.taxaSel = taxaSel; viewEl.lociSel = lociSel;
-    const search = el("input", { type: "search", placeholder: "find a taxon or locus  /", size: 24, oninput: e => doSearch(e.target.value) });
-    const hide = el("input", { type: "checkbox", onchange: e => { App.hidePass = e.target.checked; redraw(); } });
-    const legend = el("div", { class: "legend" });
-    legend.append(el("span", { class: "fam" }, el("span", { class: "lab" }, "not masked, fails"), ...d3.range(D.M).map(f => el("span", { class: "fam", title: D.labelOf(ST.GREY + f) }, sw(D.greys[f]), String(f)))),
-      el("span", { class: "fam" }, el("span", { class: "lab" }, "masked, too divergent, fails"), ...d3.range(D.M, D.K + 1).map(f => el("span", { class: "fam", title: D.labelOf(ST.RED + f) }, sw(D.reds[f - D.M]), String(f)))),
-      el("span", { class: "fam" }, el("span", { class: "lab" }, "masked, too similar, pairs"), ...[1, 2, 3].map(k => el("span", { class: "fam", title: D.labelOf(ST.BLUE + k) }, sw(D.blues[k - 1]), k === 3 ? "3+" : String(k)))),
-      el("span", { class: "fam", title: "present, not tested" }, sw("hatch"), "not tested"), el("span", { class: "fam", title: "no residue" }, sw(null), "absent"), el("span", { class: "lab" }, `of ${D.K} comparators`));
-    const tL = el("label", null, "taxa ", taxaSel), lL = el("label", null, "loci ", lociSel), hL = el("label", null, hide, " hide passing");
-    matrixCtl = [tL, lL, search, hL];
-    const controls = el("div", { class: "controls" },
-      el("label", null, "view ", viewSel), tL, lL, search, hL,
+    const search = el("input", { type: "search", placeholder: "find a taxon or locus  /", size: 22, oninput: e => doSearch(e.target.value) });
+    const viewCtl = el("span", { class: "viewctl" }); viewEl.viewCtl = viewCtl;             // the open view's own controls
+    const controls = el("div", { class: "controls one-row" },
+      el("label", null, "view ", viewSel), viewCtl,
       el("button", { title: "download the cell table as TSV", onclick: Table.download }, "⤓ cells.tsv"),
       el("button", { title: "export the matrix as PNG", onclick: exportPng }, "⤓ PNG"));
-    P.body.append(controls, legend);
-    legend.style.cssText = "padding: 2px 10px 6px; border-bottom: 1px solid var(--grid);";
-    const summary = el("div", { class: "summary" }); P.body.append(summary); viewEl.summary = summary;
-    const sumBtn = el("button", { title: "show or hide the summary tiles and the worst-ten lists", onclick: () => { summaryUser = summary.style.display === "none"; autoSummary(); fitAll(); redraw(); } }, "summary ▾");
-    controls.insertBefore(sumBtn, controls.children[1]); viewEl.sumBtn = sumBtn;
-    const tiles = el("div", { class: "tiles" }); summary.append(tiles); viewEl.tiles = tiles;
-    const worst = el("div", { class: "worst" }); summary.append(worst); viewEl.worst = worst;
+    viewEl.matrixCtl = [el("label", null, "taxa ", taxaSel), el("label", null, "loci ", lociSel), search];
+    P.body.append(controls);
+    // the summary view: stat tiles and the worst-ten lists
+    viewEl.summary = el("div", { class: "summary-view", style: "display:none" });
+    viewEl.tiles = el("div", { class: "tiles" }); viewEl.worst = el("div", { class: "worst" }); viewEl.summary.append(viewEl.tiles, viewEl.worst); P.body.append(viewEl.summary);
+    // the matrix
     wrap = el("div", { class: "matrix-wrap" });
     rowCanvas = el("canvas", { class: "rowlabels" }); colCanvas = el("canvas", { class: "collabels" }); matrix = el("canvas", { class: "matrix", tabindex: 0 });
     wrap.append(colCanvas, rowCanvas, matrix); P.body.append(wrap); ctx = matrix.getContext("2d");
+    const legend = el("div", { class: "legend" });
+    legend.append(el("span", { class: "fam", title: "tested and not masked" }, sw(D.greys[0]), "not masked"),
+      el("span", { class: "fam" }, el("span", { class: "lab" }, "masked, too divergent, fails"), ...d3.range(D.M, D.K + 1).map(f => el("span", { class: "fam", title: D.labelOf(ST.RED + f) }, sw(D.reds[f - D.M]), String(f)))),
+      el("span", { class: "fam" }, el("span", { class: "lab" }, "masked, too similar, pairs"), ...[1, 2, 3].map(k => el("span", { class: "fam", title: D.labelOf(ST.BLUE + k) }, sw(D.blues[k - 1]), k === 3 ? "3+" : String(k)))),
+      el("span", { class: "fam", title: "present, not tested" }, sw("hatch"), "not tested"), el("span", { class: "fam", title: "no residue" }, sw(null), "absent"), el("span", { class: "lab" }, `of ${D.K} comparators`));
+    const help = el("button", { class: "help", title: "wheel: zoom · shift+wheel: loci only · alt+wheel: taxa only · drag: pan · shift+drag: zoom to box · double-click: reset · click a label: open its panel · click a cell: open the alignment · arrows pan, + and − zoom, / finds, Esc closes" }, "?");
     const stripWrap = el("div", { class: "strip-wrap" }); strip = el("canvas"); stripCtx = strip.getContext("2d");
-    stripWrap.append(strip, el("span", { class: "hint" }, "wheel: zoom · shift+wheel: loci only · alt+wheel: taxa only · drag: pan · shift+drag: zoom to box · double-click: reset · click a label: open its panel · click a cell: open the alignment"));
+    stripWrap.append(strip, legend, help);
     P.body.append(stripWrap);
     viewEl.ribbons = el("div", { class: "ribbons-view", style: "display:none" }); P.body.append(viewEl.ribbons);
-    viewEl.hist = el("div", { class: "hist-wrap", style: "display:none; padding: 8px 10px; overflow:auto; flex: 1 1 auto;" }); P.body.append(viewEl.hist);
+    viewEl.hist = el("div", { class: "hist-wrap", style: "display:none; padding: 6px 10px; flex: 1 1 auto; min-height: 0;" }); P.body.append(viewEl.hist);
     viewEl.table = el("div", { class: "table-wrap", style: "display:none; flex: 1 1 auto;" }); P.body.append(viewEl.table);
     viewEl.matrixParts = [wrap, stripWrap];
     P.body.style.display = "flex"; P.body.style.flexDirection = "column";
     bindMatrix(); bindStrip();
+    new ResizeObserver(debounce(() => { if (App.D) refresh(); }, 120)).observe(P.body);
     return { el: P.el, redraw, render };
   }
   function setView(v) {
     App.view = v; viewEl.viewSel.value = v;
-    viewEl.matrixParts.forEach(e => e.style.display = v === "matrix" ? "" : "none"); matrixCtl.forEach(e => e.style.display = v === "matrix" ? "" : "none");
-    viewEl.ribbons.style.display = (v === "loci" || v === "taxa") ? "" : "none"; viewEl.hist.style.display = v === "histograms" ? "" : "none"; viewEl.table.style.display = v === "table" ? "" : "none";
-    P.body.style.overflowY = v === "histograms" ? "auto" : "hidden";
-    if (v === "histograms") Hist.render(viewEl.hist); if (v === "table") Table.render(viewEl.table); if (v === "loci" || v === "taxa") Ribbons.render(viewEl.ribbons, v === "loci" ? "locus" : "taxon"); if (v === "matrix") redraw();
-    writeHash();
+    viewEl.viewCtl.replaceChildren(); if (v === "matrix") viewEl.viewCtl.append(...viewEl.matrixCtl);
+    viewEl.matrixParts.forEach(e => e.style.display = v === "matrix" ? "" : "none");
+    viewEl.summary.style.display = v === "summary" ? "" : "none";
+    viewEl.ribbons.style.display = (v === "loci" || v === "taxa") ? "" : "none"; viewEl.hist.style.display = (v === "lochist" || v === "taxhist") ? "" : "none"; viewEl.table.style.display = v === "table" ? "" : "none";
+    refresh(); writeHash();
   }
-  function render() { renderTiles(); renderWorst(); autoSummary(); fitAll(); redraw(); if (App.view !== "matrix") setView(App.view); }
+  function refresh() {                                        // draw the open view at the panel's current size
+    const v = App.view;
+    if (v === "matrix") { if (!V.user) fitAll(); redraw(); } else if (v === "summary") { renderTiles(); renderWorst(); }
+    else if (v === "lochist") Hist.render(viewEl.hist, "locus"); else if (v === "taxhist") Hist.render(viewEl.hist, "taxon");
+    else if (v === "loci" || v === "taxa") Ribbons.render(viewEl.ribbons, v === "loci" ? "locus" : "taxon", viewEl.viewCtl);
+    else if (v === "table") Table.render(viewEl.table);
+  }
+  function render() { fitAll(); setView(App.view || "summary"); }
   function renderTiles() {
     const D = App.D, c = D.man.counts; const t = viewEl.tiles; t.replaceChildren();
     const tile = (v, k, title) => el("div", { class: "tile", title: title || "" }, el("div", { class: "v" }, v), el("div", { class: "k" }, k));
     const taxaWith = d3.sum(D.taxCount.masked, v => v > 0), lociWith = d3.sum(D.locCount.masked, v => v > 0);
-    const near = Object.values(c.near_miss || {}).reduce((a, b) => a + b, 0);
     t.append(tile(fmtInt(c.masked), `sequences masked · ${pct(c.masked, c.cells)} of ${fmtInt(c.cells)} tested`),
       tile(fmtInt(c.masked_divergent), "too divergent" + (c.ambiguous ? ` · ${c.ambiguous} with fewer comparators` : "")),
       tile(fmtInt(c.masked_similar), "too similar" + (c.masked_both ? ` · ${c.masked_both} both sides` : "")),
-      tile(fmtInt(near), `near misses · fail 1 to ${D.M - 1} comparators, not masked`),
       tile(`${fmtInt(taxaWith)} / ${fmtInt(c.taxa)}`, "taxa with a masked sequence" + (c.excluded_taxa ? ` · ${c.excluded_taxa} excluded` : "")),
       tile(`${fmtInt(lociWith)} / ${fmtInt(c.loci)}`, "loci with a masked sequence" + (c.skipped_loci ? ` · ${c.skipped_loci} skipped` : "")));
   }
@@ -398,18 +409,16 @@ const Overview = (() => {
   // ---- geometry
   function size() { const r = wrap.getBoundingClientRect(); return { W: Math.max(50, r.width), H: Math.max(50, r.height) }; }
   function labelSpace() { const rl = V.ch >= 10 ? 150 : 0, cl = V.cw >= 10 ? 90 : 0; wrap.style.setProperty("--rowlab", rl + "px"); wrap.style.setProperty("--collab", cl + "px"); return { rl, cl }; }
-  function fitAll() { const D = App.D; const { W, H } = size(); const { rl, cl } = labelSpace(); V.cw = Math.max(0.1, (W - rl) / D.nloc); V.ch = Math.max(0.1, (H - cl) / D.n); V.x0 = 0; V.y0 = 0; labelSpace(); }
+  function fitAll() { const D = App.D; const { W, H } = size(); let rl = 0, cl = 0; for (let k = 0; k < 3; k++) { V.cw = Math.max(0.1, (W - rl) / D.nloc); V.ch = Math.max(0.1, (H - cl) / D.n); ({ rl, cl } = labelSpace()); } V.x0 = 0; V.y0 = 0; }   // the label gutters depend on the cell size, so iterate to a fixed point
   function canvasArea() { const { W, H } = size(); const { rl, cl } = labelSpace(); return { w: Math.max(10, W - rl), h: Math.max(10, H - cl), rl, cl }; }
   function redraw() {
     if (!App.D || App.view !== "matrix" || P.el.classList.contains("collapsed")) return;
-    const was = summaryShown; autoSummary(); if (was !== summaryShown) fitAll();
     const D = App.D; const { w, h, rl, cl } = canvasArea(); const dpr = devicePixelRatio || 1;
     matrix.width = Math.round(w * dpr); matrix.height = Math.round(h * dpr); matrix.style.width = w + "px"; matrix.style.height = h + "px";
     V.x0 = clamp(V.x0, 0, Math.max(0, D.nloc - w / V.cw)); V.y0 = clamp(V.y0, 0, Math.max(0, D.n - h / V.ch));
     const img = ctx.createImageData(matrix.width, matrix.height); const px = img.data; const lut = D.lut; const sev = D.sev, st = D.state;
     const ot = App.order.taxa, ol = App.order.loci; const nloc = D.nloc;
-    const pw = V.cw * dpr, ph = V.ch * dpr; const surf = hexToRgb(cssVar("--surface"));
-    const hide = App.hidePass;
+    const pw = V.cw * dpr, ph = V.ch * dpr;
     const colStart = new Int32Array(matrix.width), colEnd = new Int32Array(matrix.width);
     for (let x = 0; x < matrix.width; x++) { const a = Math.floor(V.x0 + x / pw), b = Math.max(a, Math.ceil(V.x0 + (x + 1) / pw) - 1); colStart[x] = a; colEnd[x] = Math.min(b, nloc - 1); }
     for (let y = 0; y < matrix.height; y++) {
@@ -420,9 +429,7 @@ const Overview = (() => {
         const c0 = colStart[x], c1 = colEnd[x]; if (c0 >= nloc) break;
         let best = -1, bestCode = 0;
         for (let r = r0; r <= r1; r++) { const g = ot[r] * nloc; for (let c = c0; c <= c1; c++) { const i = g + ol[c]; const s = sev[i]; if (s > best) { best = s; bestCode = st[i]; } } }
-        const o = rowBase + x * 4;
-        if (hide && bestCode >= ST.GREY && bestCode < ST.RED) { px[o] = surf[0]; px[o + 1] = surf[1]; px[o + 2] = surf[2]; px[o + 3] = 255; }
-        else { const l = bestCode * 4; px[o] = lut[l]; px[o + 1] = lut[l + 1]; px[o + 2] = lut[l + 2]; px[o + 3] = 255; }
+        const o = rowBase + x * 4; const l = bestCode * 4; px[o] = lut[l]; px[o + 1] = lut[l + 1]; px[o + 2] = lut[l + 2]; px[o + 3] = 255;
       }
     }
     ctx.putImageData(img, 0, 0);
@@ -458,7 +465,7 @@ const Overview = (() => {
   }
   function trunc(c, s, maxw) { if (c.measureText(s).width <= maxw) return s; let lo = 0, hi = s.length; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (c.measureText(s.slice(0, mid) + "…").width <= maxw) lo = mid; else hi = mid - 1; } return s.slice(0, lo) + "…"; }
   function drawStrip() {
-    const D = App.D; const dpr = devicePixelRatio || 1; const sw_ = Math.min(700, Math.max(200, size().W - 40)), sh = 48;
+    const D = App.D; const dpr = devicePixelRatio || 1; const sw_ = Math.min(420, Math.max(160, size().W * 0.35)), sh = 40;
     strip.width = Math.round(sw_ * dpr); strip.height = Math.round(sh * dpr); strip.style.width = sw_ + "px"; strip.style.height = sh + "px";
     const img = stripCtx.createImageData(strip.width, strip.height); const px = img.data; const ot = App.order.taxa, ol = App.order.loci, nloc = D.nloc, sev = D.sev, st = D.state, lut = D.lut;
     for (let y = 0; y < strip.height; y++) { const r0 = Math.floor(y * D.n / strip.height), r1 = Math.max(r0, Math.floor((y + 1) * D.n / strip.height) - 1);
@@ -478,7 +485,7 @@ const Overview = (() => {
       const zx = !ev.altKey, zy = !ev.shiftKey;
       if (zx) { const ncw = clamp(V.cw * f, 0.05, 40); V.x0 = V.x0 + x / V.cw - x / ncw; V.cw = ncw; }
       if (zy) { const nch = clamp(V.ch * f, 0.05, 40); V.y0 = V.y0 + y / V.ch - y / nch; V.ch = nch; }
-      labelSpace(); redraw(); writeHash();
+      V.user = true; labelSpace(); redraw(); writeHash();
     }, { passive: false });
     matrix.addEventListener("pointerdown", ev => { matrix.setPointerCapture(ev.pointerId); const c = cellAt(ev); dragging = { x: c.x, y: c.y, x0: V.x0, y0: V.y0, box: ev.shiftKey, moved: false }; });
     matrix.addEventListener("pointermove", ev => {
@@ -493,11 +500,11 @@ const Overview = (() => {
       const c = cellAt(ev); const d = dragging; dragging = null; if (!d) return;
       if (d.box && d.moved) { const { w, h } = canvasArea(); const x0 = Math.min(d.x, c.x), x1 = Math.max(d.x, c.x), y0 = Math.min(d.y, c.y), y1 = Math.max(d.y, c.y);
         const c0 = V.x0 + x0 / V.cw, c1 = V.x0 + x1 / V.cw, r0 = V.y0 + y0 / V.ch, r1 = V.y0 + y1 / V.ch;
-        V.cw = clamp(w / Math.max(c1 - c0, 1), 0.05, 40); V.ch = clamp(h / Math.max(r1 - r0, 1), 0.05, 40); V.x0 = c0; V.y0 = r0; labelSpace(); redraw(); writeHash(); return; }
+        V.cw = clamp(w / Math.max(c1 - c0, 1), 0.05, 40); V.ch = clamp(h / Math.max(r1 - r0, 1), 0.05, 40); V.x0 = c0; V.y0 = r0; V.user = true; labelSpace(); redraw(); writeHash(); return; }
       if (!d.moved) clickCell(c);
       writeHash();
     });
-    matrix.addEventListener("dblclick", () => { fitAll(); redraw(); writeHash(); });
+    matrix.addEventListener("dblclick", () => { V.user = false; fitAll(); redraw(); writeHash(); });
     matrix.addEventListener("pointerleave", () => hideHover());
     rowCanvas.addEventListener("click", ev => { const r = rowCanvas.getBoundingClientRect(); const row = Math.floor(V.y0 + (ev.clientY - r.top) / V.ch); if (row >= 0 && row < App.D.n) Detail.open("taxon", App.order.taxa[row]); });
     colCanvas.addEventListener("click", ev => { const r = colCanvas.getBoundingClientRect(); const col = Math.floor(V.x0 + (ev.clientX - r.left) / V.cw); if (col >= 0 && col < App.D.nloc) Detail.open("locus", App.order.loci[col]); });
@@ -507,13 +514,13 @@ const Overview = (() => {
     rowCanvas.addEventListener("mouseleave", hideHover); colCanvas.addEventListener("mouseleave", hideHover);
     document.addEventListener("keydown", ev => {
       if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT" || ev.target.tagName === "TEXTAREA") { if (ev.key === "Escape") ev.target.blur(); return; }
-      if (ev.key === "/") { ev.preventDefault(); $("input[type=search]", P.el).focus(); return; }
+      if (ev.key === "/") { ev.preventDefault(); const s = $("input[type=search]", P.el); if (s) s.focus(); return; }
       if (ev.key === "Escape") { if (App.panels.sequence) closePanel("sequence"); else if (App.panels.detail) closePanel("detail"); return; }
       if (App.view !== "matrix") return;
       const step = 40;
       if (ev.key === "ArrowLeft") V.x0 -= step / V.cw; else if (ev.key === "ArrowRight") V.x0 += step / V.cw; else if (ev.key === "ArrowUp") V.y0 -= step / V.ch; else if (ev.key === "ArrowDown") V.y0 += step / V.ch;
       else if (ev.key === "+" || ev.key === "=") { V.cw *= 1.25; V.ch *= 1.25; } else if (ev.key === "-") { V.cw /= 1.25; V.ch /= 1.25; } else return;
-      ev.preventDefault(); labelSpace(); redraw(); writeHash();
+      V.user = true; ev.preventDefault(); labelSpace(); redraw(); writeHash();
     });
   }
   function bindStrip() {
@@ -522,7 +529,7 @@ const Overview = (() => {
   }
   function clickCell(c) {
     const D = App.D; if (c.row < 0 || c.row >= D.n || c.col < 0 || c.col >= D.nloc) return;
-    if (V.cw < 4 || V.ch < 4) { const { w, h } = canvasArea(); const fx = c.x / w, fy = c.y / h; V.cw = Math.max(V.cw * 4, 6); V.ch = Math.max(V.ch * 4, 6); V.x0 = c.col - fx * w / V.cw; V.y0 = c.row - fy * h / V.ch; labelSpace(); redraw(); return; }
+    if (V.cw < 4 || V.ch < 4) { const { w, h } = canvasArea(); const fx = c.x / w, fy = c.y / h; V.cw = Math.max(V.cw * 4, 6); V.ch = Math.max(V.ch * 4, 6); V.x0 = c.col - fx * w / V.cw; V.y0 = c.row - fy * h / V.ch; V.user = true; labelSpace(); redraw(); return; }
     const g = App.order.taxa[c.row], li = App.order.loci[c.col];
     if (D.cols.focal_sites[g * D.nloc + li] === 0) return;
     Sequence.open(g, li);
@@ -546,8 +553,9 @@ const Overview = (() => {
     if (first) { const { w, h } = canvasArea(); if (first[0] === "row") { const r = App.order.taxa.indexOf(first[1]); V.y0 = r - h / V.ch / 2; } else { const c = App.order.loci.indexOf(first[1]); V.x0 = c - w / V.cw / 2; } }
     redraw();
   }
-  return { create, render, redraw, setOrder, setView, V, highlight, labelSpace, fitAll, viewEl: () => viewEl };
+  return { create, render, redraw, setOrder, setView, refresh, V, highlight, labelSpace, fitAll, viewEl: () => viewEl };
 })();
+function debounce(fn, ms) { let t = null; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
 // hover content for a cell, shared by the matrix, the ribbons and the table
 function cellHover(g, li, compact) {
@@ -637,15 +645,16 @@ function bindResidualHover(cv, getPts) {
 const Ribbons = (() => {
   let root, kind, sortMode = "masked", units = [], list, inner, W = 600, axisBox;
   const RH = 22, NAME_W = 230;
-  function render(container, k) { root = container; kind = k; root.replaceChildren(); build(); }
+  let ctlHost = null;
+  function render(container, k, host) { root = container; kind = k; ctlHost = host; root.replaceChildren(); build(); }
   function build() {
     const D = App.D; const cnt = kind === "locus" ? D.locCount : D.taxCount; const names = kind === "locus" ? D.loci.names : D.taxa.names; const N = kind === "locus" ? D.nloc : D.n;
     units = d3.range(N).filter(u => cnt.tested[u] > 0);
     if (sortMode === "masked") units.sort((a, b) => cnt.masked[b] - cnt.masked[a] || cnt.near[b] - cnt.near[a] || a - b); else if (sortMode === "name") units.sort((a, b) => names[a].localeCompare(names[b]));
     const sortSel = el("select", { onchange: e => { sortMode = e.target.value; build(); } }, ...[["masked", "most masked first"], ["name", "name"], ["input", "input order"]].map(([v, t]) => el("option", { value: v, selected: v === sortMode ? "" : null }, t)));
-    const head = el("div", { class: "rib-head" }, el("label", null, "sort ", sortSel), el("span", { class: "k" }, `${fmtInt(units.length)} ${kind === "locus" ? "loci" : "taxa"} with tested sequences · each row is one ${kind}, each mark one of its sequences; ▲ masked too divergent, ▼ too similar, dots pass${kind === "locus" ? "; the shaded band is where a saturated sequence lands" : ""}. Click a name for its panel, a mark for the alignment.`));
+    if (ctlHost) { ctlHost.replaceChildren(el("label", null, "sort ", sortSel), el("span", { class: "k", title: `each row is one ${kind}, each mark one of its sequences: ▲ masked too divergent, ▼ too similar, dots pass${kind === "locus" ? "; the shaded band is where a saturated sequence lands" : ""}. Click a name for its panel, a mark for the alignment.` }, `${fmtInt(units.length)} ${kind === "locus" ? "loci" : "taxa"}`)); }
     axisBox = el("div", { class: "rib-axis" }); list = el("div", { class: "rib-list" }); inner = el("div", { style: "position:relative" }); list.append(inner);
-    root.replaceChildren(head, axisBox, list);
+    root.replaceChildren(axisBox, list);
     W = Math.max(300, root.getBoundingClientRect().width - NAME_W - 24);
     axisBox.replaceChildren(el("div", { style: `width:${NAME_W}px; flex: 0 0 auto` }), residualAxis(W, 8, 8));
     inner.style.height = units.length * RH + "px";
@@ -667,12 +676,17 @@ const Ribbons = (() => {
   return { render };
 })();
 
-// ------------------------------------------------------------------ the taxon / locus panel
+// ------------------------------------------------------------------ the taxon / locus panel: one plot at a time, sized to the panel
 const Detail = (() => {
-  let cur = null;
+  let cur = null, view = "scatter", viewSel = null, body = null;
   function open(kind, i) {
     cur = { kind, i };
-    if (!App.panels.detail) { const P = makePanel("detail", [], () => closePanel("detail")); App.panels.detail = { el: P.el, P, render, redraw: render }; App.topEl.append(P.el); }
+    if (!App.panels.detail) {
+      const P = makePanel("detail", [], () => closePanel("detail")); App.panels.detail = { el: P.el, P, render, redraw: render };
+      App.topEl.append(App.vsplitEl, P.el); App.vsplitEl.style.display = "";
+      new ResizeObserver(debounce(() => { if (App.panels.detail && cur) draw(); }, 120)).observe(P.body);
+    }
+    if (kind === "locus" && view === "matches") view = "scatter";
     render(); writeHash(); Overview.highlight(kind === "taxon" ? "row" : "col", i);
   }
   function cellsOf() {
@@ -681,46 +695,76 @@ const Detail = (() => {
     else { const li = cur.i; for (let g = 0; g < D.n; g++) if (D.cols.n_comp[g * D.nloc + li] > 0) out.push([g, li]); }
     return out;
   }
-  function P_width() { return App.panels.detail ? App.panels.detail.P.body.getBoundingClientRect().width || 700 : 700; }
+  function area() { const r = body.getBoundingClientRect(); return { W: Math.max(300, r.width - 20), H: Math.max(220, r.height - 20) }; }
   function render() {
     if (!cur || !App.panels.detail) return;
     const D = App.D; const { kind, i } = cur; const P = App.panels.detail.P; const name = kind === "taxon" ? D.taxa.names[i] : D.loci.names[i];
     const cnt = kind === "taxon" ? D.taxCount : D.locCount;
-    P.setCrumb([D.man.dataset || D.man.input.file, kind, el("span", null, name, el("span", { class: "sub" }, `${fmtInt(cnt.masked[i])} of ${fmtInt(cnt.tested[i])} sequences masked (${pct(cnt.masked[i], cnt.tested[i])})`))]);
-    P.body.replaceChildren();
-    const grid = el("div", { class: "detail" }); P.body.append(grid);
-    const cells = cellsOf();
-    grid.append(residualCard());
-    if (kind === "taxon") grid.append(matchesCard(cells));
-    grid.append(ribbonsCard(cells));
+    const views = [["scatter", "observed vs expected"], ...(kind === "taxon" ? [["matches", "best matches"]] : []), ["ribbons", "site ribbons"]];
+    viewSel = el("select", { onchange: e => { view = e.target.value; draw(); } }, ...views.map(([v, t]) => el("option", { value: v, selected: v === view ? "" : null }, t)));
+    P.setCrumb([el("span", null, kind, " ", el("b", null, name)), el("span", { class: "sub" }, `${fmtInt(cnt.masked[i])} of ${fmtInt(cnt.tested[i])} sequences masked (${pct(cnt.masked[i], cnt.tested[i])})`), el("label", { class: "crumb-ctl" }, "view ", viewSel)]);
+    P.body.replaceChildren(); body = P.body; body.classList.add("detail-body");
+    draw();
   }
-  // the unit's residual ribbon, large: excess_m on the shared asinh axis, masked as triangles
-  function residualCard() {
-    const D = App.D; const card = el("div", { class: "card" }, el("h3", null, "excess divergence beyond expectation", el("span", { class: "sub" }, "each mark is one sequence; in units of a typical locus's divergence (m)")));
-    const W = Math.max(300, P_width() - 40), H = 110;
-    card.append(residualAxis(W, 10, 10));
-    const cv = el("canvas"); card.append(cv);
-    const drawn = drawResidualRow(cv, cur.kind, cur.i, W, H, { padL: 10, padR: 10 });
-    bindResidualHover(cv, () => drawn.pts);
-    card.append(el("div", { class: "note" }, `${drawn.pts.length} sequences drawn${drawn.identical ? `; ${drawn.identical} identical to their comparators sit at the left and are not drawn` : ""}. A tight cluster is one cause, a scatter is many independent problems${cur.kind === "locus" ? "; the shaded band is where a saturated sequence lands" : ""}. Hover a mark for its numbers; click it for the alignment.`));
-    return card;
+  function draw() {
+    if (!cur || !App.panels.detail) return; body.replaceChildren();
+    const cells = cellsOf();
+    if (view === "scatter") body.append(scatterPlot(cells)); else if (view === "matches") body.append(matchesPlot(cells)); else body.append(ribbonsList(cells));
+  }
+  // observed vs expected divergence, log axes with a zero floor, the diagonal and the two effect floors
+  function scatterPlot(cells) {
+    const D = App.D; const box = el("div", { class: "plot" });
+    const pts = cells.map(([g, li]) => { const mi = D.num("med_identity", g, li), me = D.num("med_expected", g, li); return mi === null ? null : { g, li, obs: 100 - mi, exp: 100 - me, code: D.state[g * D.nloc + li] }; }).filter(Boolean);
+    if (!pts.length) { box.append(el("div", { class: "note" }, "the bundle carries no numbers for these cells")); return box; }
+    const { W, H: H0 } = area(); const H = H0 - 36; const m = { l: 50, r: 14, t: 10, b: 42 };
+    const posX = pts.filter(p => p.exp > 0).map(p => p.exp), posY = pts.filter(p => p.obs > 0).map(p => p.obs);
+    const fx = posX.length ? d3.min(posX) / 2 : 0.01, fy = posY.length ? d3.min(posY) / 2 : 0.01;
+    const X = p => p.exp > 0 ? p.exp : fx, Y = p => p.obs > 0 ? p.obs : fy;
+    const xs = d3.scaleLog().domain([d3.min(pts, X) / 1.3, d3.max(pts, X) * 1.3]).range([m.l, W - m.r]); const ys = d3.scaleLog().domain([d3.min(pts, Y) / 1.3, d3.max(pts, Y) * 1.3]).range([H - m.b, m.t]);
+    const wrap = el("div", { class: "scatter-wrap" }); box.append(wrap);
+    const svg = d3.create("svg").attr("width", W).attr("height", H);
+    svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(xs).ticks(5, "~g"));
+    svg.append("g").attr("class", "axis").attr("transform", `translate(${m.l},0)`).call(d3.axisLeft(ys).ticks(5, "~g"));
+    if (posX.length < pts.length) svg.append("text").attr("x", xs(fx)).attr("y", H - m.b + 14).attr("text-anchor", "middle").text("0");
+    if (posY.length < pts.length) svg.append("text").attr("x", m.l - 6).attr("y", ys(fy) + 4).attr("text-anchor", "end").text("0");
+    svg.append("text").attr("x", (m.l + W - m.r) / 2).attr("y", H - 6).attr("text-anchor", "middle").text("expected divergence of the sequence, median over its comparators (%)");
+    svg.append("text").attr("transform", `translate(13,${(m.t + H - m.b) / 2}) rotate(-90)`).attr("text-anchor", "middle").text("observed divergence (%)");
+    const line = (f, dash, col) => { const [x0, x1] = xs.domain(); const p0 = [Math.max(x0, ys.domain()[0] / f), Math.min(x1, ys.domain()[1] / f)]; if (p0[0] < p0[1]) svg.append("line").attr("x1", xs(p0[0])).attr("y1", ys(p0[0] * f)).attr("x2", xs(p0[1])).attr("y2", ys(p0[1] * f)).attr("stroke", col).attr("stroke-width", f === 1 ? 1.2 : 0.9).attr("stroke-dasharray", dash); };
+    line(1, null, cssVar("--model")); line(D.man.options.min_ratio, "4 3", cssVar("--floor")); line(1 / 3, "4 3", cssVar("--floor"));
+    wrap.append(svg.node());
+    const cv = el("canvas"); const dpr = devicePixelRatio || 1; cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + "px"; cv.style.height = H + "px"; wrap.append(cv);
+    const c = cv.getContext("2d"); c.scale(dpr, dpr);
+    const drawPt = (p, r) => { const x = xs(X(p)), y = ys(Y(p)); const col = D.colorOf(p.code) || cssVar("--grey-1"); c.fillStyle = col; c.strokeStyle = cssVar("--surface"); c.lineWidth = 0.8; c.beginPath();
+      if (p.code >= ST.BLUE) { c.moveTo(x, y + r); c.lineTo(x - r, y - r * 0.7); c.lineTo(x + r, y - r * 0.7); c.closePath(); } else if (p.code >= ST.RED) { c.moveTo(x, y - r); c.lineTo(x - r, y + r * 0.7); c.lineTo(x + r, y + r * 0.7); c.closePath(); } else c.arc(x, y, r * 0.75, 0, 2 * Math.PI);
+      c.fill(); c.stroke(); };
+    const order = pts.slice().sort((a, b) => D.sev[a.g * D.nloc + a.li] - D.sev[b.g * D.nloc + b.li]);
+    const r = pts.length > 2000 ? 2.4 : pts.length > 500 ? 3.2 : 4.2;
+    for (const p of order) drawPt(p, p.code >= ST.RED ? r + 1.5 : r);
+    svg.style("pointer-events", "all");
+    const nearest = ev => { const [mx, my] = d3.pointer(ev, svg.node()); let best = null, bd = 81; for (const p of pts) { const dx = xs(X(p)) - mx, dy = ys(Y(p)) - my; const d = dx * dx + dy * dy; if (d < bd) { bd = d; best = p; } } return best; };
+    svg.on("mousemove", ev => { const p = nearest(ev); if (p) { showHover(cellHover(p.g, p.li), ev.clientX, ev.clientY); App.sel.cells.clear(); App.sel.cells.add(p.g * D.nloc + p.li); Overview.redraw(); svg.style("cursor", "pointer"); } else { hideHover(); svg.style("cursor", null); } });
+    svg.on("mouseleave", () => { hideHover(); App.sel.cells.clear(); Overview.redraw(); });
+    svg.on("click", ev => { const p = nearest(ev); if (p) Sequence.open(p.g, p.li); });
+    box.append(el("div", { class: "note" }, `each point is one sequence. Diagonal: observed = expected; dashed: the effect floors (${D.man.options.min_ratio}× above, ⅓ below). ● not masked, ▲ masked too divergent, ▼ masked too similar. Hover a point for its numbers; click it for the alignment.`));
+    return box;
   }
   // best matches of the masked sequences, with the count expected from the unmasked ones
-  function matchesCard(cells) {
-    const D = App.D; const g0 = cur.i; const card = el("div", { class: "card" }, el("h3", null, "best match of each masked sequence", el("span", { class: "sub" }, "the taxon each masked sequence matches best at its locus")));
+  function matchesPlot(cells) {
+    const D = App.D; const g0 = cur.i; const box = el("div", { class: "plot" });
     const close = new Set(Array.from(D.closest.subarray(g0 * 5, g0 * 5 + 5)).filter(x => x >= 0));
     const masked = [], unmasked = [];
     for (const [g, li] of cells) { const bm = D.num("best_match", g, li); if (bm === null || bm < 0) continue; ((D.cols.side[g * D.nloc + li] & 3) ? masked : unmasked).push({ g, li, bm, id: D.num("best_match_identity", g, li), code: D.state[g * D.nloc + li] }); }
-    if (!masked.length) { card.append(el("div", { class: "note" }, unmasked.length ? "no masked sequence for this taxon" : "best matches were not carried for this taxon (the dataset is large: they are carried for cells with a fail only)")); return card; }
+    if (!masked.length) { box.append(el("div", { class: "note" }, unmasked.length ? "no masked sequence for this taxon" : "best matches were not carried for this taxon (the dataset is large: they are carried for cells with a fail only)")); return box; }
     const cm = d3.rollup(masked, v => v.length, d => d.bm), cu = d3.rollup(unmasked, v => v.length, d => d.bm); const nm = masked.length, nu = unmasked.length;
     let taxaSorted = Array.from(new Set([...cm.keys(), ...Array.from(cu.keys()).filter(u => (cu.get(u) / Math.max(nu, 1)) * nm >= 1)])).sort((a, b) => (cm.get(b) || 0) - (cm.get(a) || 0) || (cu.get(b) || 0) - (cu.get(a) || 0));
-    const MAXB = 24; let other = null; if (taxaSorted.length > MAXB) { const rest = taxaSorted.slice(MAXB - 1); taxaSorted = taxaSorted.slice(0, MAXB - 1); other = { n: rest.length, cm: d3.sum(rest, u => cm.get(u) || 0), cu: d3.sum(rest, u => cu.get(u) || 0), set: new Set(rest) }; }
-    const W = Math.max(300, P_width() - 40), H = 230, m = { l: 40, r: 10, t: 10, b: 110 };
+    const { W, H: H0 } = area(); const H = H0 - 60; const MAXB = Math.max(6, Math.floor((W - 60) / 34));
+    let other = null; if (taxaSorted.length > MAXB) { const rest = taxaSorted.slice(MAXB - 1); taxaSorted = taxaSorted.slice(0, MAXB - 1); other = { n: rest.length, cm: d3.sum(rest, u => cm.get(u) || 0), cu: d3.sum(rest, u => cu.get(u) || 0), set: new Set(rest) }; }
+    const m = { l: 44, r: 10, t: 14, b: Math.min(130, H * 0.42) };
     const cats = taxaSorted.map(u => ({ key: u, name: D.taxa.names[u], cm: cm.get(u) || 0, cu: cu.get(u) || 0, rows: masked.filter(d => d.bm === u) })); if (other) cats.push({ key: -1, name: `other (${other.n} taxa)`, cm: other.cm, cu: other.cu, rows: masked.filter(d => other.set.has(d.bm)) });
     const xs = d3.scaleBand().domain(cats.map(c => c.name)).range([m.l, W - m.r]).padding(0.18); const top = Math.max(d3.max(cats, c => Math.max(c.cm, c.cu / Math.max(nu, 1) * nm)), 1);
     const ys = d3.scaleLinear().domain([0, top * 1.15]).range([H - m.b, m.t]);
     const svg = d3.create("svg").attr("width", W).attr("height", H);
-    svg.append("g").attr("class", "axis").attr("transform", `translate(${m.l},0)`).call(d3.axisLeft(ys).ticks(4).tickFormat(d3.format("d")));
+    svg.append("g").attr("class", "axis").attr("transform", `translate(${m.l},0)`).call(d3.axisLeft(ys).tickValues(d3.range(0, top + 1, Math.max(1, Math.ceil(top / 4)))).tickFormat(d3.format("d")));
     const ax = svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(xs));
     ax.selectAll("text").attr("transform", "rotate(-60)").attr("text-anchor", "end").attr("dx", "-0.6em").attr("dy", "0.2em").style("font-weight", d => cats.find(c => c.name === d) && close.has(cats.find(c => c.name === d).key) ? "700" : "400").style("fill", cssVar("--ink"));
     for (const c of cats) {
@@ -731,33 +775,27 @@ const Detail = (() => {
       const e = c.cu / Math.max(nu, 1) * nm; svg.append("line").attr("x1", xs(c.name) - 1).attr("x2", xs(c.name) + xs.bandwidth() + 1).attr("y1", ys(e)).attr("y2", ys(e)).attr("stroke", cssVar("--ink")).attr("stroke-width", 1.4);
       if (c.cm) svg.append("text").attr("x", xs(c.name) + xs.bandwidth() / 2).attr("y", ys(c.cm) - 3).attr("text-anchor", "middle").style("fill", cssVar("--ink")).text(c.cm);
     }
-    card.append(svg.node());
+    box.append(svg.node());
     const pm = 100 * d3.mean(masked, d => close.has(d.bm) ? 1 : 0), pu = nu ? 100 * d3.mean(unmasked, d => close.has(d.bm) ? 1 : 0) : NaN;
-    card.append(el("div", { class: "note" }, `bars: masked sequences by best match, stacked by mask kind; the tick is the count expected if they matched like the taxon's ${fmtInt(nu)} unmasked sequences; bold names are the 5 closest relatives genome-wide. Best match is one of the 5 closest for ${fmt1(pm)}% of masked and ${Number.isFinite(pu) ? fmt1(pu) : "–"}% of unmasked sequences; median identity to it ${fmt1(d3.median(masked, d => d.id))}% masked vs ${nu ? fmt1(d3.median(unmasked, d => d.id)) : "–"}% unmasked. Bars on their ticks are damaged copies of the right sequence (a wrong exon); bars shifted onto a distant taxon point to contamination or a shared paralogue.`));
-    return card;
+    box.append(el("div", { class: "note" }, `masked sequences by the taxon each matches best at its locus, stacked by mask kind; the tick is the count expected if they matched like the taxon's ${fmtInt(nu)} unmasked sequences; bold names are the 5 closest relatives genome-wide. Best match is one of the 5 closest for ${fmt1(pm)}% of masked and ${Number.isFinite(pu) ? fmt1(pu) : "–"}% of unmasked sequences; median identity to it ${fmt1(d3.median(masked, d => d.id))}% masked vs ${nu ? fmt1(d3.median(unmasked, d => d.id)) : "–"}% unmasked. Bars on their ticks are damaged copies of the right sequence (a wrong exon); bars shifted onto a distant taxon point to contamination or a shared paralogue.`));
+    return box;
   }
-  // site ribbons: one pixel-row per sequence, coloured by the site code; masked first, then the near-misses
-  function ribbonsCard(cells) {
-    const D = App.D; const card = el("div", { class: "card" }, el("h3", null, "site ribbons", el("span", { class: "sub" }, "each row is one sequence, sites along x; red where a majority of its comparators differ, blue where a pair shares a state against the others")));
-    const wrap = el("div", { class: "ribbons-wrap" }); card.append(wrap);
-    const withCodes = cells.filter(([g, li]) => { const i = g * D.nloc + li; return (D.cols.side[i] & 3) || D.cols.n_fail[i] > 0 || D.cols.n_similar[i] > 0; });
-    const masked = withCodes.filter(([g, li]) => D.cols.side[g * D.nloc + li] & 3), near = withCodes.filter(([g, li]) => !(D.cols.side[g * D.nloc + li] & 3));
-    if (!withCodes.length) { card.append(el("div", { class: "note" }, "no masked sequence or near miss here")); return card; }
-    const maxLen = cur.kind === "locus" ? D.loci.length[cur.i] : d3.max(withCodes, ([g, li]) => D.loci.length[li]);
-    const addRows = (list, title) => {
-      if (!list.length) return; if (title) wrap.append(el("div", { class: "rule" }, title));
-      list.sort((a, b) => D.sev[b[0] * D.nloc + b[1]] - D.sev[a[0] * D.nloc + a[1]]);
-      for (const [g, li] of list.slice(0, 400)) {
-        const cv = el("canvas"); const row = el("div", { class: "rib-row2", onclick: () => Sequence.open(g, li), onmouseenter: () => { App.sel.cells.clear(); App.sel.cells.add(g * D.nloc + li); Overview.redraw(); }, onmouseleave: () => { App.sel.cells.clear(); Overview.redraw(); } },
-          el("span", { class: "nm", title: cur.kind === "taxon" ? D.loci.names[li] : D.taxa.names[g] }, sw(D.colorOf(D.state[g * D.nloc + li])), cur.kind === "taxon" ? D.loci.names[li] : D.taxa.names[g]), cv);
-        wrap.append(row);
-        D.codes(li).then(C => drawRibbon(cv, C, g, li, maxLen));
-      }
-      if (list.length > 400) wrap.append(el("div", { class: "rule" }, `${fmtInt(list.length - 400)} more rows not drawn; use the table view`));
-    };
-    addRows(masked, null); addRows(near, `near misses: not masked, ${D.M - 1 > 1 ? `1 to ${D.M - 1}` : "1"} of ${D.K} comparators fail`);
-    card.append(el("div", { class: "note" }, cur.kind === "locus" ? "rows share the alignment's columns: a vertical band is a column problem (misalignment), a horizontal block in one row is a taxon problem (a wrong exon, a frameshift). Hover a row for the site; click it for the alignment." : "each row is a different locus drawn to its own length on a shared axis. Click a row for the alignment."));
-    return card;
+  // site ribbons of the masked sequences: one pixel-row each, coloured by the site code
+  function ribbonsList(cells) {
+    const D = App.D; const box = el("div", { class: "plot ribbons-plot" });
+    const masked = cells.filter(([g, li]) => D.cols.side[g * D.nloc + li] & 3);
+    if (!masked.length) { box.append(el("div", { class: "note" }, "no masked sequence here")); return box; }
+    const maxLen = cur.kind === "locus" ? D.loci.length[cur.i] : d3.max(masked, ([g, li]) => D.loci.length[li]);
+    const wrap = el("div", { class: "ribbons-wrap" }); box.append(wrap);
+    masked.sort((a, b) => D.sev[b[0] * D.nloc + b[1]] - D.sev[a[0] * D.nloc + a[1]]);
+    for (const [g, li] of masked) {
+      const cv = el("canvas"); const row = el("div", { class: "rib-row2", onclick: () => Sequence.open(g, li), onmouseenter: () => { App.sel.cells.clear(); App.sel.cells.add(g * D.nloc + li); Overview.redraw(); }, onmouseleave: () => { App.sel.cells.clear(); Overview.redraw(); } },
+        el("span", { class: "nm", title: cur.kind === "taxon" ? D.loci.names[li] : D.taxa.names[g] }, sw(D.colorOf(D.state[g * D.nloc + li])), cur.kind === "taxon" ? D.loci.names[li] : D.taxa.names[g]), cv);
+      wrap.append(row);
+      D.codes(li).then(C => drawRibbon(cv, C, g, li, maxLen));
+    }
+    box.append(el("div", { class: "note" }, `${fmtInt(masked.length)} masked sequences, sites along x: red where a majority of the comparators differ, blue where a pair shares a state against the others. ` + (cur.kind === "locus" ? "Rows share the alignment's columns: a vertical band is a column problem (misalignment), a horizontal block in one row is a taxon problem (a wrong exon, a frameshift)." : "Each row is a different locus drawn to its own length on a shared axis.") + " Hover a row for the site; click it for the alignment."));
+    return box;
   }
   function drawRibbon(cv, C, g, li, maxLen) {
     const D = App.D; if (!C) { cv.title = "codes not carried for this cell"; return; }
@@ -777,8 +815,9 @@ const Detail = (() => {
     cv.addEventListener("mousemove", ev => { const rr = cv.getBoundingClientRect(); const s = Math.floor((ev.clientX - rr.left) / rr.width / span * len); if (s >= 0 && s < len) showHover(el("div", null, el("b", null, `${D.taxa.names[g]} · ${D.loci.names[li]}`), el("div", null, `site ${s + 1} of ${fmtInt(len)} (alignment position ${fmtInt(alignmentPos(D, li, s) + 1)}): ${codeLabel(D, C.blk[base + s])}`)), ev.clientX, ev.clientY); });
     cv.addEventListener("mouseleave", hideHover);
   }
-  return { open, render, cur: () => cur };
+  return { open, render, cur: () => cur, setView: v => { view = v; } };
 })();
+
 // site-code helpers shared by the ribbons and the alignment panel
 function codeSeverity(D, c) { if (c === 255) return 0; if (c === 254) return 5; if (c >= 128) return 30 + (c - 128); if (c >= D.M) return 20 + c; return 2 + c; }
 function codeHex(D, c) {
@@ -828,9 +867,58 @@ const SCHEME_LIST = {
   dna: [["codes", "site codes"], ["none", "plain letters"], ["nucleotide", "nucleotide"], ["purine", "purine / pyrimidine"]],
 };
 
+// ------------------------------------------------------------------ face-to-face distance trees of one cell (drawn from the tool's Newick strings)
+function parseNewick(s) {
+  let i = 0; const node = () => { const n = { children: [], length: 0, name: null };
+    if (s[i] === "(") { i++; n.children.push(node()); while (s[i] === ",") { i++; n.children.push(node()); } i++; }
+    let name = ""; while (i < s.length && !",:);".includes(s[i])) name += s[i++]; n.name = name || null;
+    if (s[i] === ":") { i++; let num = ""; while (i < s.length && !",);".includes(s[i])) num += s[i++]; n.length = parseFloat(num) || 0; }
+    return n; };
+  return node();
+}
+function tipsOf(n, out = []) { if (!n.children.length) out.push(n); else n.children.forEach(c => tipsOf(c, out)); return out; }
+function depthOf(n, d = 0) { n.depth = d; return n.children.length ? Math.max(...n.children.map(c => depthOf(c, d + c.length))) : d; }
+function orderLike(n, rank) {                                     // rotate the observed tree's nodes to follow the expected tip order
+  if (!n.children.length) { n.rank = rank.get(n.name) ?? 0; return n.rank; }
+  const r = n.children.map(c => orderLike(c, rank)); n.children = n.children.map((c, i) => [c, r[i]]).sort((a, b) => a[1] - b[1]).map(x => x[0]); n.rank = d3.mean(r); return n.rank;
+}
+function assignY(n, counter) { if (!n.children.length) { n.y = counter.y++; return n.y; } const ys = n.children.map(c => assignY(c, counter)); n.y = d3.mean(ys); return n.y; }
+function drawTanglegram(host, D, entry, k, cell) {
+  const { g, li } = cell; const tips = entry.tips[k]; const exp = parseNewick(entry.expected[k]), obs = parseNewick(entry.observed[k]);
+  const name = x => D.taxa.names[+x]; const partner = D.num("partner", g, li), bm = D.num("best_match", g, li); const comps = new Set(D.comps(g, li));
+  const rank = new Map(); tipsOf(exp).forEach((t, i) => rank.set(t.name, i)); orderLike(obs, rank);
+  const nTip = tips.length; const RH = 20, W = Math.min(640, Math.max(420, host.getBoundingClientRect().width - 24)), LAB = 150, TW = (W - LAB - 20) / 2, top = 22, H = top + nTip * RH + 36;
+  const maxD = Math.max(depthOf(exp), depthOf(obs), 1e-6); const sx = d3.scaleLinear().domain([0, maxD]).range([0, TW]);
+  assignY(exp, { y: 0 }); assignY(obs, { y: 0 });
+  const svg = d3.create("svg").attr("width", W).attr("height", H).attr("class", "tangle");
+  const yOf = n => top + n.y * RH + RH / 2;
+  const draw = (root, x0, dir) => {                                 // dir +1 draws left to right, -1 right to left
+    const gg = svg.append("g"); const walk = n => { for (const c of n.children) { const xa = x0 + dir * sx(n.depth), xb = x0 + dir * sx(c.depth);
+      gg.append("path").attr("d", `M${xa},${yOf(n)}V${yOf(c)}H${xb}`).attr("fill", "none").attr("stroke", cssVar("--muted")).attr("stroke-width", 1.2);
+      if (!c.children.length) { const col = +c.name === g ? D.colorOf(D.state[g * D.nloc + li]) : null; gg.append("circle").attr("cx", xb).attr("cy", yOf(c)).attr("r", 3).attr("fill", col || cssVar("--surface")).attr("stroke", col || cssVar("--muted")).attr("stroke-width", 1.2); }
+      walk(c); } }; walk(root); return gg; };
+  draw(exp, 10, 1); draw(obs, W - 10, -1);
+  const mid = 10 + TW + 10; const obsTips = new Map(); tipsOf(obs).forEach(t => obsTips.set(t.name, t));
+  for (const t of tipsOf(exp)) {
+    const y = yOf(t); const o = obsTips.get(t.name); const isFocal = +t.name === g;
+    const tag = isFocal ? "focal" : +t.name === partner ? "partner" : +t.name === bm && !comps.has(+t.name) ? "best match" : "";
+    svg.append("line").attr("x1", 10 + sx(t.depth)).attr("x2", mid).attr("y1", y).attr("y2", y).attr("stroke", cssVar("--grid")).attr("stroke-dasharray", "2 3");
+    const lab = svg.append("text").attr("x", mid + LAB / 2).attr("y", y + 4).attr("text-anchor", "middle").attr("font-size", 11.5).attr("font-weight", isFocal ? 700 : 400).attr("fill", isFocal ? (D.colorOf(D.state[g * D.nloc + li]) || cssVar("--ink")) : cssVar("--ink")).text(name(t.name) + (tag ? ` (${tag})` : ""));
+    lab.append("title").text(`${name(t.name)}: expected ${fmt1(t.depth)}%, observed ${o ? fmt1(o.depth) : "?"}% from the root`);
+    if (o) svg.append("line").attr("x1", mid + LAB).attr("x2", W - 10 - sx(o.depth)).attr("y1", y).attr("y2", yOf(o)).attr("stroke", y === yOf(o) ? cssVar("--grid") : cssVar("--floor")).attr("stroke-dasharray", "2 3");
+  }
+  svg.append("text").attr("x", 10).attr("y", 14).attr("font-size", 11).attr("fill", cssVar("--muted")).text("expected");
+  svg.append("text").attr("x", W - 10).attr("y", 14).attr("text-anchor", "end").attr("font-size", 11).attr("fill", cssVar("--muted")).text("observed at this locus");
+  const bar = Math.pow(10, Math.floor(Math.log10(maxD))) * (maxD / Math.pow(10, Math.floor(Math.log10(maxD))) >= 5 ? 2 : 1);
+  const by = H - 14; svg.append("line").attr("x1", 10).attr("x2", 10 + sx(bar)).attr("y1", by).attr("y2", by).attr("stroke", cssVar("--ink")).attr("stroke-width", 1.5);
+  svg.append("text").attr("x", 14 + sx(bar)).attr("y", by + 4).attr("font-size", 10.5).attr("fill", cssVar("--muted")).text(`${bar}% divergence`);
+  if (entry.moved[k] > 0) svg.append("text").attr("x", W - 10).attr("y", by + 4).attr("text-anchor", "end").attr("font-size", 10.5).attr("fill", cssVar("--muted")).text(`observed tree rooted on the closest split (${entry.moved[k]} tip${entry.moved[k] > 1 ? "s" : ""} differ)`);
+  return svg.node();
+}
+
 // ------------------------------------------------------------------ the alignment panel (full width, bottom)
 const Sequence = (() => {
-  let cur = null, pps = null, x0 = 0, scheme = "codes", dots = true, drawFn = null;
+  let cur = null, pps = null, x0 = 0, scheme = "codes", dots = true, drawFn = null, showTrees = false;
   const RULER_H = 18, CONS_H = 26, CODE_H = 9, ROW_H = 18, NAME_W = 190;
   function open(g, li) {
     cur = { g, li }; pps = null; x0 = 0;
@@ -873,10 +961,24 @@ const Sequence = (() => {
     const xm = D.num("excess_m", g, li); if (xm !== null) parts.push(el("span", null, ` · excess ${fmt2(xm)} m`));
     const schemeSel = el("select", { onchange: e => { scheme = e.target.value; draw(); } }, ...SCHEME_LIST[dtype === "dna" ? "dna" : "aa"].map(([v, t]) => el("option", { value: v, selected: v === scheme ? "" : null }, t)));
     const dotsBox = el("input", { type: "checkbox", checked: dots ? "" : null, onchange: e => { dots = e.target.checked; draw(); } });
+    const treesBtn = el("button", { title: "the expected and the observed distances among these sequences as two neighbour-joining trees, face to face", onclick: () => toggleTrees() }, "trees");
     const ctl = el("span", { class: "seq-ctl" }, el("label", null, "colours ", schemeSel), el("label", null, dotsBox, " dots where a comparator matches the focal residue"),
-      el("button", { onclick: () => { pps = fitPps(); x0 = 0; draw(); } }, "whole locus"), el("button", { onclick: () => { pps = 12; draw(); } }, "letters"));
+      el("button", { onclick: () => { pps = fitPps(); x0 = 0; draw(); } }, "whole locus"), el("button", { onclick: () => { pps = 12; draw(); } }, "letters"), treesBtn);
     head.append(el("div", { class: "seq-line" }, ...parts), ctl);
     const body = el("div", { class: "seq-body" }); const names = el("div", { class: "seq-names" }); const cwrap = el("div", { class: "seq-canvas-wrap" }); const cv = el("canvas"); cwrap.append(cv); body.append(names, cwrap);
+    let treesCard = null;
+    const toggleTrees = async () => {
+      if (treesCard) { treesCard.remove(); treesCard = null; treesBtn.classList.remove("primary"); showTrees = false; return; }
+      showTrees = true; treesBtn.classList.add("primary");
+      treesCard = el("div", { class: "trees-card" }, el("div", { class: "loading", style: "padding: 10px" }, "loading the trees…")); cwrap.append(treesCard);
+      const entry = await D.trees(li); if (!treesCard) return; treesCard.replaceChildren();
+      let k = -1; if (entry) for (let q = 0; q < entry.cells.length; q++) if (entry.cells[q] === g) { k = q; break; }
+      if (k < 0) { treesCard.append(el("div", { class: "note", style: "padding: 8px" }, "trees were not carried for this cell")); return; }
+      treesCard.append(el("div", { class: "trees-head" }, el("b", null, "distances as trees"), el("span", { class: "k" }, " neighbour joining on the expected distances (left, midpoint-rooted) and on the observed mismatch fractions at this locus (right, rooted on the same split); same scale"), el("button", { class: "close", onclick: toggleTrees }, "✕")));
+      treesCard.append(drawTanglegram(treesCard, D, entry, k, { g, li }));
+      treesCard.append(el("div", { class: "note", style: "padding: 0 8px 6px" }, "tips: the focal sequence, its comparators, the partner of a too-similar pair and the best-match taxon. Negative neighbour-joining branches are drawn as zero. A long focal branch with unchanged neighbours is a damaged copy; a focal that moves across to its best match points to contamination or a paralogue."));
+    };
+    if (showTrees) setTimeout(toggleTrees, 0);
     names.append(el("div", { class: "trk", style: `height:${RULER_H}px` }, "position"), el("div", { class: "trk", style: `height:${CONS_H}px`, title: "1 − normalised Shannon entropy of the column over the rows shown" }, "conservation"), el("div", { class: "trk", style: `height:${CODE_H + 4}px` }, "site codes"));
     for (const r of rows) names.append(el("div", { class: "seqnm" + (r.role === "focal" ? " focal" : ""), style: `height:${ROW_H}px`, title: `${D.taxa.names[r.g]} (${r.role === "#1" ? "comparator 1" : r.role})` }, el("span", { class: "nm" }, D.taxa.names[r.g]), el("span", { class: "role" }, r.role === "focal" ? "" : r.role)));
     const foot = el("div", { class: "seq-foot" }, el("span", null, `${fmtInt(len)} sites · pinch or ctrl+wheel: zoom · two-finger scroll or drag: move · letters appear from 7 px per site`), el("span", { class: "k", style: "margin-left:auto" }, S ? "" : "sequences were not carried for this locus"));
@@ -973,22 +1075,22 @@ const Sequence = (() => {
   return { open, render, cur: () => cur };
 })();
 
-// ------------------------------------------------------------------ histograms: loci and taxa by masked count
+// ------------------------------------------------------------------ histograms: loci or taxa by masked count, one facet sized to the panel
 const Hist = (() => {
-  function render(root) { root.replaceChildren(); root.append(facet("locus"), facet("taxon")); }
+  function render(root, by) { root.replaceChildren(); root.append(facet(by, root)); }
   function bins(kof) {
     const pos = kof.filter(k => k > 0); const kmax = d3.max(kof) || 0; let w = 1;
     if (pos.length >= 2) { const q = pos.slice().sort(d3.ascending); const iqr = d3.quantileSorted(q, 0.75) - d3.quantileSorted(q, 0.25); w = 2 * iqr / Math.cbrt(pos.length); if (w < 1) w = kmax / Math.max(1, 1 + Math.log2(pos.length)); w = Math.max(1, Math.ceil(w)); }
     const out = [[0, 0]]; for (let lo = 1; lo <= kmax; lo += w) out.push([lo, Math.min(lo + w - 1, kmax)]); return out;
   }
-  function facet(by) {
+  function facet(by, root) {
     const D = App.D; const N = by === "locus" ? D.nloc : D.n; const cnt = by === "locus" ? D.locCount : D.taxCount; const names = by === "locus" ? D.loci.names : D.taxa.names;
     const units = d3.range(N).filter(u => cnt.present[u] > 0); const kof = units.map(u => cnt.masked[u]);
     const B = bins(kof); const heights = B.map(([lo, hi]) => units.filter((u, j) => kof[j] >= lo && kof[j] <= hi));
-    const rotated = B.length > 14; const W = Math.max(420, Math.min(900, Overview_width() - 40)), H = rotated ? 260 : 220, m = { l: 48, r: 10, t: 26, b: rotated ? 82 : 42 };
+    const rr = root.getBoundingClientRect(); const rotated = B.length > 14; const W = Math.max(380, rr.width - 24), H = Math.max(200, rr.height - 70), m = { l: 48, r: 12, t: 26, b: rotated ? 82 : 42 };
     const xs = d3.scaleBand().domain(B.map((b, i) => i)).range([m.l, W - m.r]).padding(0.15);
     const ymax = d3.max(heights, h => h.length) || 1; const ys = d3.scaleSymlog().constant(2).domain([0, ymax * 1.15]).range([H - m.b, m.t]);
-    const card = el("div", { class: "card", style: "margin-bottom: 10px" }, el("h3", null, `${by === "locus" ? "loci" : "taxa"} by the number of masked sequences they hold`, el("span", { class: "sub" }, `${fmtInt(units.filter((u, j) => kof[j] > 0).length)} of ${fmtInt(units.length)} have a masked sequence`)));
+    const box = el("div", { class: "plot" }, el("h3", null, `${by === "locus" ? "loci" : "taxa"} by the number of masked sequences they hold`, el("span", { class: "sub" }, `${fmtInt(units.filter((u, j) => kof[j] > 0).length)} of ${fmtInt(units.length)} have a masked sequence`)));
     const svg = d3.create("svg").attr("width", W).attr("height", H);
     svg.append("g").attr("class", "axis").attr("transform", `translate(${m.l},0)`).call(d3.axisLeft(ys).tickValues([0, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000].filter(v => v <= ymax * 1.15)).tickFormat(d3.format(",")));
     svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(xs).tickFormat(i => { const [lo, hi] = B[i]; return lo === hi ? String(lo) : `${lo}–${hi}`; })).selectAll("text").attr("transform", rotated ? "rotate(-60)" : null).attr("text-anchor", rotated ? "end" : "middle").attr("dx", rotated ? "-0.5em" : null).attr("dy", rotated ? "0.1em" : null);
@@ -997,18 +1099,17 @@ const Hist = (() => {
     B.forEach(([lo, hi], i) => {
       const us = heights[i]; if (!us.length) return;
       const comp = new Map();
-      if (lo === 0) { for (const u of us) for (let k = 0; k < (by === "locus" ? D.n : D.nloc); k++) { const idx = by === "locus" ? k * D.nloc + u : u * D.nloc + k; if (D.cols.n_comp[idx] === 0) continue; const code = D.state[idx]; if (code < ST.RED) comp.set(code, (comp.get(code) || 0) + 1); } }
+      if (lo === 0) comp.set(ST.GREY, 1);
       else { for (const u of us) for (let k = 0; k < (by === "locus" ? D.n : D.nloc); k++) { const idx = by === "locus" ? k * D.nloc + u : u * D.nloc + k; const code = D.state[idx]; if (code >= ST.RED) comp.set(code, (comp.get(code) || 0) + 1); } }
       const tot = d3.sum(comp.values()) || 1; let y0 = ys(0); const codes = Array.from(comp.keys()).sort(d3.ascending);
       for (const code of codes) { const h = (ys(0) - ys(us.length)) * comp.get(code) / tot; svg.append("rect").attr("x", xs(i)).attr("y", y0 - h).attr("width", xs.bandwidth()).attr("height", h).attr("fill", D.colorOf(code)).attr("stroke", cssVar("--surface")).attr("stroke-width", 0.8).style("cursor", "pointer")
-        .on("mousemove", ev => showHover(el("div", null, el("b", null, `${fmtInt(us.length)} ${by === "locus" ? "loci" : "taxa"} with ${lo === hi ? lo : `${lo} to ${hi}`} masked sequence${hi !== 1 ? "s" : ""}`), el("div", null, `${D.labelOf(code)}: ${fmtInt(comp.get(code))} sequences (${pct(comp.get(code), tot)})`), el("div", { class: "more" }, us.slice(0, 8).map(u => names[u]).join(", ") + (us.length > 8 ? ", …" : "") + " · click to highlight them in the matrix")), ev.clientX, ev.clientY))
+        .on("mousemove", ev => showHover(el("div", null, el("b", null, `${fmtInt(us.length)} ${by === "locus" ? "loci" : "taxa"} with ${lo === hi ? lo : `${lo} to ${hi}`} masked sequence${hi !== 1 ? "s" : ""}`), lo === 0 ? null : el("div", null, `${D.labelOf(code)}: ${fmtInt(comp.get(code))} sequences (${pct(comp.get(code), tot)})`), el("div", { class: "more" }, us.slice(0, 8).map(u => names[u]).join(", ") + (us.length > 8 ? ", …" : "") + " · click to highlight them in the matrix")), ev.clientX, ev.clientY))
         .on("mouseleave", hideHover).on("click", () => { if (by === "locus") { App.sel.cols = new Set(us); App.sel.rows.clear(); } else { App.sel.rows = new Set(us); App.sel.cols.clear(); } Overview.setView("matrix"); }); y0 -= h; }
       svg.append("text").attr("x", xs(i) + xs.bandwidth() / 2).attr("y", ys(us.length) - 3).attr("text-anchor", "middle").style("fill", cssVar("--ink")).text(fmtInt(us.length));
     });
-    card.append(svg.node(), el("div", { class: "note" }, "zero is its own bar, coloured by how many comparators its sequences fail; the other bars are coloured by the kinds of mask they hold. The y axis is linear near zero and logarithmic above. Click a bar to highlight its units in the matrix."));
-    return card;
+    box.append(svg.node(), el("div", { class: "note" }, "zero is its own bar; the other bars are coloured by the kinds of mask they hold. The y axis is linear near zero and logarithmic above. Click a bar to highlight its units in the matrix."));
+    return box;
   }
-  function Overview_width() { return App.panels.overview ? App.panels.overview.el.getBoundingClientRect().width || 900 : 900; }
   return { render };
 })();
 
@@ -1018,7 +1119,7 @@ const Table = (() => {
   const COLS = [["taxon", "taxon"], ["locus", "locus"], ["n_fail", "fails"], ["n_similar", "similar"], ["obs", "observed %"], ["exp", "expected %"], ["excess_m", "excess (m)"], ["bm_id", "best match %"], ["lam", "|2 ln LR|"], ["bm", "best match / partner"]];
   function build() {
     const D = App.D; rows = [];
-    for (let g = 0; g < D.n; g++) for (let li = 0; li < D.nloc; li++) { const i = g * D.nloc + li; if (D.cols.n_comp[i] === 0) continue; if (maskedOnly && !(D.cols.side[i] & 3) && D.cols.n_fail[i] === 0 && D.cols.n_similar[i] === 0) continue;
+    for (let g = 0; g < D.n; g++) for (let li = 0; li < D.nloc; li++) { const i = g * D.nloc + li; if (D.cols.n_comp[i] === 0) continue; if (maskedOnly && !(D.cols.side[i] & 3)) continue;
       const mi = D.num("med_identity", g, li), me = D.num("med_expected", g, li); const bm = D.num("best_match", g, li), pt = D.num("partner", g, li);
       rows.push({ g, li, taxon: D.taxa.names[g], locus: D.loci.names[li], n_fail: D.cols.n_fail[i], n_similar: D.cols.n_similar[i], obs: mi === null ? null : 100 - mi, exp: me === null ? null : 100 - me, excess_m: D.num("excess_m", g, li), bm_id: D.num("best_match_identity", g, li), lam: D.num("lam", g, li), bm: pt !== null && pt >= 0 ? "partner " + D.taxa.names[pt] : bm !== null && bm >= 0 ? D.taxa.names[bm] : "", code: D.state[i] }); }
     sort();
@@ -1028,7 +1129,7 @@ const Table = (() => {
     root = r; root.replaceChildren(); build(); const D = App.D;
     const head = el("div", { class: "thead" }, ...COLS.map(([k, t]) => el("span", { onclick: () => { if (sortKey === k) sortDir = -sortDir; else { sortKey = k; sortDir = typeof rows[0]?.[k] === "string" ? 1 : -1; } sort(); paint(); } }, t + (sortKey === k ? (sortDir < 0 ? " ▾" : " ▴") : ""))));
     const body = el("div", { class: "tbody" }); const inner = el("div"); body.append(inner);
-    const foot = el("div", { class: "tfoot" }, el("label", null, el("input", { type: "checkbox", checked: maskedOnly ? "" : null, onchange: e => { maskedOnly = e.target.checked; build(); paint(); } }), " masked and near-miss cells only"), el("span", { class: "n" }));
+    const foot = el("div", { class: "tfoot" }, el("label", null, el("input", { type: "checkbox", checked: maskedOnly ? "" : null, onchange: e => { maskedOnly = e.target.checked; build(); paint(); } }), " masked cells only"), el("span", { class: "n" }));
     root.append(head, body, foot);
     const RH = 22;
     const paint = () => { inner.style.height = rows.length * RH + "px"; inner.style.position = "relative"; inner.replaceChildren(); const top = body.scrollTop; const i0 = Math.max(0, Math.floor(top / RH) - 5), i1 = Math.min(rows.length, i0 + Math.ceil(body.clientHeight / RH) + 10);
@@ -1053,7 +1154,7 @@ function writeHash() {
     const D = App.D; if (!D) return; const V = Overview.V; const p = new URLSearchParams();
     p.set("d", D.man.input.sha256.slice(0, 10)); p.set("view", App.view); p.set("o", `${App.order.taxaMode},${App.order.lociMode}`);
     p.set("v", [V.x0, V.y0, V.cw, V.ch].map(v => +v.toFixed(3)).join(","));
-    const dc = Detail.cur(); if (dc && App.panels.detail) p.set(dc.kind === "taxon" ? "t" : "l", dc.i);
+    const dc = Detail.cur(); if (dc && App.panels.detail) { p.set(dc.kind === "taxon" ? "t" : "l", dc.i); const ds = App.panels.detail.P.el.querySelector(".crumb select"); if (ds) p.set("dv", ds.value); }
     const sc = Sequence.cur(); if (sc && App.panels.sequence) p.set("c", `${sc.g},${sc.li}`);
     try { history.replaceState(null, "", "#" + p.toString()); } catch (e) { /* a sandboxed host may refuse */ }
   }, 150);
@@ -1062,13 +1163,16 @@ function readHash() {
   const D = App.D; const h = location.hash.slice(1); if (!h) return; const p = new URLSearchParams(h);
   if (p.get("d") && p.get("d") !== D.man.input.sha256.slice(0, 10)) return;
   if (p.get("o")) { const [a, b] = p.get("o").split(","); const ve = Overview.viewEl(); if (a) { Overview.setOrder("taxa", a); ve.taxaSel.value = a; } if (b) { Overview.setOrder("loci", b); ve.lociSel.value = b; } }
-  if (p.get("v")) { const [x0, y0, cw, ch] = p.get("v").split(",").map(Number); if ([x0, y0, cw, ch].every(Number.isFinite)) { Overview.V.x0 = x0; Overview.V.y0 = y0; Overview.V.cw = cw; Overview.V.ch = ch; Overview.labelSpace(); App._viewFromHash = true; } }
+  if (p.get("v")) { const [x0, y0, cw, ch] = p.get("v").split(",").map(Number); if ([x0, y0, cw, ch].every(Number.isFinite)) { Overview.V.x0 = x0; Overview.V.y0 = y0; Overview.V.cw = cw; Overview.V.ch = ch; Overview.V.user = true; Overview.labelSpace(); App._viewFromHash = true; } }
   if (p.get("view")) App.view = p.get("view");
+  if (p.get("dv")) Detail.setView(p.get("dv"));
   if (p.get("t")) Detail.open("taxon", +p.get("t")); else if (p.get("l")) Detail.open("locus", +p.get("l"));
   if (p.get("c")) { const [g, li] = p.get("c").split(",").map(Number); Sequence.open(g, li); }
 }
 const _render = Overview.render;
 Overview.render = function () { if (App._viewFromHash) { App._viewFromHash = false; const V = Overview.V; const keep = { ...V }; _render(); Object.assign(V, keep); Overview.labelSpace(); Overview.redraw(); return; } _render(); };
+// the alignment panel redraws when its row is resized
+new ResizeObserver(debounce(() => { const p = App.panels.sequence; if (p && p.redraw) p.redraw(); }, 120)).observe(document.body);
 
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else boot();
 })();

@@ -686,6 +686,98 @@ def _sha256(path):
     return h.hexdigest()
 
 
+
+def _nj(D):
+    """neighbour joining on a distance matrix (numpy, n x n): an unrooted tree as an adjacency dict
+    node -> [(neighbour, length)], tips numbered 0..n-1; negative branch lengths are clamped to zero"""
+    n = len(D); adj = {i: [] for i in range(n)}; nxt = n
+    dist = {(i, j): float(D[i, j]) for i in range(n) for j in range(i + 1, n)}
+    d = lambda i, j: dist[(i, j)] if i < j else dist[(j, i)]
+    active = list(range(n))
+    while len(active) > 2:
+        m = len(active); r = {i: sum(d(i, j) for j in active if j != i) for i in active}
+        best = None
+        for a in range(m):
+            for b in range(a + 1, m):
+                i, j = active[a], active[b]; q = (m - 2) * d(i, j) - r[i] - r[j]
+                if best is None or q < best[0]: best = (q, i, j)
+        _, i, j = best; dij = d(i, j)
+        li = 0.5 * dij + (r[i] - r[j]) / (2 * (m - 2)); lj = dij - li
+        li, lj = max(li, 0.0), max(lj, 0.0)
+        u = nxt; nxt += 1; adj[u] = [(i, li), (j, lj)]; adj[i].append((u, li)); adj[j].append((u, lj))
+        for k in active:
+            if k not in (i, j): dist[(min(u, k), max(u, k))] = max(0.5 * (d(i, k) + d(j, k) - dij), 0.0)
+        active = [k for k in active if k not in (i, j)] + [u]
+    if len(active) == 2:
+        i, j = active; l = max(d(i, j), 0.0); adj[i].append((j, l)); adj[j].append((i, l))
+    return adj
+
+
+def _tree_split(adj, u, v, ntips):
+    """the tips on u's side of the edge (u, v)"""
+    seen = {u}; stack = [u]; out = set()
+    while stack:
+        x = stack.pop()
+        if x < ntips: out.add(x)
+        for y, _ in adj[x]:
+            if (x == u and y == v) or y in seen: continue
+            seen.add(y); stack.append(y)
+    return frozenset(out)
+
+
+def _root_on_edge(adj, u, v, f):
+    """a new root node on edge (u, v), the fraction f of the edge's length from u"""
+    l = next(ln for y, ln in adj[u] if y == v); r = max(adj) + 1
+    adj[u] = [(y, ln) for y, ln in adj[u] if y != v] + [(r, l * f)]
+    adj[v] = [(y, ln) for y, ln in adj[v] if y != u] + [(r, l * (1 - f))]
+    adj[r] = [(u, l * f), (v, l * (1 - f))]
+    return r
+
+
+def _midpoint_edge(adj, ntips):
+    """the edge and fraction where the midpoint of the longest tip-to-tip path lies: (u, v, f)"""
+    best = None
+    for a in range(ntips):                                       # paths from every tip: n is tiny
+        stack = [(a, None, 0.0, [a])]
+        while stack:
+            x, parent, dist_, path = stack.pop()
+            if x < ntips and x != a and (best is None or dist_ > best[0]): best = (dist_, path)
+            for y, ln in adj[x]:
+                if y != parent: stack.append((y, x, dist_ + ln, path + [y]))
+    total, path = best; half = total / 2.0; cum = 0.0
+    for u, v in zip(path, path[1:]):
+        l = next(ln for y, ln in adj[u] if y == v)
+        if cum + l >= half or (u, v) == (path[-2], path[-1]): return u, v, 0.0 if l == 0 else min(max((half - cum) / l, 0.0), 1.0)
+        cum += l
+    return path[0], path[1], 0.5
+
+
+def _newick(adj, root, labels):
+    def rec(x, parent):
+        kids = [(y, ln) for y, ln in adj[x] if y != parent]
+        if not kids: return labels[x]
+        return "(" + ",".join(f"{rec(y, x)}:{ln:.3f}" for y, ln in kids) + ")"
+    return rec(root, None) + ";"
+
+
+def cell_trees(D_exp, D_obs, labels):
+    """the face-to-face trees of one cell: neighbour joining on the expected and the observed distances, the
+    expected tree midpoint-rooted, the observed tree rooted on the edge with the same bipartition (or the edge
+    whose bipartition is closest). Returns (expected newick, observed newick, tips moved by the closest split)"""
+    n = len(labels)
+    if n < 2: return None
+    te = _nj(D_exp); u, v, f = _midpoint_edge(te, n); split = _tree_split(te, u, v, n); re_ = _root_on_edge(te, u, v, f)
+    to = _nj(D_obs); best = None; alltips = frozenset(range(n))
+    for x in list(to):
+        for y, _ in to[x]:
+            if x < y:
+                sx = _tree_split(to, x, y, n); moved = min(len(sx ^ split), len(sx ^ (alltips - split)))
+                if best is None or moved < best[0]: best = (moved, x, y, sx)
+    moved, x, y, sx = best
+    same_side = len(sx ^ split) <= len(sx ^ (alltips - split))      # orient the fraction from the side the expected root's u was on
+    ro = _root_on_edge(to, x, y, f if same_side else 1 - f)
+    return _newick(te, re_, labels), _newick(to, ro, labels), moved
+
 def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
     """report.npz, a ZIP of .npy members and JSON that np.load opens like an .npz, and report.html, the viewer with
     the bundle inline as base64 (or beside it in report_data.js when it is too large for one file)"""
@@ -708,6 +800,7 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
             put("cells/comparators.npy", rep["comparators"])
         for li, (cells_, blk) in rep["codes"].items():
             put(f"codes/{li}.npy", blk); put(f"codes/{li}_cells.npy", cells_)
+        for li, tr in rep["trees"].items(): put_json(f"trees/{li}.json", tr)
         for li, (rows_, blk) in rep["seqs"].items():
             put(f"seq/{li}.npy", blk); put(f"seq/{li}_taxa.npy", rows_)
         put("taxa/closest.npy", rep["closest"])
@@ -739,7 +832,7 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
             dataset=a.name or (os.path.basename(os.path.dirname(os.path.abspath(a.aln))) if os.path.splitext(os.path.basename(a.aln))[0].lower() == "alignment" and os.path.basename(os.path.dirname(os.path.abspath(a.aln))) not in ("", ".", "work") else os.path.splitext(os.path.basename(a.aln))[0]),
             counts=counts, test=dict(comparisons=int(rep["Npairs"]), bonferroni_k=round(float(rep["kq"]), 4), log_bar=round(float(rep["logbar"]), 4),
                                      phi_dataset=round(float(rep["phi_bar"]), 6), lr_bar=LR_BAR, half=HALF),
-            carried=dict(numeric_columns="dense" if dense else "sparse", codes=a.report_codes, sequences=rep["seq_policy"],
+            carried=dict(numeric_columns="dense" if dense else "sparse", codes=a.report_codes, sequences=rep["seq_policy"], trees="masked",
                          best_match_cells="all" if n <= BEST_MATCH_ALL_MAX_TAXA else "fails"),
             code_map=dict(mismatch_count_max=K_eff, similar_base=CODE_SIMILAR, tick=CODE_TICK, absent=CODE_ABSENT),
             side_bits=dict(masked_divergent=1, masked_similar=2, ambiguous=4, direction_identified=8, flagged_not_masked=16, similar_not_masked=32),
@@ -1159,7 +1252,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     for k, dt, fill in NUMCOLS: rep[k] = np.full((n, nloc), fill, dt) if dense else []
     rep["comparators"] = np.full((n, nloc, K_eff), -1, np.int32) if dense else []
     rep["dense"] = dense; sparse_loc, sparse_tax = [], []
-    rep["codes"] = {}; rep["seqs"] = {}; rep["loc_status"] = ["tested"] * nloc; rep["phi"] = np.full(nloc, np.nan)
+    rep["codes"] = {}; rep["seqs"] = {}; rep["trees"] = {}; rep["loc_status"] = ["tested"] * nloc; rep["phi"] = np.full(nloc, np.nan)
     codes_policy, seq_policy = rep["codes_policy"], rep["seq_policy"]
     bm_all = n <= BEST_MATCH_ALL_MAX_TAXA
 
@@ -1302,6 +1395,27 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
                     row = np.where(pres, np.minimum(k_, 127), CODE_ABSENT).astype(np.uint8)
                 blk_c[r_] = row
             codes_out = (idx[qs].astype(np.int32), blk_c)
+        # face-to-face trees for the report cells: the focal, its comparators, the partner and the best match
+        trees_out = None
+        if masked_q.any():
+            Xs_ = Xs if Xs is not None else X[:, sites]
+            tcells, texp, tobs, tmoved, ttips = [], [], [], [], []
+            for q in np.flatnonzero(masked_q).tolist():
+                g = int(idx[q]); tips = [g] + [int(c) for c in top[g] if c >= 0]
+                if partner_[q] >= 0 and int(partner_[q]) not in tips: tips.append(int(partner_[q]))
+                if best_[q] >= 0 and int(best_[q]) not in tips: tips.append(int(best_[q]))
+                if len(tips) < 2: continue
+                tarr = np.array(tips); nt = len(tips); rows_t = Xs_[tarr]; pres_t = rows_t >= 0
+                both = pres_t[:, None, :] & pres_t[None, :, :]; nb = both.sum(2)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    Do = np.where(nb > 0, 100.0 * ((rows_t[:, None, :] != rows_t[None, :, :]) & both).sum(2) / np.maximum(nb, 1), np.nan)
+                    mv = m[np.ix_(tarr, tarr)]; De = np.where(np.isfinite(mv), expect(np.where(np.isfinite(mv), mv, 1.0)), np.nan)
+                np.fill_diagonal(De, 0.0); np.fill_diagonal(Do, 0.0)
+                if np.isnan(De).any(): De = np.where(np.isnan(De), np.nanmax(De) if np.isfinite(np.nanmax(De)) else 50.0, De)
+                if np.isnan(Do).any(): Do = np.where(np.isnan(Do), De, Do)
+                t = cell_trees(De, Do, [str(x) for x in tips])
+                if t: tcells.append(g); texp.append(t[0]); tobs.append(t[1]); tmoved.append(t[2]); ttips.append(tips)
+            if tcells: trees_out = dict(cells=tcells, expected=texp, observed=tobs, moved=tmoved, tips=ttips)
         seq_out = None
         if seq_policy != "none":
             if seq_policy == "all": rows_s = np.flatnonzero(nres > 0)
@@ -1317,7 +1431,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         repblk = dict(idx=idx, n_comp=kc.astype(np.uint8), n_fail=nf.astype(np.uint8), n_similar=nsim.astype(np.uint8), side=side_,
                       med_identity=med_i, med_expected=med_e, excess_m=exm, closest=ci[s0].astype(np.int32), closest_overlap=o[s0].astype(np.uint32),
                       closest_identity=ident[s0], closest_expected=100.0 - dhat[s0], best_match=best_, best_match_identity=bident_,
-                      partner=partner_, lam=lam_, lam_p=lamp_, comparators=top[idx].astype(np.int32), fail_q=fail_q, codes=codes_out, seq=seq_out)
+                      partner=partner_, lam=lam_, lam_p=lamp_, comparators=top[idx].astype(np.int32), fail_q=fail_q, codes=codes_out, seq=seq_out, trees=trees_out)
 
         gd = expect(grid_m)
         trends_block = (lname + "\t%.4f\t%.4f\t%.4f\t%.4f\n") * len(grid_m) % tuple(chain.from_iterable(zip(
@@ -1352,6 +1466,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
             rep["comparators"].append(r["comparators"][sel_])
         if r["codes"] is not None: rep["codes"][li] = r["codes"]
         if r["seq"] is not None: rep["seqs"][li] = r["seq"]
+        if r["trees"] is not None: rep["trees"][li] = r["trees"]
         if PROG.mode == "lines":
             tb = np.zeros(n, bool); tb[idx_] = True
             PROG.event("locus", li, name, np.packbits(tb).tobytes().hex(), ",".join(map(str, idx_[(r["side"] & 1) > 0].tolist())), ",".join(map(str, idx_[(r["side"] & 2) > 0].tolist())))
