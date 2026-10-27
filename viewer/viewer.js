@@ -752,8 +752,8 @@ const Detail = (() => {
     for (const [f, lab] of [[2, "100%"], [3, "200%"], [6, "500%"], [1 / 2, "100%"], [1 / 3, "200%"], [1 / 6, "500%"]]) {
       const e = seg(f); if (!e) continue; const ang = Math.atan2(e[3] - e[1], e[2] - e[0]) * 180 / Math.PI;
       const at = f > 1 ? 0.78 : 0.22; const lx = e[0] + (e[2] - e[0]) * at, ly = e[1] + (e[3] - e[1]) * at;      // the label sits on the line, the line broken behind it
-      ctG.append("line").attr("x1", e[0]).attr("y1", e[1]).attr("x2", e[2]).attr("y2", e[3]).attr("stroke", cssVar("--muted")).attr("stroke-width", 0.7).attr("stroke-opacity", 0.75);
-      const t = ctG.append("text").attr("transform", `translate(${lx},${ly}) rotate(${ang})`).attr("text-anchor", "middle").attr("dy", "0.35em").attr("font-size", 9).attr("fill", cssVar("--muted")).attr("stroke", cssVar("--surface")).attr("stroke-width", 4).attr("paint-order", "stroke").text(lab);
+      ctG.append("line").attr("x1", e[0]).attr("y1", e[1]).attr("x2", e[2]).attr("y2", e[3]).attr("stroke", cssVar("--muted")).attr("stroke-width", 0.7).attr("stroke-opacity", 0.45).attr("stroke-dasharray", "9 6");
+      const t = ctG.append("text").attr("transform", `translate(${lx},${ly}) rotate(${ang})`).attr("text-anchor", "middle").attr("dy", "0.35em").attr("font-size", 9).attr("fill", cssVar("--muted")).attr("fill-opacity", 0.8).attr("stroke", cssVar("--surface")).attr("stroke-width", 4).attr("paint-order", "stroke").text(lab);
       t.append("title").text(f > 1 ? `observed divergence ${lab} above the expectation (${f}× expected)` : `the expectation ${lab} above the observed divergence (observed = expected ÷ ${Math.round(1 / f)})`);
     }
     wrap.append(svg.node());
