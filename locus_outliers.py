@@ -132,7 +132,7 @@ MIN_LOCI_PER_TAXON = 10 # a taxon needs this many loci with >= fit-overlap resid
 MIN_FIT_PAIRS = 8       # a locus needs this many fit pairs to be tested (or to get a rate)
 LR_BAR = 10.0           # |2 ln LR| above which a similar event's direction is attributed
 TEST_THREAD_PAIRS = 4000  # --threads applies to the test stage only when a locus has this many comparisons on average
-__version__ = "0.10.2"
+__version__ = "0.10.3"
 REPORT_FORMAT = 3                 # bundle format version; the viewer refuses a newer one (3: tree branch lengths are F81-corrected)
 DENSE_CELLS_MAX = 8_000_000       # per-cell numeric report columns are dense (taxa x loci) up to this many cells, sparse beyond
 BEST_MATCH_ALL_MAX_TAXA = 2000    # best matches for every tested cell up to this many taxa; beyond, only for cells with a fail
@@ -758,14 +758,18 @@ def _newick(adj, root, labels):
     return rec(root, None) + ";"
 
 
-def cell_trees(D_exp, D_obs, labels):
+def cell_trees(D_exp, D_obs, labels, og=None):
     """the face-to-face trees of one cell: neighbour joining on the expected and on the observed distances (both
-    F81-corrected with the locus plateau, in percent), each midpoint-rooted. Returns (expected newick, observed newick)"""
+    F81-corrected with the locus plateau, in percent), each rooted at the node where the outgroup tip `og` attaches
+    (midpoint-rooted when there is none). Returns (expected newick, observed newick)"""
     n = len(labels)
     if n < 2: return None
     out = []
     for D in (D_exp, D_obs):
-        t = _nj(D); u, v, f = _midpoint_edge(t, n); r = _root_on_edge(t, u, v, f); out.append(_newick(t, r, labels))
+        t = _nj(D)
+        if og is None: u, v, f = _midpoint_edge(t, n)
+        else: u, v, f = og, t[og][0][0], 1.0
+        r = _root_on_edge(t, u, v, f); out.append(_newick(t, r, labels))
     return tuple(out)
 
 def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
@@ -1454,16 +1458,23 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
                     row = np.where(pres, np.minimum(k_, 127), CODE_ABSENT).astype(np.uint8)
                 blk_c[r_] = row
             codes_out = (idx[qs].astype(np.int32), blk_c)
-        # face-to-face trees for the report cells: the focal, its comparators, the partner and the best match
+        # face-to-face trees for the report cells: the focal, its comparators, the partner and the best match, plus an
+        # outgroup to root both trees on: the taxon at the locus sharing >= fit-overlap sites with every tree taxon
+        # that is the most distant from them genome-wide (largest mean m)
         trees_out = None
         if masked_q.any():
             Xs_ = Xs if Xs is not None else X[:, sites]
-            tcells, texp, tobs, ttips = [], [], [], []
+            tcells, texp, tobs, ttips, togs = [], [], [], [], []
             for q in np.flatnonzero(masked_q).tolist():
                 g = int(idx[q]); tips = [g] + [int(c) for c in top[g] if c >= 0]
                 if partner_[q] >= 0 and int(partner_[q]) not in tips: tips.append(int(partner_[q]))
                 if best_[q] >= 0 and int(best_[q]) not in tips: tips.append(int(best_[q]))
                 if len(tips) < 2: continue
+                og = -1; cand = np.ones(n, bool); cand[tips] = False; cidx = np.flatnonzero(cand)
+                if len(cidx):
+                    tarr0 = np.array(tips); Wsub = Wl[tri_idx[np.ix_(cidx, tarr0)]]; msub = m[np.ix_(cidx, tarr0)]
+                    okog = (Wsub >= a.fit_overlap).all(1) & np.isfinite(msub).all(1)
+                    if okog.any(): og = int(cidx[okog][np.argmax(msub[okog].mean(1))]); tips.append(og)
                 tarr = np.array(tips); nt = len(tips); rows_t = Xs_[tarr]; pres_t = rows_t >= 0
                 both = pres_t[:, None, :] & pres_t[None, :, :]; nb = both.sum(2)
                 with np.errstate(invalid="ignore", divide="ignore"):
@@ -1478,9 +1489,9 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
                 with np.errstate(invalid="ignore", divide="ignore"):
                     De = corr(De); Do = corr(Do)
                 np.fill_diagonal(De, 0.0); np.fill_diagonal(Do, 0.0)
-                t = cell_trees(De, Do, [str(x) for x in tips])
-                if t: tcells.append(g); texp.append(t[0]); tobs.append(t[1]); ttips.append(tips)
-            if tcells: trees_out = dict(cells=tcells, expected=texp, observed=tobs, tips=ttips)
+                t = cell_trees(De, Do, [str(x) for x in tips], tips.index(og) if og >= 0 else None)
+                if t: tcells.append(g); texp.append(t[0]); tobs.append(t[1]); ttips.append(tips); togs.append(tips.index(og) if og >= 0 else -1)
+            if tcells: trees_out = dict(cells=tcells, expected=texp, observed=tobs, tips=ttips, outgroup=togs)
         seq_out = None
         if seq_policy != "none":
             if seq_policy == "all": rows_s = np.flatnonzero(nres > 0)

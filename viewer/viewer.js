@@ -929,31 +929,41 @@ function splitsOf(root) {                                         // the biparti
 function drawCophylo(host, D, entry, k, cell) {
   const { g, li } = cell; const exp = parseNewick(entry.expected[k]), obs = parseNewick(entry.observed[k]);
   const name = x => D.taxa.names[+x]; const partner = D.num("partner", g, li), bm = D.num("best_match", g, li), bmId = D.num("best_match_identity", g, li); const comps = new Set(D.comps(g, li));
-  // ladderise the expected tree, then rotate the observed tree to follow it; midpoint roots come from the tool
-  const ladder = n => { n.children.forEach(ladder); n.children.sort((a, b) => tipsOf(a).length - tipsOf(b).length); }; ladder(exp);
-  const rank = new Map(); tipsOf(exp).forEach((t, i) => rank.set(t.name, i)); orderLike(obs, rank);
+  // ladderise the expected tree, then rotate the observed tree to follow it; the roots come from the tool (on the
+  // outgroup when the bundle carries one, drawn first with a shortened, broken branch; midpoint otherwise)
+  const ogPos = entry.outgroup ? entry.outgroup[k] : -1; const ogName = ogPos >= 0 ? String(entry.tips[k][ogPos]) : null;
+  const isOg = n => !n.children.length && n.name === ogName; const ogFirst = n => { if (ogName) n.children.sort((a, b) => isOg(b) - isOg(a)); };
+  const ladder = n => { n.children.forEach(ladder); n.children.sort((a, b) => tipsOf(a).length - tipsOf(b).length); }; ladder(exp); ogFirst(exp);
+  const rank = new Map(); tipsOf(exp).forEach((t, i) => rank.set(t.name, i)); orderLike(obs, rank); ogFirst(obs);
   splitsOf(exp); splitsOf(obs); const expSplits = new Set(), obsSplits = new Set();
   const collect = (n, out) => { if (n.children.length && n.split && n.set.size > 1 && n.set.size < tipsOf(exp).length - 1) out.add(n.split); n.children.forEach(c => collect(c, out)); }; collect(exp, expSplits); collect(obs, obsSplits);
   const labelOf = t => { const i = +t; return name(t) + (i === bm && !comps.has(i) ? "*" : ""); };          // * : the best match, brought in from outside the comparators
   const meas = document.createElement("canvas").getContext("2d"); meas.font = `bold 11.5px ${cssVar("--sans")}`; const LAB = Math.ceil(d3.max(tipsOf(exp), t => meas.measureText(labelOf(t.name)).width) + 10);
   const nTip = tipsOf(exp).length; const RH = 20, GAP = 44, W = Math.min(820, Math.max(560, 2 * LAB + GAP + 240)), TW = (W - 2 * LAB - GAP - 28) / 2, top = 10, H = top + nTip * RH + 40;
-  const maxD = Math.max(depthOf(exp), depthOf(obs), 1e-6); const sx = d3.scaleLinear().domain([0, maxD]).range([0, TW]);
+  depthOf(exp); depthOf(obs); const inDepth = root => d3.max(tipsOf(root).filter(t => !isOg(t)), t => t.depth) || 0;
+  const maxD = Math.max(inDepth(exp), inDepth(obs), 1e-6); const sx = d3.scaleLinear().domain([0, maxD]).range([0, TW]); const OGLEN = 22;
   assignY(exp, { y: 0 }); assignY(obs, { y: 0 });
   const svg = d3.create("svg").attr("width", W).attr("height", H).attr("class", "tangle");
   const yOf = n => top + n.y * RH + RH / 2;
   const focalCol = D.colorOf(D.state[g * D.nloc + li]) || cssVar("--ink"); const partnerCol = D.colorOf(ST.BLUE + 1) || cssVar("--ink");
   const draw = (root, x0, dir, otherSplits) => {                  // dir +1 draws left to right, -1 right to left
-    const gg = svg.append("g"); const walk = n => { for (const c of n.children) { const xa = x0 + dir * sx(n.depth), xb = x0 + dir * sx(c.depth);
+    const gg = svg.append("g"); const walk = n => { for (const c of n.children) { const og = isOg(c); const xa = x0 + dir * sx(n.depth), xb = og ? x0 + dir * OGLEN : x0 + dir * sx(c.depth); c.xdraw = xb;
       const conflict = c.children.length && c.split && c.set.size > 1 && c.set.size < nTip - 1 && !otherSplits.has(c.split);
-      gg.append("path").attr("d", `M${xa},${yOf(n)}V${yOf(c)}H${xb}`).attr("fill", "none").attr("stroke", conflict ? cssVar("--ink") : cssVar("--muted")).attr("stroke-width", conflict ? 2.6 : 1.2).append("title").text(conflict ? "this split is not in the other tree" : `branch length ${fmt1(c.length)}%`);
-      if (!c.children.length) { const isF = +c.name === g, isBM = +c.name === bm, isP = +c.name === partner; gg.append("circle").attr("cx", xb).attr("cy", yOf(c)).attr("r", 3).attr("fill", isF ? focalCol : cssVar("--surface")).attr("stroke", isF ? focalCol : isP ? partnerCol : cssVar("--muted")).attr("stroke-width", 1.2);
-        const lab = gg.append("text").attr("x", xb + dir * 6).attr("y", yOf(c) + 4).attr("text-anchor", dir > 0 ? "start" : "end").attr("font-size", 11.5).attr("font-weight", isF || isBM ? 700 : 400).attr("fill", isF ? focalCol : isP ? partnerCol : cssVar("--ink")).text(labelOf(c.name));
-        lab.append("title").text(`${name(c.name)}: ${fmt1(c.depth)}% ${D.format >= 3 ? "corrected divergence" : "divergence"} from the root of this tree`); }
+      gg.append("path").attr("d", `M${xa},${yOf(n)}V${yOf(c)}H${xb}`).attr("fill", "none").attr("stroke", conflict ? cssVar("--ink") : cssVar("--muted")).attr("stroke-width", conflict ? 2.6 : 1.2).append("title").text(conflict ? "this split is not in the other tree" : og ? `the outgroup's branch, ${fmt1(c.length)}%, drawn shortened` : `branch length ${fmt1(c.length)}%`);
+      if (og) { const xm = (xa + xb) / 2, y = yOf(c);                                                     // the break marks on the shortened branch
+        gg.append("line").attr("x1", xm - 2.5).attr("x2", xm + 2.5).attr("y1", y + 4).attr("y2", y - 4).attr("stroke", cssVar("--surface")).attr("stroke-width", 4);
+        gg.append("line").attr("x1", xm - 3.5).attr("x2", xm + 0.5).attr("y1", y + 4).attr("y2", y - 4).attr("stroke", cssVar("--muted")).attr("stroke-width", 1.2);
+        gg.append("line").attr("x1", xm + 0.5).attr("x2", xm + 4.5).attr("y1", y + 4).attr("y2", y - 4).attr("stroke", cssVar("--muted")).attr("stroke-width", 1.2); }
+      if (!c.children.length) { const isF = +c.name === g, isBM = +c.name === bm, isP = +c.name === partner;
+        if (og) gg.append("rect").attr("x", xb - 3).attr("y", yOf(c) - 3).attr("width", 6).attr("height", 6).attr("fill", cssVar("--surface")).attr("stroke", cssVar("--muted")).attr("stroke-width", 1.2);
+        else gg.append("circle").attr("cx", xb).attr("cy", yOf(c)).attr("r", 3).attr("fill", isF ? focalCol : cssVar("--surface")).attr("stroke", isF ? focalCol : isP ? partnerCol : cssVar("--muted")).attr("stroke-width", 1.2);
+        const lab = gg.append("text").attr("x", xb + dir * 6).attr("y", yOf(c) + 4).attr("text-anchor", dir > 0 ? "start" : "end").attr("font-size", 11.5).attr("font-weight", (isF || isBM) && !og ? 700 : 400).attr("fill", og ? cssVar("--muted") : isF ? focalCol : isP ? partnerCol : cssVar("--ink")).text(labelOf(c.name));
+        lab.append("title").text(og ? `${name(c.name)}: the outgroup both trees are rooted on (the taxon at this locus most distant from these taxa genome-wide); its branch is drawn shortened` : `${name(c.name)}: ${fmt1(c.depth)}% ${D.format >= 3 ? "corrected divergence" : "divergence"} from the root of this tree`); }
       walk(c); } }; walk(root); return gg; };
   draw(exp, 8, 1, obsSplits); draw(obs, W - 8, -1, expSplits);
   const obsTips = new Map(); tipsOf(obs).forEach(t => obsTips.set(t.name, t));
   for (const t of tipsOf(exp)) { const o = obsTips.get(t.name); if (!o) continue;      // the connector runs through the gap between the two label columns
-    const x1 = 8 + sx(t.depth) + 6 + meas.measureText(labelOf(t.name)).width + 4, x2 = W - 8 - sx(o.depth) - 6 - meas.measureText(labelOf(t.name)).width - 4;
+    const x1 = t.xdraw + 6 + meas.measureText(labelOf(t.name)).width + 4, x2 = o.xdraw - 6 - meas.measureText(labelOf(t.name)).width - 4;
     svg.append("line").attr("x1", x1).attr("x2", x2).attr("y1", yOf(t)).attr("y2", yOf(o)).attr("stroke", yOf(t) === yOf(o) ? cssVar("--grid") : cssVar("--floor")).attr("stroke-dasharray", "2 3"); }
   const bar = Math.pow(10, Math.floor(Math.log10(maxD))) * (maxD / Math.pow(10, Math.floor(Math.log10(maxD))) >= 5 ? 2 : 1);
   const by = H - 12; svg.append("line").attr("x1", 8).attr("x2", 8 + sx(bar)).attr("y1", by).attr("y2", by).attr("stroke", cssVar("--ink")).attr("stroke-width", 1.5);
@@ -963,7 +973,7 @@ function drawCophylo(host, D, entry, k, cell) {
   q.append("circle").attr("r", 8).attr("fill", "none").attr("stroke", cssVar("--muted")).attr("stroke-width", 1.2); q.append("text").attr("y", 4).attr("text-anchor", "middle").attr("font-size", 11).attr("font-weight", 700).attr("fill", cssVar("--muted")).text("?");
   const explain = el("div", { style: "max-width: 380px" },
     el("div", null, el("b", null, "Two neighbour-joining trees"), " over the focal sequence (filled dot, in its mask colour), its comparators, the partner of a too-similar pair (in the too-similar colour), and the best match, the taxon closest to the focal by per-site divergence compared on the same sites (in bold; marked * when it is not one of the comparators" + (bmId !== null ? `; identity ${fmt1(bmId)}%` : "") + ")."),
-    el("div", { style: "margin-top: 4px" }, el("b", null, "Left:"), (D.format >= 3 ? " the distances the test expects for every pair: each pair's genome-wide divergence, F81-corrected with this locus's plateau and scaled by its rate. " : " the distances the test expects for every pair, each pair's genome-wide divergence through this locus's expectation. "), el("b", null, "Right:"), (D.format >= 3 ? " the divergence observed at this locus over shared sites, corrected the same way (capped at 0.98 of the plateau). Both midpoint-rooted, one scale in corrected divergence; negative branches drawn as zero." : " the mismatch fractions observed at this locus over shared sites. Both midpoint-rooted, one scale; negative branches drawn as zero.")),
+    el("div", { style: "margin-top: 4px" }, el("b", null, "Left:"), (D.format >= 3 ? " the distances the test expects for every pair: each pair's genome-wide divergence, F81-corrected with this locus's plateau and scaled by its rate. " : " the distances the test expects for every pair, each pair's genome-wide divergence through this locus's expectation. "), el("b", null, "Right:"), (D.format >= 3 ? " the divergence observed at this locus over shared sites, corrected the same way (capped at 0.98 of the plateau). " + (ogName ? "Both rooted on the same outgroup (hollow square, muted): the taxon at this locus most distant from these taxa genome-wide; its branch is drawn shortened, with a break. One scale over the ingroup, in corrected divergence; negative branches drawn as zero." : "Both midpoint-rooted, one scale in corrected divergence; negative branches drawn as zero.") : " the mismatch fractions observed at this locus over shared sites. Both midpoint-rooted, one scale; negative branches drawn as zero.")),
     el("div", { style: "margin-top: 4px" }, "Thick branches are splits absent from the other tree; dotted lines join the same taxon on both sides."),
     el("div", { style: "margin-top: 4px", class: "more" }, "A long focal branch with its neighbours unchanged is a damaged copy of the right sequence. A focal that moves across to its best match points to contamination or a paralogue. A whole clade pushed away from the rest on one long branch is a paralogue shared by the clade. A best match on its own long branch is merely the least different taxon, not a relative."));
   q.on("mouseenter", ev => showHover(explain, ev.clientX, ev.clientY)).on("mouseleave", hideHover);
