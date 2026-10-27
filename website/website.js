@@ -71,7 +71,7 @@ function stageRow(key, label) { const row = document.createElement("div"); row.c
 async function run() {
   const f = $("#aln").files[0]; const parts = $("#parts").files[0]; if (!f) return;
   const dtype = document.querySelector("input[name=dt]:checked").value;
-  const args = ["--datatype", dtype, "--n-comp", $("#ncomp").value, "--fit-overlap", $("#fit").value, "--alpha", $("#alpha").value, "--min-ratio", $("#ratio").value];
+  const args = ["--datatype", dtype, "--n-comp", $("#ncomp").value, "--fit-overlap", $("#fit").value, "--alpha", $("#alpha").value];
   if ($("#simonly").checked) args.push("--mask-similar-only"); if ($("#divonly").checked) args.push("--mask-different-only");
   args.push("--name", f.name.replace(/\.[^.]+$/, ""));
   $("#go").disabled = true; $("#cancel").style.display = ""; $("#err").textContent = ""; $("#status").textContent = "starting…";

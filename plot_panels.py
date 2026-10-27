@@ -33,8 +33,7 @@ Pages
 
 In the panels a point is a cell, placed at the median over its comparators of the divergence the
 locus expects for the pair (x) and of the divergence observed (y) — the two numbers the cell
-decision is made on. The diagonal is the expectation; the dashed lines are the effect floors
-(2x above, 1/3 below). Shape is the verdict: circles pass, triangles pointing up are masked as too
+decision is made on. The diagonal is the expectation. Shape is the verdict: circles pass, triangles pointing up are masked as too
 divergent, triangles pointing down as too similar. Colour repeats the verdict and grades it:
 greys by comparators failed (0, 1, 2), reds by comparators failed (3, 4, 5; an ambiguous cell,
 masked with fewer comparators than requested, takes the lightest red), blues by too-similar
@@ -146,7 +145,7 @@ def panels(by):
         (xlo, xhi), (ylo, yhi) = ax.get_xlim(), ax.get_ylim()
         ax.set_autoscale_on(False)
         g = np.array([min(xlo, ylo) / 10, max(xhi, yhi) * 10])
-        ax.plot(g, g, color=MODEL, lw=1.1, zorder=1); ax.plot(g, 2 * g, color=FLOOR, lw=0.8, ls=(0, (3, 2)), zorder=1); ax.plot(g, g / 3, color=FLOOR, lw=0.8, ls=(0, (3, 2)), zorder=1)
+        ax.plot(g, g, color=MODEL, lw=1.1, zorder=1)
         nm = int(MASKED[idx].sum()); n = len(idx)
         title, fs = fit_title(k, pw - 0.25)
         ax.set_title(title, fontsize=fs, color=INK, pad=12, linespacing=0.95)
@@ -168,7 +167,7 @@ def panels(by):
     head = f"{NAME}  ·  {'Locus' if by == 'locus' else 'Taxon'} plot"
     sub = f"{int(MASKED.sum()):,} of {len(R):,} sequences masked ({100 * MASKED.sum() / len(R):.1f}%)"
     note = ("each point represents a single sequence (a single locus in a single taxon), diagonal line is where the observed is the same as the expected "
-            "divergence, dashed lines are the thresholds used for defining outliers (2x above, 1/3 below)" + (f"  ·  the {len(order)} most masked of {NTOT} {unit} are shown" if len(order) < NTOT else ""))
+            "divergence" + (f"  ·  the {len(order)} most masked of {NTOT} {unit} are shown" if len(order) < NTOT else ""))
     fig.text(0.01, 1 - 0.14 / H, head, fontsize=11, color=INK, fontweight="bold", ha="left", va="top")
     fig.text(0.01, 1 - 0.36 / H, sub, fontsize=9, color=INK, ha="left", va="top")
     fig.text(0.01, 1 - 0.55 / H, note, fontsize=7.5, color=MUTED, ha="left", va="top")

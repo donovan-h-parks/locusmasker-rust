@@ -5,8 +5,8 @@
 
 Reads pairs.npy (so the pair must have been compared: one must be among the other's comparators)
 and masked.csv. Left: one point per locus, x = the divergence the locus expects for this pair
-(its rate at the pair's m), y = what it shows; the diagonal is the expectation, the dashed lines
-the effect floors (2x above, 1/3 below). Right: the same ratios as a histogram. Colours are the
+(its rate at the pair's m), y = what it shows; the diagonal is the expectation. Right: the same
+ratios as a histogram. Colours are the
 pair's own verdict at each locus: red = too divergent, blue = too similar, grey = within
 expectation. A dark ring marks loci where TAXON_A's cell was masked (majority over its
 comparators, or an attributed similar event). The --label N most extreme loci are named."""
@@ -49,7 +49,7 @@ ax.scatter(x[order], y[order], s=14, c=col[order], alpha=0.85, linewidths=0, zor
 if (ring & inf).any(): ax.scatter(x[ring & inf], y[ring & inf], s=40, facecolors="none", edgecolors=INK, linewidths=0.8, zorder=4)
 lim = (min(x[inf].min(), y[inf].min()) / 1.5, max(x[inf].max(), y[inf].max()) * 1.5)
 g = np.array(lim)
-ax.plot(g, g, color=MODEL, lw=1.3, zorder=2); ax.plot(g, 2 * g, color=FLOOR, lw=0.9, ls=(0, (3, 2)), zorder=2); ax.plot(g, g / 3, color=FLOOR, lw=0.9, ls=(0, (3, 2)), zorder=2)
+ax.plot(g, g, color=MODEL, lw=1.3, zorder=2)
 ax.set_xscale("log"); ax.set_yscale("log"); ax.set_xlim(*lim); ax.set_ylim(*lim); ax.set_aspect("equal")
 pre = os.path.commonprefix(loci); suf = os.path.commonprefix([l[::-1] for l in loci])[::-1]   # the part of a name that varies
 short = lambda l: l[len(pre):len(l) - len(suf)] or l
@@ -73,7 +73,7 @@ handles = [Line2D([], [], marker="o", ls="", color=GREY, ms=5, label="within exp
            Line2D([], [], marker="o", ls="", color=RED, ms=5, label="too divergent (pair fails)"),
            Line2D([], [], marker="o", ls="", color=BLUE, ms=5, label="too similar (pair fails)"),
            Line2D([], [], marker="o", ls="", mfc="none", mec=INK, ms=6, label=f"{a.a}'s cell masked"),
-           Line2D([], [], color=MODEL, lw=1.3, label="expected"), Line2D([], [], color=FLOOR, lw=0.9, ls=(0, (3, 2)), label="effect floors (2x, 1/3)")]
+           Line2D([], [], color=MODEL, lw=1.3, label="expected")]
 fig.legend(handles=handles, loc="lower center", ncol=6, frameon=False, fontsize=7, bbox_to_anchor=(0.5, -0.01), labelcolor=INK)
 for axx in (ax, hx):
     for s in ("top", "right"): axx.spines[s].set_visible(False)

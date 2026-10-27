@@ -6,7 +6,7 @@
 Reads cells.tsv and masked.csv. One point per locus: x = the median over the taxon's comparators
 of the divergence the locus expects for that pair (its rate at the pair's m), y = the median over
 the same comparators of the divergence observed; these medians are what the cell decision uses.
-Diagonal = expectation, dashed = effect floors (2x above, 1/3 below). Colour is the cell's verdict:
+Diagonal = expectation. Colour is the cell's verdict:
 greys pass (darker the more comparators it fails against), reds are masked too divergent (by how
 many of the comparators it fails: a majority up to all), blues are masked too similar (hollow blue:
 in a similar-side event but not masked), hollow red: ambiguous (fewer comparators than requested).
@@ -59,7 +59,7 @@ for k, c in BLUES.items():
     s = smk & (np.minimum(nsim, 3) == k) & inf
     if s.any(): ax.scatter(x[s], y[s], s=20, color=c, edgecolors=SURF, linewidths=0.5, zorder=6)
 lim = (min(x[inf].min(), y[inf].min()) / 1.5, max(x[inf].max(), y[inf].max()) * 1.5); g = np.array(lim)
-ax.plot(g, g, color=MODEL, lw=1.3, zorder=1); ax.plot(g, 2 * g, color=FLOOR, lw=0.9, ls=(0, (3, 2)), zorder=1); ax.plot(g, g / 3, color=FLOOR, lw=0.9, ls=(0, (3, 2)), zorder=1)
+ax.plot(g, g, color=MODEL, lw=1.3, zorder=1)
 ax.set_xscale("log"); ax.set_yscale("log"); ax.set_xlim(*lim); ax.set_ylim(*lim); ax.set_aspect("equal")
 pre = os.path.commonprefix(loci); suf = os.path.commonprefix([l[::-1] for l in loci])[::-1]
 short = lambda l: l[len(pre):len(l) - len(suf)] or l
@@ -78,14 +78,14 @@ hx.hist([ratio[s] for s, _ in groups], bins=bins, color=[c for _, c in groups], 
 hx.set_yscale("log"); hx.set_ylim(0.8, None)
 hx.yaxis.set_major_locator(matplotlib.ticker.LogLocator(base=10, subs=(1.0, 2.0, 5.0))); hx.yaxis.set_minor_locator(matplotlib.ticker.NullLocator())
 hx.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{int(round(v)):,}" if v >= 1 else ""))
-hx.axvline(0, color=MODEL, lw=1.3); hx.axvline(1, color=FLOOR, lw=0.9, ls=(0, (3, 2))); hx.axvline(-np.log2(3), color=FLOOR, lw=0.9, ls=(0, (3, 2)))
+hx.axvline(0, color=MODEL, lw=1.3)
 hx.set_xlabel("log2 (observed / expected), medians over comparators", fontsize=8, color=MUTED); hx.set_ylabel("loci", fontsize=8, color=MUTED)
 hx.set_title(f"{int(inf.sum())} loci with a difference expected or seen · log count axis", fontsize=7, color=MUTED, loc="left", pad=4)
 handles = [Line2D([], [], marker="o", ls="", color=c, ms=4.5, label=("passes · " if k == 0 else "") + f"fails {k} of {NC}") for k, c in GREYS.items()] + \
           [Line2D([], [], marker="o", ls="", color=c, mec=SURF, ms=5.5, label=("masked, too divergent · " if k == LOW else "") + f"fails {k} of {NC}") for k, c in REDS.items()] + \
           [Line2D([], [], marker="o", ls="", color=BLUES[k], mec=SURF, ms=5.5, label=("masked, too similar · " if k == 1 else "") + f"{k}{'+' if k == 3 else ''} pair{'s' if k > 1 else ''}") for k in (1, 2, 3)] + \
           [Line2D([], [], marker="o", ls="", mfc="none", mec=SIMRING, ms=6, label="in a similar event, not masked"),
-           Line2D([], [], marker="o", ls="", mfc="none", mec=AMB, ms=6, label="ambiguous"), Line2D([], [], color=MODEL, lw=1.3, label="expected"), Line2D([], [], color=FLOOR, lw=0.9, ls=(0, (3, 2)), label="effect floors (2x, 1/3)")]
+           Line2D([], [], marker="o", ls="", mfc="none", mec=AMB, ms=6, label="ambiguous"), Line2D([], [], color=MODEL, lw=1.3, label="expected")]
 fig.legend(handles=handles, loc="lower center", ncol=6, frameon=False, fontsize=6.5, bbox_to_anchor=(0.5, -0.04), labelcolor=INK, columnspacing=1.2, handletextpad=0.4)
 for axx in (ax, hx):
     for s_ in ("top", "right"): axx.spines[s_].set_visible(False)

@@ -180,7 +180,7 @@ def main():
     os.environ["OMP_NUM_THREADS"] = "4"
     pilot = sys.argv[1:] and sys.argv[1] == "pilot"
     datasets = (["Dornburg_2012", "Oaks_2011", "Wainwright_2012"] if pilot
-                else sorted(d for d in os.listdir(DATA) if os.path.isdir(f"{DATA}/{d}")))
+                else sorted(d for d in os.listdir(DATA) if os.path.isdir(f"{DATA}/{d}") and os.path.exists(f"{DATA}/{d}/alignment.nex")))   # NEXUS datasets only (test_data also holds FASTA sets and scratch)
     with ProcessPoolExecutor(max_workers=16) as ex:
         usable = []
         for ds, st in ex.map(prep, datasets):
