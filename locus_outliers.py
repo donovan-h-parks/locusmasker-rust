@@ -132,11 +132,11 @@ MIN_LOCI_PER_TAXON = 10 # a taxon needs this many loci with >= fit-overlap resid
 MIN_FIT_PAIRS = 8       # a locus needs this many fit pairs to be tested (or to get a rate)
 LR_BAR = 10.0           # |2 ln LR| above which a similar event's direction is attributed
 TEST_THREAD_PAIRS = 4000  # --threads applies to the test stage only when a locus has this many comparisons on average
-__version__ = "0.10.0"
+__version__ = "0.10.1"
 REPORT_FORMAT = 2                 # bundle format version; the viewer refuses a newer one
 DENSE_CELLS_MAX = 8_000_000       # per-cell numeric report columns are dense (taxa x loci) up to this many cells, sparse beyond
 BEST_MATCH_ALL_MAX_TAXA = 2000    # best matches for every tested cell up to this many taxa; beyond, only for cells with a fail
-BEST_MATCH_MIN_SITES = 30         # a best match needs this many focal residues (as plot_panels.best_matches)
+BEST_MATCH_MIN_SITES = 30         # a best match needs this many sites shared with the focal (as plot_panels.best_matches)
 REPORT_SEQ_ALL_MAX = 32 << 20     # --report-sequences auto carries the whole alignment up to this many bytes, else the cells' rows
 REPORT_INLINE_MAX = 64 << 20      # base64 characters that still go inside report.html; above it the data goes to report_data.js
 CODE_SIMILAR, CODE_TICK, CODE_ABSENT = 128, 254, 255
@@ -1374,17 +1374,34 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
                     if g in pos: side_[pos[g]] |= 32
         fail_q = (nf >= 1) | (nsim >= 1) | masked_q
         rep_q = fail_q if codes_policy == "fails" else masked_q if codes_policy == "masked" else np.zeros(ncell, bool)
-        # best match: the taxon with the most same residues over the focal's sites (a missing site is a mismatch), ties to the closest by m
+        # best match: per-site divergence compared on the SAME sites. The closest taxon among those sharing the most sites
+        # with the focal is the champion; a taxon closer over its own shared sites (>= BEST_MATCH_MIN_SITES) challenges
+        # it on the sites all three have and wins only if it is closer there (a fragment covering a locus's conserved
+        # part is not "closer"). Ties go to the closest by m. Identity is over the sites the pair shares.
         rows_bm = idx if bm_all else idx[fail_q]
         best_ = np.full(ncell, -1, np.int32); bident_ = np.full(ncell, np.nan, np.float32)
         if len(rows_bm):
-            srow = Sl[tri_idx[rows_bm]].astype(np.int64); nres_b = nres[rows_bm].astype(np.int64)
-            mism = nres_b[:, None] - srow; mism[np.arange(len(rows_bm)), rows_bm] = nres_b + 1
-            lo = mism.min(1); mm = np.where(np.isfinite(m[rows_bm]), m[rows_bm], np.inf)
-            best = np.where(mism == lo[:, None], mm, np.inf).argmin(1)
-            okb = nres_b >= BEST_MATCH_MIN_SITES
+            srow = Sl[tri_idx[rows_bm]].astype(np.float64); wrow = Wl[tri_idx[rows_bm]].astype(np.float64)
+            okc = wrow >= BEST_MATCH_MIN_SITES; okc[np.arange(len(rows_bm)), rows_bm] = False
+            with np.errstate(invalid="ignore", divide="ignore"):
+                dvg = np.where(okc, (wrow - srow) / np.maximum(wrow, 1.0), np.inf)
+            mm = np.where(np.isfinite(m[rows_bm]), m[rows_bm], np.inf)
+            wmax = np.where(okc, wrow, -1.0).max(1)
+            dtier = np.where(okc & (wrow >= wmax[:, None]), dvg, np.inf); lo_t = dtier.min(1)
+            champ = np.where(dtier == lo_t[:, None], mm, np.inf).argmin(1)
+            okb = np.isfinite(lo_t)
+            Xs_ = Xs if Xs is not None else X[:, sites]
+            for r_ in np.flatnonzero(okb & (dvg < lo_t[:, None]).any(1)).tolist():
+                g = int(rows_bm[r_]); fx = Xs_[g]; fp = fx >= 0; c = int(champ[r_])
+                order = sorted(np.flatnonzero(dvg[r_] < lo_t[r_]).tolist(), key=lambda t: (-wrow[r_, t], dvg[r_, t], mm[r_, t]))   # broadest coverage first
+                for t in order:
+                    common = fp & (Xs_[c] >= 0) & (Xs_[t] >= 0)
+                    if int(common.sum()) < BEST_MATCH_MIN_SITES: continue
+                    dt_ = int(((Xs_[t] != fx) & common).sum()); dc_ = int(((Xs_[c] != fx) & common).sum())
+                    if dt_ < dc_ or (dt_ == dc_ and mm[r_, t] < mm[r_, c]): c = t
+                champ[r_] = c
             qb = np.array([pos[int(g)] for g in rows_bm.tolist()], dtype=np.intp) if len(rows_bm) else np.zeros(0, np.intp)
-            best_[qb] = np.where(okb, best, -1); bident_[qb] = np.where(okb, 100.0 * (1.0 - lo / np.maximum(nres_b, 1)), np.nan)
+            best_[qb] = np.where(okb, champ, -1); bident_[qb] = np.where(okb, 100.0 * (1.0 - dvg[np.arange(len(rows_bm)), champ]), np.nan)
         # drift or attraction: the same rows scored against EVERY taxon at the locus. away_frac is the share of taxa
         # (overlap >= fit_overlap) the focal is further from than the genome predicts. The attractor is the taxon it is
         # most clearly closer to than predicted: the largest standardised deficit against the cell's row-adjusted

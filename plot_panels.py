@@ -351,8 +351,10 @@ def load_alignment():
 
 def best_matches(names, X, sites_of, taxon, min_sites=30):
     """for every tested cell of the taxon: the taxon it matches best at that locus, and the identity.
-    Identity over the focal sequence's sites, a site the other taxon lacks counting as a mismatch; ties go to
-    the closest relative genome-wide."""
+    Per-site divergence compared on the same sites (as locus_outliers): the closest taxon among those sharing the
+    most sites with the focal is the champion; any taxon closer over its own shared sites challenges it on the sites
+    all three have (at least min_sites) and wins only if it is closer there; ties go to the closest relative
+    genome-wide. Identity is over the sites the pair shares."""
     ix = {t: i for i, t in enumerate(names)}; ti = ix[taxon]
     m = np.load(f"{a.dir}/m.npy"); mt = open(f"{a.dir}/taxa.txt").read().split(); mi = {t: i for i, t in enumerate(mt)}
     mrow = np.array([m[mi[t], mi[taxon]] if t in mi and t != taxon else np.nan for t in names])
@@ -362,11 +364,19 @@ def best_matches(names, X, sites_of, taxon, min_sites=30):
     for k, i in enumerate(idx):
         sites = sites_of.get(LOC[i])
         if sites is None: continue
-        Y = X[:, sites]; f = Y[ti]; fp = f >= 0; nf = int(fp.sum())
-        if nf < min_sites: continue
-        mism = nf - ((Y == f[None, :]) & fp[None, :]).sum(1); mism[ti] = nf + 1
-        lo_ = mism.min(); tied = np.flatnonzero(mism == lo_); j = int(tied[np.argmin(rank[tied])])
-        best[k] = names[j]; ident[k] = 100.0 * (1 - lo_ / nf)
+        Y = X[:, sites]; f = Y[ti]; fp = f >= 0
+        both = (Y >= 0) & fp[None, :]; shared = both.sum(1); same = ((Y == f[None, :]) & both).sum(1)
+        ok = shared >= min_sites; ok[ti] = False
+        if not ok.any(): continue
+        with np.errstate(invalid="ignore", divide="ignore"): dvg = np.where(ok, (shared - same) / np.maximum(shared, 1), np.inf)
+        tier = ok & (shared >= shared[ok].max()); lo_ = dvg[tier].min()
+        tied = np.flatnonzero(tier & (dvg == lo_)); c = int(tied[np.argmin(rank[tied])])
+        for t in sorted(np.flatnonzero(dvg < lo_).tolist(), key=lambda t: (-shared[t], dvg[t], rank[t])):
+            common = fp & (Y[c] >= 0) & (Y[t] >= 0)
+            if int(common.sum()) < min_sites: continue
+            dt_ = int(((Y[t] != f) & common).sum()); dc_ = int(((Y[c] != f) & common).sum())
+            if dt_ < dc_ or (dt_ == dc_ and rank[t] < rank[c]): c = t
+        best[k] = names[c]; ident[k] = 100.0 * (1 - dvg[c])
     return idx, best, ident, close
 
 def matches():
