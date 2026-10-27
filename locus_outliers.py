@@ -132,8 +132,8 @@ MIN_LOCI_PER_TAXON = 10 # a taxon needs this many loci with >= fit-overlap resid
 MIN_FIT_PAIRS = 8       # a locus needs this many fit pairs to be tested (or to get a rate)
 LR_BAR = 10.0           # |2 ln LR| above which a similar event's direction is attributed
 TEST_THREAD_PAIRS = 4000  # --threads applies to the test stage only when a locus has this many comparisons on average
-__version__ = "0.10.1"
-REPORT_FORMAT = 2                 # bundle format version; the viewer refuses a newer one
+__version__ = "0.10.2"
+REPORT_FORMAT = 3                 # bundle format version; the viewer refuses a newer one (3: tree branch lengths are F81-corrected)
 DENSE_CELLS_MAX = 8_000_000       # per-cell numeric report columns are dense (taxa x loci) up to this many cells, sparse beyond
 BEST_MATCH_ALL_MAX_TAXA = 2000    # best matches for every tested cell up to this many taxa; beyond, only for cells with a fail
 BEST_MATCH_MIN_SITES = 30         # a best match needs this many sites shared with the focal (as plot_panels.best_matches)
@@ -759,8 +759,8 @@ def _newick(adj, root, labels):
 
 
 def cell_trees(D_exp, D_obs, labels):
-    """the face-to-face trees of one cell: neighbour joining on the expected and on the observed distances, each
-    midpoint-rooted. Returns (expected newick, observed newick)"""
+    """the face-to-face trees of one cell: neighbour joining on the expected and on the observed distances (both
+    F81-corrected with the locus plateau, in percent), each midpoint-rooted. Returns (expected newick, observed newick)"""
     n = len(labels)
     if n < 2: return None
     out = []
@@ -1472,6 +1472,12 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
                 np.fill_diagonal(De, 0.0); np.fill_diagonal(Do, 0.0)
                 if np.isnan(De).any(): De = np.where(np.isnan(De), np.nanmax(De) if np.isfinite(np.nanmax(De)) else 50.0, De)
                 if np.isnan(Do).any(): Do = np.where(np.isnan(Do), De, Do)
+                # both matrices on the method's own scale: the F81 correction with the locus plateau, so the expected
+                # tree is the genome-wide tree scaled by the locus rate (r c(m)) and the observed tree is c(d) over shared
+                # sites, capped at c(0.98 P) like every other corrected distance in the tool
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    De = corr(De); Do = corr(Do)
+                np.fill_diagonal(De, 0.0); np.fill_diagonal(Do, 0.0)
                 t = cell_trees(De, Do, [str(x) for x in tips])
                 if t: tcells.append(g); texp.append(t[0]); tobs.append(t[1]); ttips.append(tips)
             if tcells: trees_out = dict(cells=tcells, expected=texp, observed=tobs, tips=ttips)

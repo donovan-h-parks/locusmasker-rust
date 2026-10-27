@@ -99,9 +99,9 @@ async function loadBundle(bytes) {
   const json = async name => JSON.parse(td.decode(await zip.read(name)));
   const npy = async name => parseNpy(await zip.read(name));
   const man = await json("manifest.json");
-  if (man.format_version > 2) throw new Error(`this report was written in bundle format ${man.format_version}; this viewer reads formats 1 and 2. Please use the viewer that came with the tool version ${man.version}.`);
+  if (man.format_version > 3) throw new Error(`this report was written in bundle format ${man.format_version}; this viewer reads formats 1 to 3. Please use the viewer that came with the tool version ${man.version}.`);
   const taxa = await json("taxa.json"), loci = await json("loci.json");
-  const D = { zip, man, taxa, loci, n: taxa.names.length, nloc: loci.names.length, K: man.options.K_eff, M: man.options.M_eff, cols: {}, cache: { codes: new Map(), seq: new Map() } };
+  const D = { zip, man, format: man.format_version || 1, taxa, loci, n: taxa.names.length, nloc: loci.names.length, K: man.options.K_eff, M: man.options.M_eff, cols: {}, cache: { codes: new Map(), seq: new Map() } };
   const byteCols = ["n_comp", "n_fail", "n_similar", "side", "focal_sites"];
   const numCols = ["med_identity", "med_expected", "excess_m", "closest", "closest_overlap", "closest_identity", "closest_expected", "best_match", "best_match_identity", "partner", "lam", "lam_p", "row_factor"];
   for (const k of byteCols) D.cols[k] = (await npy(`cells/${k}.npy`)).data;
@@ -948,7 +948,7 @@ function drawCophylo(host, D, entry, k, cell) {
       gg.append("path").attr("d", `M${xa},${yOf(n)}V${yOf(c)}H${xb}`).attr("fill", "none").attr("stroke", conflict ? cssVar("--ink") : cssVar("--muted")).attr("stroke-width", conflict ? 2.6 : 1.2).append("title").text(conflict ? "this split is not in the other tree" : `branch length ${fmt1(c.length)}%`);
       if (!c.children.length) { const isF = +c.name === g, isBM = +c.name === bm, isP = +c.name === partner; gg.append("circle").attr("cx", xb).attr("cy", yOf(c)).attr("r", 3).attr("fill", isF ? focalCol : cssVar("--surface")).attr("stroke", isF ? focalCol : isP ? partnerCol : cssVar("--muted")).attr("stroke-width", 1.2);
         const lab = gg.append("text").attr("x", xb + dir * 6).attr("y", yOf(c) + 4).attr("text-anchor", dir > 0 ? "start" : "end").attr("font-size", 11.5).attr("font-weight", isF || isBM ? 700 : 400).attr("fill", isF ? focalCol : isP ? partnerCol : cssVar("--ink")).text(labelOf(c.name));
-        lab.append("title").text(`${name(c.name)}: ${fmt1(c.depth)}% from the root of this tree`); }
+        lab.append("title").text(`${name(c.name)}: ${fmt1(c.depth)}% ${D.format >= 3 ? "corrected divergence" : "divergence"} from the root of this tree`); }
       walk(c); } }; walk(root); return gg; };
   draw(exp, 8, 1, obsSplits); draw(obs, W - 8, -1, expSplits);
   const obsTips = new Map(); tipsOf(obs).forEach(t => obsTips.set(t.name, t));
@@ -957,13 +957,13 @@ function drawCophylo(host, D, entry, k, cell) {
     svg.append("line").attr("x1", x1).attr("x2", x2).attr("y1", yOf(t)).attr("y2", yOf(o)).attr("stroke", yOf(t) === yOf(o) ? cssVar("--grid") : cssVar("--floor")).attr("stroke-dasharray", "2 3"); }
   const bar = Math.pow(10, Math.floor(Math.log10(maxD))) * (maxD / Math.pow(10, Math.floor(Math.log10(maxD))) >= 5 ? 2 : 1);
   const by = H - 12; svg.append("line").attr("x1", 8).attr("x2", 8 + sx(bar)).attr("y1", by).attr("y2", by).attr("stroke", cssVar("--ink")).attr("stroke-width", 1.5);
-  svg.append("text").attr("x", 12 + sx(bar)).attr("y", by + 4).attr("font-size", 10.5).attr("fill", cssVar("--muted")).text(`${bar}% divergence`);
+  svg.append("text").attr("x", 12 + sx(bar)).attr("y", by + 4).attr("font-size", 10.5).attr("fill", cssVar("--muted")).text(`${bar}% ${D.format >= 3 ? "corrected divergence" : "divergence"}`);
   svg.append("text").attr("x", W - 36).attr("y", by + 4).attr("text-anchor", "end").attr("font-size", 10.5).attr("fill", cssVar("--muted")).text("expected  ·  observed at this locus");
   const q = svg.append("g").attr("transform", `translate(${W - 20},${by})`).style("cursor", "help");
   q.append("circle").attr("r", 8).attr("fill", "none").attr("stroke", cssVar("--muted")).attr("stroke-width", 1.2); q.append("text").attr("y", 4).attr("text-anchor", "middle").attr("font-size", 11).attr("font-weight", 700).attr("fill", cssVar("--muted")).text("?");
   const explain = el("div", { style: "max-width: 380px" },
     el("div", null, el("b", null, "Two neighbour-joining trees"), " over the focal sequence (filled dot, in its mask colour), its comparators, the partner of a too-similar pair (in the too-similar colour), and the best match, the taxon closest to the focal by per-site divergence compared on the same sites (in bold; marked * when it is not one of the comparators" + (bmId !== null ? `; identity ${fmt1(bmId)}%` : "") + ")."),
-    el("div", { style: "margin-top: 4px" }, el("b", null, "Left:"), " the distances the test expects for every pair, each pair's genome-wide divergence through this locus's expectation. ", el("b", null, "Right:"), " the mismatch fractions observed at this locus over shared sites. Both midpoint-rooted, one scale; negative branches drawn as zero."),
+    el("div", { style: "margin-top: 4px" }, el("b", null, "Left:"), (D.format >= 3 ? " the distances the test expects for every pair: each pair's genome-wide divergence, F81-corrected with this locus's plateau and scaled by its rate. " : " the distances the test expects for every pair, each pair's genome-wide divergence through this locus's expectation. "), el("b", null, "Right:"), (D.format >= 3 ? " the divergence observed at this locus over shared sites, corrected the same way (capped at 0.98 of the plateau). Both midpoint-rooted, one scale in corrected divergence; negative branches drawn as zero." : " the mismatch fractions observed at this locus over shared sites. Both midpoint-rooted, one scale; negative branches drawn as zero.")),
     el("div", { style: "margin-top: 4px" }, "Thick branches are splits absent from the other tree; dotted lines join the same taxon on both sides."),
     el("div", { style: "margin-top: 4px", class: "more" }, "A long focal branch with its neighbours unchanged is a damaged copy of the right sequence. A focal that moves across to its best match points to contamination or a paralogue. A whole clade pushed away from the rest on one long branch is a paralogue shared by the clade. A best match on its own long branch is merely the least different taxon, not a relative."));
   q.on("mouseenter", ev => showHover(explain, ev.clientX, ev.clientY)).on("mouseleave", hideHover);
