@@ -168,7 +168,7 @@ button.help { border-radius: 50%; width: 22px; height: 22px; padding: 0; font-we
 .rib-axis svg text { fill: var(--muted); font-size: 10.5px; }
 .rib-axis .axis path, .rib-axis .axis line { stroke: var(--spine); }
 .rib-list { flex: 1 1 auto; overflow: auto; position: relative; padding: 0 10px; }
-.rib-row { display: grid; grid-template-columns: 190px 52px 1fr; gap: 4px; align-items: center; font-size: 12px; border-bottom: 1px solid var(--grid); }
+.rib-row { display: grid; grid-template-columns: 190px 1fr; gap: 4px; align-items: center; font-size: 12px; border-bottom: 1px solid var(--grid); }
 .rib-row .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .rib-row .nm:hover { text-decoration: underline; }
 .rib-row .cnt { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; font-size: 11px; }
@@ -212,5 +212,5 @@ kbd { font: 11px var(--mono); background: var(--surface-3); border-radius: 4px; 
   .controls, .tools, .strip-wrap { display: none !important; }
 }
 
-.rib-head { display: grid; grid-template-columns: 190px 52px; gap: 4px; font-size: 11px; color: var(--muted); font-weight: 600; align-self: end; padding-bottom: 2px; }
+.rib-head { display: grid; grid-template-columns: 190px; gap: 4px; font-size: 11px; color: var(--muted); font-weight: 600; align-self: end; padding-bottom: 2px; }
 .help-q { display: inline-flex; width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--muted); color: var(--muted); font-size: 11px; font-weight: 700; align-items: center; justify-content: center; cursor: help; margin-left: 8px; vertical-align: middle; }

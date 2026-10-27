@@ -658,7 +658,7 @@ function bindResidualHover(cv, getPts) {
 // all loci or all taxa as residual ribbons, one row each, virtualised
 const Ribbons = (() => {
   let root, kind, sortMode = "masked", units = [], list, inner, W = 600, axisBox;
-  const RH = 22, NAME_W = 190 + 52 + 8;                                          // name, count, the grid gaps
+  const RH = 22, NAME_W = 190 + 4;                                               // the name column and its grid gap
   let ctlHost = null;
   function render(container, k, host) { root = container; kind = k; ctlHost = host; root.replaceChildren(); build(); }
   function build() {
@@ -670,7 +670,7 @@ const Ribbons = (() => {
     axisBox = el("div", { class: "rib-axis" }); list = el("div", { class: "rib-list" }); inner = el("div", { style: "position:relative" }); list.append(inner);
     root.replaceChildren(axisBox, list);
     W = Math.max(300, root.getBoundingClientRect().width - NAME_W - 24);
-    axisBox.replaceChildren(el("div", { class: "rib-head", style: `width:${NAME_W}px; flex: 0 0 auto` }, el("span", null, kind === "locus" ? "locus" : "taxon"), el("span", null, "masked")), residualAxis(W, 8, 8));
+    axisBox.replaceChildren(el("div", { class: "rib-head", style: `width:${NAME_W}px; flex: 0 0 auto` }, el("span", null, kind === "locus" ? "locus" : "taxon")), residualAxis(W, 8, 8));
     inner.style.height = units.length * RH + "px";
     list.addEventListener("scroll", paint); paint();
   }
@@ -679,8 +679,8 @@ const Ribbons = (() => {
     inner.replaceChildren(); const top = list.scrollTop; const i0 = Math.max(0, Math.floor(top / RH) - 3), i1 = Math.min(units.length, i0 + Math.ceil(list.clientHeight / RH) + 6);
     for (let i = i0; i < i1; i++) {
       const u = units[i]; const cv = el("canvas"); let drawn = null;
-      const nm = el("span", { class: "nm", title: names[u], onclick: () => Detail.open(kind, u) }, sw(cnt.masked[u] ? (cnt.div[u] >= cnt.sim[u] ? D.reds[1] || D.reds[0] : D.blues[1]) : null), names[u]);
-      const row = el("div", { class: "rib-row", style: `position:absolute; top:${i * RH}px; left:0; right:0; height:${RH}px` }, nm, el("span", { class: "cnt" }, cnt.masked[u] ? fmtInt(cnt.masked[u]) : ""), cv);
+      const nm = el("span", { class: "nm", title: `${names[u]}: ${cnt.masked[u]} masked of ${cnt.tested[u]} tested`, onclick: () => Detail.open(kind, u) }, sw(cnt.masked[u] ? (cnt.div[u] >= cnt.sim[u] ? D.reds[1] || D.reds[0] : D.blues[1]) : null), names[u]);
+      const row = el("div", { class: "rib-row", style: `position:absolute; top:${i * RH}px; left:0; right:0; height:${RH}px` }, nm, cv);
       inner.append(row);
       drawn = drawResidualRow(cv, kind, u, W, RH - 2, { padL: 8, padR: 8 });
       if (drawn.identical) row.title = `${drawn.identical} sequences identical to their comparators are not drawn`;
@@ -744,8 +744,18 @@ const Detail = (() => {
     if (posY.length < pts.length) svg.append("text").attr("x", m.l - 6).attr("y", ys(fy) + 4).attr("text-anchor", "end").text("0");
     svg.append("text").attr("x", (m.l + W - m.r) / 2).attr("y", H - 6).attr("text-anchor", "middle").text("expected divergence of the sequence, median over its comparators (%)");
     svg.append("text").attr("transform", `translate(13,${(m.t + H - m.b) / 2}) rotate(-90)`).attr("text-anchor", "middle").text("observed divergence (%)");
-    const line = (f, dash, col) => { const [x0, x1] = xs.domain(); const p0 = [Math.max(x0, ys.domain()[0] / f), Math.min(x1, ys.domain()[1] / f)]; if (p0[0] < p0[1]) svg.append("line").attr("x1", xs(p0[0])).attr("y1", ys(p0[0] * f)).attr("x2", xs(p0[1])).attr("y2", ys(p0[1] * f)).attr("stroke", col).attr("stroke-width", f === 1 ? 1.2 : 0.9).attr("stroke-dasharray", dash); };
-    line(1, null, cssVar("--model"));
+    // the diagonal (observed = expected) and, map-style, contours at observed 100%, 200% and 500% above the expectation and
+    // the expectation 100%, 200% and 500% above the observed: thin lines with the level written along them
+    const seg = f => { const [x0, x1] = xs.domain(); const p0 = [Math.max(x0, ys.domain()[0] / f), Math.min(x1, ys.domain()[1] / f)]; return p0[0] < p0[1] ? [xs(p0[0]), ys(p0[0] * f), xs(p0[1]), ys(p0[1] * f)] : null; };
+    const diag = seg(1); if (diag) svg.append("line").attr("x1", diag[0]).attr("y1", diag[1]).attr("x2", diag[2]).attr("y2", diag[3]).attr("stroke", cssVar("--model")).attr("stroke-width", 1.2);
+    const ctG = svg.append("g").attr("class", "contours");
+    for (const [f, lab] of [[2, "100%"], [3, "200%"], [6, "500%"], [1 / 2, "100%"], [1 / 3, "200%"], [1 / 6, "500%"]]) {
+      const e = seg(f); if (!e) continue; const ang = Math.atan2(e[3] - e[1], e[2] - e[0]) * 180 / Math.PI;
+      const at = f > 1 ? 0.78 : 0.22; const lx = e[0] + (e[2] - e[0]) * at, ly = e[1] + (e[3] - e[1]) * at;      // the label sits on the line, the line broken behind it
+      ctG.append("line").attr("x1", e[0]).attr("y1", e[1]).attr("x2", e[2]).attr("y2", e[3]).attr("stroke", cssVar("--muted")).attr("stroke-width", 0.7).attr("stroke-opacity", 0.75);
+      const t = ctG.append("text").attr("transform", `translate(${lx},${ly}) rotate(${ang})`).attr("text-anchor", "middle").attr("dy", "0.35em").attr("font-size", 9).attr("fill", cssVar("--muted")).attr("stroke", cssVar("--surface")).attr("stroke-width", 4).attr("paint-order", "stroke").text(lab);
+      t.append("title").text(f > 1 ? `observed divergence ${lab} above the expectation (${f}× expected)` : `the expectation ${lab} above the observed divergence (observed = expected ÷ ${Math.round(1 / f)})`);
+    }
     wrap.append(svg.node());
     const cv = el("canvas"); const dpr = devicePixelRatio || 1; cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + "px"; cv.style.height = H + "px"; wrap.append(cv);
     const c = cv.getContext("2d"); c.scale(dpr, dpr);
@@ -760,7 +770,7 @@ const Detail = (() => {
     svg.on("mousemove", ev => { const p = nearest(ev); if (p) { showHover(cellHover(p.g, p.li), ev.clientX, ev.clientY); App.sel.cells.clear(); App.sel.cells.add(p.g * D.nloc + p.li); Overview.redraw(); svg.style("cursor", "pointer"); } else { hideHover(); svg.style("cursor", null); } });
     svg.on("mouseleave", () => { hideHover(); App.sel.cells.clear(); Overview.redraw(); });
     svg.on("click", ev => { const p = nearest(ev); if (p) Sequence.open(p.g, p.li); });
-    note = el("div", { style: "max-width: 420px" }, el("b", null, "Observed vs expected divergence."), " Each point is one sequence: its observed divergence at the locus, the median over its comparators, against the divergence the genome predicts. Diagonal: observed = expected. ● not masked, ▲ masked too divergent, ▼ masked too similar. Hover a point for its numbers; click it for the alignment.");
+    note = el("div", { style: "max-width: 420px" }, el("b", null, "Observed vs expected divergence."), " Each point is one sequence: its observed divergence at the locus, the median over its comparators, against the divergence the genome predicts. Diagonal: observed = expected. The contours mark, above it, an observed divergence 100%, 200% and 500% above the expectation and, below it, an expectation 100%, 200% and 500% above the observed. ● not masked, ▲ masked too divergent, ▼ masked too similar. Hover a point for its numbers; click it for the alignment.");
     return box;
   }
   // best matches of the masked sequences, with the count expected from the unmasked ones
@@ -922,9 +932,11 @@ function drawCophylo(host, D, entry, k, cell) {
   const clos = entry.closest ? entry.closest[k] : null;                                                       // [expected, observed]: the tip closest to the focal in each tree, by that tree's own distances
   const closName = j => clos && clos[j] >= 0 ? String(entry.tips[k][clos[j]]) : null;
   const meas = document.createElement("canvas").getContext("2d"); meas.font = `bold 11.5px ${cssVar("--sans")}`; const LAB = Math.ceil(d3.max(tipsOf(exp), t => meas.measureText(labelOf(t.name)).width) + 10);
-  const nTip = tipsOf(exp).length; const RH = 20, GAP = 44, W = Math.min(820, Math.max(560, 2 * LAB + GAP + 240)), TW = (W - 2 * LAB - GAP - 28) / 2, top = 10, H = top + nTip * RH + 40;
+  const nTip = tipsOf(exp).length; const RH = 20, GAP = 44, W = Math.min(820, Math.max(560, 2 * LAB + GAP + 240)), top = 10, H = top + nTip * RH + 40;
   depthOf(exp); depthOf(obs); const inDepth = root => d3.max(tipsOf(root).filter(t => !isOg(t)), t => t.depth) || 0;
-  const maxD = Math.max(inDepth(exp), inDepth(obs), 1e-6); const sx = d3.scaleLinear().domain([0, maxD]).range([0, TW]); const OGLEN = 22;
+  // one scale for both trees; each takes the width its own depth needs, so a shallow expected tree leaves no blank
+  const dE = inDepth(exp), dO = inDepth(obs), maxD = Math.max(dE, dO, 1e-6), OGLEN = 22;
+  const sx = d3.scaleLinear().domain([0, Math.max(dE + dO, 1e-6)]).range([0, W - 2 * LAB - GAP - 28 - 2 * OGLEN]);
   assignY(exp, { y: 0 }); assignY(obs, { y: 0 });
   const svg = d3.create("svg").attr("width", W).attr("height", H).attr("class", "tangle");
   const yOf = n => top + n.y * RH + RH / 2;
@@ -949,7 +961,8 @@ function drawCophylo(host, D, entry, k, cell) {
   for (const t of tipsOf(exp)) { const o = obsTips.get(t.name); if (!o) continue;      // the connector runs through the gap between the two label columns
     const x1 = t.xdraw + 6 + meas.measureText(labelOf(t.name)).width + 4, x2 = o.xdraw - 6 - meas.measureText(labelOf(t.name)).width - 4;
     svg.append("line").attr("x1", x1).attr("x2", x2).attr("y1", yOf(t)).attr("y2", yOf(o)).attr("stroke", cssVar("--floor")).attr("stroke-width", 1).attr("stroke-dasharray", "2 3"); }
-  const bar = Math.pow(10, Math.floor(Math.log10(maxD))) * (maxD / Math.pow(10, Math.floor(Math.log10(maxD))) >= 5 ? 2 : 1);
+  const bar = (() => { const lim = 0.28 * (W - 2 * LAB - GAP - 28 - 2 * OGLEN); let best = null;             // the largest 1, 2 or 5 x 10^k that fits in a quarter of the tree width
+    for (let k = -2; k <= 3; k++) for (const f of [1, 2, 5]) { const v = f * Math.pow(10, k); if (sx(v) <= lim) best = v; } return best || 1; })();
   const by = H - 12; svg.append("line").attr("x1", 8).attr("x2", 8 + sx(bar)).attr("y1", by).attr("y2", by).attr("stroke", cssVar("--ink")).attr("stroke-width", 1.5);
   svg.append("text").attr("x", 12 + sx(bar)).attr("y", by + 4).attr("font-size", 10.5).attr("fill", cssVar("--muted")).text(`${bar}% ${D.format >= 3 ? "corrected divergence" : "divergence"}`);
   svg.append("text").attr("x", W - 36).attr("y", by + 4).attr("text-anchor", "end").attr("font-size", 10.5).attr("fill", cssVar("--muted")).text("expected  ·  observed at this locus");
