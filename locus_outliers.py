@@ -132,7 +132,7 @@ MIN_LOCI_PER_TAXON = 10 # a taxon needs this many loci with >= fit-overlap resid
 MIN_FIT_PAIRS = 8       # a locus needs this many fit pairs to be tested (or to get a rate)
 LR_BAR = 10.0           # |2 ln LR| above which a similar event's direction is attributed
 TEST_THREAD_PAIRS = 4000  # --threads applies to the test stage only when a locus has this many comparisons on average
-__version__ = "0.10.3"
+__version__ = "0.10.4"
 REPORT_FORMAT = 3                 # bundle format version; the viewer refuses a newer one (3: tree branch lengths are F81-corrected)
 DENSE_CELLS_MAX = 8_000_000       # per-cell numeric report columns are dense (taxa x loci) up to this many cells, sparse beyond
 BEST_MATCH_ALL_MAX_TAXA = 2000    # best matches for every tested cell up to this many taxa; beyond, only for cells with a fail
@@ -1464,7 +1464,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         trees_out = None
         if masked_q.any():
             Xs_ = Xs if Xs is not None else X[:, sites]
-            tcells, texp, tobs, ttips, togs = [], [], [], [], []
+            tcells, texp, tobs, ttips, togs, tclos = [], [], [], [], [], []
             for q in np.flatnonzero(masked_q).tolist():
                 g = int(idx[q]); tips = [g] + [int(c) for c in top[g] if c >= 0]
                 if partner_[q] >= 0 and int(partner_[q]) not in tips: tips.append(int(partner_[q]))
@@ -1490,8 +1490,13 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
                     De = corr(De); Do = corr(Do)
                 np.fill_diagonal(De, 0.0); np.fill_diagonal(Do, 0.0)
                 t = cell_trees(De, Do, [str(x) for x in tips], tips.index(og) if og >= 0 else None)
-                if t: tcells.append(g); texp.append(t[0]); tobs.append(t[1]); ttips.append(tips); togs.append(tips.index(og) if og >= 0 else -1)
-            if tcells: trees_out = dict(cells=tcells, expected=texp, observed=tobs, tips=ttips, outgroup=togs)
+                if t:
+                    # the tip closest to the focal in each tree, by that tree's own distances (the outgroup excluded)
+                    cand = np.ones(nt, bool); cand[0] = False
+                    if og >= 0: cand[tips.index(og)] = False
+                    ce = int(np.argmin(np.where(cand, De[0], np.inf))) if cand.any() else -1; co = int(np.argmin(np.where(cand, Do[0], np.inf))) if cand.any() else -1
+                    tcells.append(g); texp.append(t[0]); tobs.append(t[1]); ttips.append(tips); togs.append(tips.index(og) if og >= 0 else -1); tclos.append([ce, co])
+            if tcells: trees_out = dict(cells=tcells, expected=texp, observed=tobs, tips=ttips, outgroup=togs, closest=tclos)
         seq_out = None
         if seq_policy != "none":
             if seq_policy == "all": rows_s = np.flatnonzero(nres > 0)

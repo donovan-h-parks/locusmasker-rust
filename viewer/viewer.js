@@ -105,13 +105,8 @@ async function loadBundle(bytes) {
   const byteCols = ["n_comp", "n_fail", "n_similar", "side", "focal_sites"];
   const numCols = ["med_identity", "med_expected", "excess_m", "closest", "closest_overlap", "closest_identity", "closest_expected", "best_match", "best_match_identity", "partner", "lam", "lam_p", "row_factor"];
   for (const k of byteCols) D.cols[k] = (await npy(`cells/${k}.npy`)).data;
-  try { D.cols.class = (await npy("cells/class.npy")).data; } catch (e) { D.cols.class = new Uint8Array(D.n * D.nloc); }   // format 1 bundles carry no class
   D.dense = man.carried.numeric_columns === "dense";
   for (const k of numCols) D.cols[k] = (await npy(`cells/${k}.npy`)).data;
-  for (const k of ["attract", "attract_ratio", "attract_logp", "away_frac"]) { try { D.cols[k] = (await npy(`cells/${k}.npy`)).data; } catch (e) { D.cols[k] = null; } }
-  D.CLASS = ["", "drift", "towards", "similar"];
-  // the taxon a masked cell has moved towards: the attractor (towards), the partner (similar), else nothing
-  D.movedTo = (g, li) => { const c = D.cols.class[g * D.nloc + li]; if (c === 3) { const p = D.num("partner", g, li); return p !== null && p >= 0 ? p : -1; } if (c === 2) { const a = D.num("attract", g, li); return a !== null && a >= 0 ? a : -1; } return -1; };
   D.comparators = (await npy("cells/comparators.npy")).data;
   D.closest = (await npy("taxa/closest.npy")).data;
   if (!D.dense) {
@@ -172,9 +167,8 @@ function deriveStates(D) {
   const lut = new Uint8ClampedArray(64 * 4);
   for (let c = 0; c < 64; c++) { let rgb = surf; const col = D.colorOf(c); if (col === "hatch") rgb = hatch; else if (col) rgb = hexToRgb(col); lut.set([rgb[0], rgb[1], rgb[2], 255], c * 4); }
   D.lut = lut;
-  D.taxCount = { masked: new Int32Array(n), div: new Int32Array(n), sim: new Int32Array(n), tested: new Int32Array(n), present: new Int32Array(n), near: new Int32Array(n), drift: new Int32Array(n), towards: new Int32Array(n), match: new Int32Array(n).fill(-1), matchN: new Int32Array(n), matchTo: new Map() };
-  D.locCount = { masked: new Int32Array(nloc), div: new Int32Array(nloc), sim: new Int32Array(nloc), tested: new Int32Array(nloc), present: new Int32Array(nloc), near: new Int32Array(nloc), drift: new Int32Array(nloc), towards: new Int32Array(nloc), match: new Int32Array(nloc).fill(-1), matchN: new Int32Array(nloc), matchTo: new Map() };
-  const cls = D.cols.class;
+  D.taxCount = { masked: new Int32Array(n), div: new Int32Array(n), sim: new Int32Array(n), tested: new Int32Array(n), present: new Int32Array(n), near: new Int32Array(n) };
+  D.locCount = { masked: new Int32Array(nloc), div: new Int32Array(nloc), sim: new Int32Array(nloc), tested: new Int32Array(nloc), present: new Int32Array(nloc), near: new Int32Array(nloc) };
   for (let g = 0; g < n; g++) for (let li = 0; li < nloc; li++) {
     const i = g * nloc + li; if (fs[i] === 0) continue;
     D.taxCount.present[g]++; D.locCount.present[li]++;
@@ -185,13 +179,7 @@ function deriveStates(D) {
     if (s & 1) { D.taxCount.div[g]++; D.locCount.div[li]++; }
     if (s & 2) { D.taxCount.sim[g]++; D.locCount.sim[li]++; }
     if (!m && nf[i] > 0) { D.taxCount.near[g]++; D.locCount.near[li]++; }
-    if (m) { const c = cls[i]; if (c === 1) { D.taxCount.drift[g]++; D.locCount.drift[li]++; } else if (c === 2) { D.taxCount.towards[g]++; D.locCount.towards[li]++; }
-      let to = D.movedTo(g, li); if (to < 0) { const bm = D.num("best_match", g, li); to = bm !== null && bm >= 0 ? bm : -1; }      // drift cells: the best match is the least different taxon, not a relative
-      if (to >= 0) { const mt = D.taxCount.matchTo, ml = D.locCount.matchTo; mt.set(g * n + to, (mt.get(g * n + to) || 0) + 1); ml.set(li * n + to, (ml.get(li * n + to) || 0) + 1); } }
   }
-  for (const [cnt, N] of [[D.taxCount, n], [D.locCount, nloc]]) { for (const [key, v] of cnt.matchTo) { const u = Math.floor(key / n), to = key % n; if (v > cnt.matchN[u] || (v === cnt.matchN[u] && to < cnt.match[u])) { cnt.matchN[u] = v; cnt.match[u] = to; } } cnt.matchTo = null; }
-  // the dominant class of a unit's masked cells: towards (something specific) before similar before drift
-  for (const cnt of [D.taxCount, D.locCount]) { const N = cnt.masked.length; cnt.cls = new Uint8Array(N); for (let u = 0; u < N; u++) { if (!cnt.masked[u]) continue; const sim = cnt.sim[u]; cnt.cls[u] = cnt.towards[u] >= Math.max(sim, cnt.drift[u]) ? 2 : sim >= cnt.drift[u] ? 3 : 1; } }
   // the residual axis shared by every ribbon: the range of excess_m over the carried cells
   let lo = Infinity, hi = -Infinity; const ex = D.cols.excess_m;
   for (let i = 0; i < ex.length; i++) { const v = ex[i]; if (Number.isFinite(v)) { if (v < lo) lo = v; if (v > hi) hi = v; } }
@@ -368,7 +356,7 @@ const Overview = (() => {
     const tile = (v, k, title) => el("div", { class: "tile", title: title || "" }, el("div", { class: "v" }, v), el("div", { class: "k" }, k));
     const taxaWith = d3.sum(D.taxCount.masked, v => v > 0), lociWith = d3.sum(D.locCount.masked, v => v > 0);
     t.append(tile(fmtInt(c.masked), `sequences masked · ${pct(c.masked, c.cells)} of ${fmtInt(c.cells)} tested`),
-      tile(fmtInt(c.masked_divergent), "too divergent" + (() => { const dr = d3.sum(D.taxCount.drift), tw = d3.sum(D.taxCount.towards); return dr + tw ? ` · ${fmtInt(dr)} drift, ${fmtInt(tw)} towards a taxon` : ""; })() + (c.ambiguous ? ` · ${c.ambiguous} with fewer comparators` : "")),
+      tile(fmtInt(c.masked_divergent), "too divergent" + (c.ambiguous ? ` · ${c.ambiguous} with fewer comparators` : "")),
       tile(fmtInt(c.masked_similar), "too similar" + (c.masked_both ? ` · ${c.masked_both} both sides` : "")),
       tile(`${fmtInt(taxaWith)} / ${fmtInt(c.taxa)}`, "taxa with a masked sequence" + (c.excluded_taxa ? ` · ${c.excluded_taxa} excluded` : "")),
       tile(`${fmtInt(lociWith)} / ${fmtInt(c.loci)}`, "loci with a masked sequence" + (c.skipped_loci ? ` · ${c.skipped_loci} skipped` : "")));
@@ -603,9 +591,6 @@ function cellHover(g, li, compact) {
     if (xm !== null) row("excess beyond expectation", `${fmt2(xm)} m`);
     const bm = D.num("best_match", g, li);
     if (bm !== null && bm >= 0 && !compact) { const close = Array.from(D.closest.subarray(g * 5, g * 5 + 5)).includes(bm); row("best match", `${D.taxa.names[bm]} (${fmt1(D.num("best_match_identity", g, li))}% identity over shared sites${close ? ", one of the 5 closest relatives" : ""})`); }
-    const cc = D.cols.class[i]; const aw = D.num("away_frac", g, li);
-    if (cc === 1) row("class", `drift: further than expected from ${aw === null ? "its" : pct(aw, 1)} of the taxa it shares sites with, and not significantly closer to any${(() => { const a = D.num("attract", g, li); return a !== null && a >= 0 ? ` (closest to a deficit: ${D.taxa.names[a]}, ${fmt2(D.num("attract_ratio", g, li))} × expected, log p ${fmt1(D.num("attract_logp", g, li))})` : ""; })()}`);
-    else if (cc === 2) { const a = D.num("attract", g, li); row("class", `towards ${D.taxa.names[a]}: ${fmt2(D.num("attract_ratio", g, li))} × the divergence the genome predicts for the pair (log p ${fmt1(D.num("attract_logp", g, li))}, past the bar); further than expected from ${aw === null ? "most" : pct(aw, 1)} of the other taxa`); }
     const pt = D.num("partner", g, li);
     if (pt !== null && pt >= 0) { const lam = D.num("lam", g, li), lp = D.num("lam_p", g, li); row("too similar to", `${D.taxa.names[pt]}${sd & 8 ? " (identified as the recipient)" : " (direction not identified)"}`); if (lam !== null) row("direction LRT", `|2 ln LR| = ${fmt1(lam)}, p = ${lp < 1e-4 ? lp.toExponential(1) : fmt3(lp)} (χ², 1 df)`); const rf = D.num("row_factor", g, li); if (rf !== null && rf < 1) row("row factor", `${fmt3(rf)} (the pair was tested against ${fmt3(rf)} × its expectation: the sequence sits below expectation against its other comparators too)`); }
     if (!compact) row("", el("span", { class: "more" }, "click: open the alignment"));
@@ -618,7 +603,6 @@ function unitHover(kind, i) {
   row(kind, nm); row("status", kind === "taxon" ? D.taxa.status[i] : D.loci.status[i]);
   row("sequences", `${fmtInt(c.present[i])} present, ${fmtInt(c.tested[i])} tested`);
   row("masked", `${fmtInt(c.masked[i])} (${pct(c.masked[i], c.tested[i])}): ${c.div[i]} too divergent, ${c.sim[i]} too similar; ${c.near[i]} near misses`);
-  if (c.masked[i]) { row("class", `${c.drift[i]} drift, ${c.towards[i]} towards, ${c.sim[i]} similar`); if (c.match[i] >= 0) row("closest match", `${D.taxa.names[c.match[i]]} for ${c.matchN[i]} of the masked sequences`); }
   if (kind === "locus") { row("length", `${fmtInt(D.loci.length[i])} sites`); if (D.loci.rate[i] !== null) row("rate", `${fmt3(D.loci.rate[i])} × the typical locus`); row("plateau", `${fmt1(D.loci.plateau[i])}%`); if (D.loci.phi[i] !== null) row("dispersion φ", fmt3(D.loci.phi[i])); }
   else { const cl = Array.from(D.closest.subarray(i * 5, i * 5 + 5)).filter(x => x >= 0).map(x => D.taxa.names[x]); if (cl.length) row("closest by m", cl.join(", ")); }
   return el("div", null, t, el("div", { class: "more" }, "click: open the panel"));
@@ -674,24 +658,19 @@ function bindResidualHover(cv, getPts) {
 // all loci or all taxa as residual ribbons, one row each, virtualised
 const Ribbons = (() => {
   let root, kind, sortMode = "masked", units = [], list, inner, W = 600, axisBox;
-  const RH = 22, NAME_W = 190 + 52 + 150 + 170 + 16;                            // name, count, class, closest match, the grid gaps
-  const CLS_ORDER = { 2: 0, 3: 1, 1: 2, 0: 3 };                                  // towards, similar, drift, none
+  const RH = 22, NAME_W = 190 + 52 + 8;                                          // name, count, the grid gaps
   let ctlHost = null;
   function render(container, k, host) { root = container; kind = k; ctlHost = host; root.replaceChildren(); build(); }
   function build() {
     const D = App.D; const cnt = kind === "locus" ? D.locCount : D.taxCount; const names = kind === "locus" ? D.loci.names : D.taxa.names; const N = kind === "locus" ? D.nloc : D.n;
     units = d3.range(N).filter(u => cnt.tested[u] > 0);
-    const T = D.taxa.names; const matchName = u => cnt.match[u] >= 0 ? T[cnt.match[u]] : "\uffff";
-    const byClass = (a, b) => CLS_ORDER[cnt.cls[a]] - CLS_ORDER[cnt.cls[b]] || cnt.towards[b] - cnt.towards[a] || cnt.masked[b] - cnt.masked[a];
-    const byMatch = (a, b) => matchName(a).localeCompare(matchName(b)) || cnt.matchN[b] - cnt.matchN[a] || cnt.masked[b] - cnt.masked[a];
     if (sortMode === "masked") units.sort((a, b) => cnt.masked[b] - cnt.masked[a] || cnt.near[b] - cnt.near[a] || a - b); else if (sortMode === "name") units.sort((a, b) => names[a].localeCompare(names[b]));
-    else if (sortMode === "class") units.sort((a, b) => byClass(a, b) || byMatch(a, b) || a - b); else if (sortMode === "match") units.sort((a, b) => byMatch(a, b) || byClass(a, b) || a - b);
-    const sortSel = el("select", { onchange: e => { sortMode = e.target.value; build(); } }, ...[["masked", "most masked first"], ["class", "class, then closest match"], ["match", "closest match, then class"], ["name", "name"], ["input", "input order"]].map(([v, t]) => el("option", { value: v, selected: v === sortMode ? "" : null }, t)));
+    const sortSel = el("select", { onchange: e => { sortMode = e.target.value; build(); } }, ...[["masked", "most masked first"], ["name", "name"], ["input", "input order"]].map(([v, t]) => el("option", { value: v, selected: v === sortMode ? "" : null }, t)));
     if (ctlHost) { ctlHost.replaceChildren(el("label", null, "sort ", sortSel), el("span", { class: "k", title: `each row is one ${kind}, each mark one of its sequences: ▲ masked too divergent, ▼ too similar, dots pass${kind === "locus" ? "; the shaded band is where a saturated sequence lands" : ""}. Click a name for its panel, a mark for the alignment.` }, `${fmtInt(units.length)} ${kind === "locus" ? "loci" : "taxa"}`)); }
     axisBox = el("div", { class: "rib-axis" }); list = el("div", { class: "rib-list" }); inner = el("div", { style: "position:relative" }); list.append(inner);
     root.replaceChildren(axisBox, list);
     W = Math.max(300, root.getBoundingClientRect().width - NAME_W - 24);
-    axisBox.replaceChildren(el("div", { class: "rib-head", style: `width:${NAME_W}px; flex: 0 0 auto` }, el("span", null, kind === "locus" ? "locus" : "taxon"), el("span", null, "masked"), el("span", { title: "the classes of the unit's masked sequences: drift (further from everything), towards (closer than the genome predicts to one taxon), similar (too similar to a partner)" }, "class"), el("span", { title: "the taxon most of the unit's masked sequences moved towards (or, for drift, their least different taxon)" }, "closest match")), residualAxis(W, 8, 8));
+    axisBox.replaceChildren(el("div", { class: "rib-head", style: `width:${NAME_W}px; flex: 0 0 auto` }, el("span", null, kind === "locus" ? "locus" : "taxon"), el("span", null, "masked")), residualAxis(W, 8, 8));
     inner.style.height = units.length * RH + "px";
     list.addEventListener("scroll", paint); paint();
   }
@@ -701,10 +680,7 @@ const Ribbons = (() => {
     for (let i = i0; i < i1; i++) {
       const u = units[i]; const cv = el("canvas"); let drawn = null;
       const nm = el("span", { class: "nm", title: names[u], onclick: () => Detail.open(kind, u) }, sw(cnt.masked[u] ? (cnt.div[u] >= cnt.sim[u] ? D.reds[1] || D.reds[0] : D.blues[1]) : null), names[u]);
-      const clsCell = el("span", { class: "cls" }); if (cnt.masked[u]) { const parts = []; if (cnt.towards[u]) parts.push(el("span", { style: `color:${D.reds[D.reds.length - 1]}` }, `towards ${cnt.towards[u]}`)); if (cnt.drift[u]) parts.push(el("span", null, `drift ${cnt.drift[u]}`)); if (cnt.sim[u]) parts.push(el("span", { style: `color:${D.blues[1]}` }, `similar ${cnt.sim[u]}`)); parts.forEach((p, j) => { if (j) clsCell.append(" · "); clsCell.append(p); }); }
-      const mt = el("span", { class: "nm match", title: cnt.match[u] >= 0 ? `${D.taxa.names[cnt.match[u]]}: ${cnt.matchN[u]} of ${cnt.masked[u]} masked sequences` : "" }, cnt.match[u] >= 0 ? `${D.taxa.names[cnt.match[u]]} (${cnt.matchN[u]})` : "");
-      if (cnt.match[u] >= 0) mt.onclick = () => Detail.open("taxon", cnt.match[u]);
-      const row = el("div", { class: "rib-row", style: `position:absolute; top:${i * RH}px; left:0; right:0; height:${RH}px` }, nm, el("span", { class: "cnt" }, cnt.masked[u] ? fmtInt(cnt.masked[u]) : ""), clsCell, mt, cv);
+      const row = el("div", { class: "rib-row", style: `position:absolute; top:${i * RH}px; left:0; right:0; height:${RH}px` }, nm, el("span", { class: "cnt" }, cnt.masked[u] ? fmtInt(cnt.masked[u]) : ""), cv);
       inner.append(row);
       drawn = drawResidualRow(cv, kind, u, W, RH - 2, { padL: 8, padR: 8 });
       if (drawn.identical) row.title = `${drawn.identical} sequences identical to their comparators are not drawn`;
@@ -716,7 +692,7 @@ const Ribbons = (() => {
 
 // ------------------------------------------------------------------ the taxon / locus panel: one plot at a time, sized to the panel
 const Detail = (() => {
-  let cur = null, view = "scatter", viewSel = null, body = null;
+  let cur = null, view = "scatter", viewSel = null, body = null, note = null;      // note: the explanation of the plot on show, behind the ? mark
   function open(kind, i) {
     cur = { kind, i };
     if (!App.panels.detail) {
@@ -740,12 +716,13 @@ const Detail = (() => {
     const cnt = kind === "taxon" ? D.taxCount : D.locCount;
     const views = [["scatter", "observed vs expected"], ...(kind === "taxon" ? [["matches", "best matches"]] : []), ["ribbons", "site ribbons"]];
     viewSel = el("select", { onchange: e => { view = e.target.value; draw(); } }, ...views.map(([v, t]) => el("option", { value: v, selected: v === view ? "" : null }, t)));
-    P.setCrumb([el("span", null, kind, " ", el("b", null, name)), el("span", { class: "sub" }, `${fmtInt(cnt.masked[i])} of ${fmtInt(cnt.tested[i])} sequences masked (${pct(cnt.masked[i], cnt.tested[i])})`), el("label", { class: "crumb-ctl" }, "view ", viewSel)]);
+    const q = el("span", { class: "help-q", title: "what this plot shows", onmouseenter: ev => { if (note) showHover(note, ev.clientX, ev.clientY); }, onmouseleave: hideHover }, "?");
+    P.setCrumb([el("span", null, kind, " ", el("b", null, name)), el("span", { class: "sub" }, `${fmtInt(cnt.masked[i])} of ${fmtInt(cnt.tested[i])} sequences masked (${pct(cnt.masked[i], cnt.tested[i])})`), el("label", { class: "crumb-ctl" }, "view ", viewSel, q)]);
     P.body.replaceChildren(); body = P.body; body.classList.add("detail-body");
     draw();
   }
   function draw() {
-    if (!cur || !App.panels.detail) return; body.replaceChildren();
+    if (!cur || !App.panels.detail) return; body.replaceChildren(); note = null;
     const cells = cellsOf();
     if (view === "scatter") body.append(scatterPlot(cells)); else if (view === "matches") body.append(matchesPlot(cells)); else body.append(ribbonsList(cells));
   }
@@ -783,7 +760,7 @@ const Detail = (() => {
     svg.on("mousemove", ev => { const p = nearest(ev); if (p) { showHover(cellHover(p.g, p.li), ev.clientX, ev.clientY); App.sel.cells.clear(); App.sel.cells.add(p.g * D.nloc + p.li); Overview.redraw(); svg.style("cursor", "pointer"); } else { hideHover(); svg.style("cursor", null); } });
     svg.on("mouseleave", () => { hideHover(); App.sel.cells.clear(); Overview.redraw(); });
     svg.on("click", ev => { const p = nearest(ev); if (p) Sequence.open(p.g, p.li); });
-    box.append(el("div", { class: "note" }, `each point is one sequence. Diagonal: observed = expected. ● not masked, ▲ masked too divergent, ▼ masked too similar. Hover a point for its numbers; click it for the alignment.`));
+    note = el("div", { style: "max-width: 420px" }, el("b", null, "Observed vs expected divergence."), " Each point is one sequence: its observed divergence at the locus, the median over its comparators, against the divergence the genome predicts. Diagonal: observed = expected. ● not masked, ▲ masked too divergent, ▼ masked too similar. Hover a point for its numbers; click it for the alignment.");
     return box;
   }
   // best matches of the masked sequences, with the count expected from the unmasked ones
@@ -815,7 +792,7 @@ const Detail = (() => {
     }
     box.append(svg.node());
     const pm = 100 * d3.mean(masked, d => close.has(d.bm) ? 1 : 0), pu = nu ? 100 * d3.mean(unmasked, d => close.has(d.bm) ? 1 : 0) : NaN;
-    box.append(el("div", { class: "note" }, `masked sequences by the taxon each matches best at its locus, stacked by mask kind; the tick is the count expected if they matched like the taxon's ${fmtInt(nu)} unmasked sequences; bold names are the 5 closest relatives genome-wide. Best match is one of the 5 closest for ${fmt1(pm)}% of masked and ${Number.isFinite(pu) ? fmt1(pu) : "–"}% of unmasked sequences; median identity to it ${fmt1(d3.median(masked, d => d.id))}% masked vs ${nu ? fmt1(d3.median(unmasked, d => d.id)) : "–"}% unmasked. Bars on their ticks are damaged copies of the right sequence (a wrong exon); bars shifted onto a distant taxon point to contamination or a shared paralogue.`));
+    note = el("div", { style: "max-width: 420px" }, el("b", null, "Best matches."), ` Masked sequences by the taxon each matches best at its locus, stacked by mask kind; the tick is the count expected if they matched like the taxon's ${fmtInt(nu)} unmasked sequences; bold names are the 5 closest relatives genome-wide. The best match is one of the 5 closest for ${fmt1(pm)}% of masked and ${Number.isFinite(pu) ? fmt1(pu) : "–"}% of unmasked sequences; median identity to it ${fmt1(d3.median(masked, d => d.id))}% masked vs ${nu ? fmt1(d3.median(unmasked, d => d.id)) : "–"}% unmasked.`, el("div", { class: "more", style: "margin-top: 4px" }, "Bars on their ticks are damaged copies of the right sequence (a wrong exon); bars shifted onto a distant taxon point to contamination or a shared paralogue."));
     return box;
   }
   // site ribbons of the masked sequences: one pixel-row each, coloured by the site code
@@ -826,13 +803,16 @@ const Detail = (() => {
     const maxLen = cur.kind === "locus" ? D.loci.length[cur.i] : d3.max(masked, ([g, li]) => D.loci.length[li]);
     const wrap = el("div", { class: "ribbons-wrap" }); box.append(wrap);
     masked.sort((a, b) => D.sev[b[0] * D.nloc + b[1]] - D.sev[a[0] * D.nloc + a[1]]);
+    wrap.append(el("div", { class: "rib-head2" }, el("span", null, cur.kind === "taxon" ? "locus" : "taxon"), el("span", null, ""), el("span", { title: "the taxon closest to the sequence at this locus (per-site divergence compared on the same sites); in the outside colour when it is not one of the sequence's comparators" }, "best match")));
     for (const [g, li] of masked) {
-      const cv = el("canvas"); const row = el("div", { class: "rib-row2", onclick: () => Sequence.open(g, li), onmouseenter: () => { App.sel.cells.clear(); App.sel.cells.add(g * D.nloc + li); Overview.redraw(); }, onmouseleave: () => { App.sel.cells.clear(); Overview.redraw(); } },
-        el("span", { class: "nm", title: cur.kind === "taxon" ? D.loci.names[li] : D.taxa.names[g] }, sw(D.colorOf(D.state[g * D.nloc + li])), cur.kind === "taxon" ? D.loci.names[li] : D.taxa.names[g]), cv);
+      const cv = el("canvas"); const bm = D.num("best_match", g, li); const inSet = bm !== null && bm >= 0 && D.comps(g, li).includes(bm);
+      const bmCell = el("span", { class: "nm bm", style: bm !== null && bm >= 0 && !inSet ? `color:${TREE_COL.outside}` : null, title: bm !== null && bm >= 0 ? `${D.taxa.names[bm]}: ${fmt1(D.num("best_match_identity", g, li))}% identity over shared sites${inSet ? ", one of the comparators" : ", not one of the comparators"}` : "" }, bm !== null && bm >= 0 ? D.taxa.names[bm] : "");
+      const row = el("div", { class: "rib-row2", onclick: () => Sequence.open(g, li), onmouseenter: () => { App.sel.cells.clear(); App.sel.cells.add(g * D.nloc + li); Overview.redraw(); }, onmouseleave: () => { App.sel.cells.clear(); Overview.redraw(); } },
+        el("span", { class: "nm", title: cur.kind === "taxon" ? D.loci.names[li] : D.taxa.names[g] }, sw(D.colorOf(D.state[g * D.nloc + li])), cur.kind === "taxon" ? D.loci.names[li] : D.taxa.names[g]), cv, bmCell);
       wrap.append(row);
       D.codes(li).then(C => drawRibbon(cv, C, g, li, maxLen));
     }
-    box.append(el("div", { class: "note" }, `${fmtInt(masked.length)} masked sequences, sites along x: red where a majority of the comparators differ, blue where a pair shares a state against the others. ` + (cur.kind === "locus" ? "Rows share the alignment's columns: a vertical band is a column problem (misalignment), a horizontal block in one row is a taxon problem (a wrong exon, a frameshift)." : "Each row is a different locus drawn to its own length on a shared axis.") + " Hover a row for the site; click it for the alignment."));
+    note = el("div", { style: "max-width: 420px" }, el("b", null, "Site ribbons."), ` ${fmtInt(masked.length)} masked sequences, sites along x: red where a majority of the comparators differ, blue where a pair shares a state against the others. ` + (cur.kind === "locus" ? "Rows share the alignment's columns: a vertical band is a column problem (misalignment), a horizontal block in one row is a taxon problem (a wrong exon, a frameshift)." : "Each row is a different locus drawn to its own length on a shared axis.") + " The right-hand column names the taxon closest to the sequence at that locus, in the outside colour when it is not one of its comparators. Hover a row for the site; click it for the alignment.");
     return box;
   }
   function drawRibbon(cv, C, g, li, maxLen) {
@@ -926,6 +906,7 @@ function splitsOf(root) {                                         // the biparti
   const walk = n => { if (!n.children.length) { n.set = new Set([n.name]); return n.set; } n.set = new Set(); for (const c of n.children) for (const x of walk(c)) n.set.add(x); n.split = key(n.set); return n.set; };
   walk(root); return root;
 }
+const TREE_COL = { focal: "#d9822b", outside: "#c2185b" };       // the focal sequence; a taxon from outside the comparator set
 function drawCophylo(host, D, entry, k, cell) {
   const { g, li } = cell; const exp = parseNewick(entry.expected[k]), obs = parseNewick(entry.observed[k]);
   const name = x => D.taxa.names[+x]; const partner = D.num("partner", g, li), bm = D.num("best_match", g, li), bmId = D.num("best_match_identity", g, li); const comps = new Set(D.comps(g, li));
@@ -937,7 +918,9 @@ function drawCophylo(host, D, entry, k, cell) {
   const rank = new Map(); tipsOf(exp).forEach((t, i) => rank.set(t.name, i)); orderLike(obs, rank); ogFirst(obs);
   splitsOf(exp); splitsOf(obs); const expSplits = new Set(), obsSplits = new Set();
   const collect = (n, out) => { if (n.children.length && n.split && n.set.size > 1 && n.set.size < tipsOf(exp).length - 1) out.add(n.split); n.children.forEach(c => collect(c, out)); }; collect(exp, expSplits); collect(obs, obsSplits);
-  const labelOf = t => { const i = +t; return name(t) + (i === bm && !comps.has(i) ? "*" : ""); };          // * : the best match, brought in from outside the comparators
+  const labelOf = t => name(t);
+  const clos = entry.closest ? entry.closest[k] : null;                                                       // [expected, observed]: the tip closest to the focal in each tree, by that tree's own distances
+  const closName = j => clos && clos[j] >= 0 ? String(entry.tips[k][clos[j]]) : null;
   const meas = document.createElement("canvas").getContext("2d"); meas.font = `bold 11.5px ${cssVar("--sans")}`; const LAB = Math.ceil(d3.max(tipsOf(exp), t => meas.measureText(labelOf(t.name)).width) + 10);
   const nTip = tipsOf(exp).length; const RH = 20, GAP = 44, W = Math.min(820, Math.max(560, 2 * LAB + GAP + 240)), TW = (W - 2 * LAB - GAP - 28) / 2, top = 10, H = top + nTip * RH + 40;
   depthOf(exp); depthOf(obs); const inDepth = root => d3.max(tipsOf(root).filter(t => !isOg(t)), t => t.depth) || 0;
@@ -945,8 +928,8 @@ function drawCophylo(host, D, entry, k, cell) {
   assignY(exp, { y: 0 }); assignY(obs, { y: 0 });
   const svg = d3.create("svg").attr("width", W).attr("height", H).attr("class", "tangle");
   const yOf = n => top + n.y * RH + RH / 2;
-  const focalCol = D.colorOf(D.state[g * D.nloc + li]) || cssVar("--ink"); const partnerCol = D.colorOf(ST.BLUE + 1) || cssVar("--ink");
-  const draw = (root, x0, dir, otherSplits) => {                  // dir +1 draws left to right, -1 right to left
+  const focalCol = TREE_COL.focal, partnerCol = D.colorOf(ST.BLUE + 1) || cssVar("--ink"), inCol = cssVar("--ink"), outCol = TREE_COL.outside;
+  const draw = (root, x0, dir, otherSplits, bold) => {           // dir +1 draws left to right, -1 right to left; bold: the tip closest to the focal in this tree
     const gg = svg.append("g"); const walk = n => { for (const c of n.children) { const og = isOg(c); const xa = x0 + dir * sx(n.depth), xb = og ? x0 + dir * OGLEN : x0 + dir * sx(c.depth); c.xdraw = xb;
       const conflict = c.children.length && c.split && c.set.size > 1 && c.set.size < nTip - 1 && !otherSplits.has(c.split);
       gg.append("path").attr("d", `M${xa},${yOf(n)}V${yOf(c)}H${xb}`).attr("fill", "none").attr("stroke", conflict ? cssVar("--ink") : cssVar("--muted")).attr("stroke-width", conflict ? 2.6 : 1.2).append("title").text(conflict ? "this split is not in the other tree" : og ? `the outgroup's branch, ${fmt1(c.length)}%, drawn shortened` : `branch length ${fmt1(c.length)}%`);
@@ -954,17 +937,18 @@ function drawCophylo(host, D, entry, k, cell) {
         gg.append("line").attr("x1", xm - 2.5).attr("x2", xm + 2.5).attr("y1", y + 4).attr("y2", y - 4).attr("stroke", cssVar("--surface")).attr("stroke-width", 4);
         gg.append("line").attr("x1", xm - 3.5).attr("x2", xm + 0.5).attr("y1", y + 4).attr("y2", y - 4).attr("stroke", cssVar("--muted")).attr("stroke-width", 1.2);
         gg.append("line").attr("x1", xm + 0.5).attr("x2", xm + 4.5).attr("y1", y + 4).attr("y2", y - 4).attr("stroke", cssVar("--muted")).attr("stroke-width", 1.2); }
-      if (!c.children.length) { const isF = +c.name === g, isBM = +c.name === bm, isP = +c.name === partner;
+      if (!c.children.length) { const isF = +c.name === g, isP = +c.name === partner, inSet = comps.has(+c.name), isBold = c.name === bold;
+        const dot = isF ? focalCol : inSet ? inCol : outCol;
         if (og) gg.append("rect").attr("x", xb - 3).attr("y", yOf(c) - 3).attr("width", 6).attr("height", 6).attr("fill", cssVar("--surface")).attr("stroke", cssVar("--muted")).attr("stroke-width", 1.2);
-        else gg.append("circle").attr("cx", xb).attr("cy", yOf(c)).attr("r", 3).attr("fill", isF ? focalCol : cssVar("--surface")).attr("stroke", isF ? focalCol : isP ? partnerCol : cssVar("--muted")).attr("stroke-width", 1.2);
-        const lab = gg.append("text").attr("x", xb + dir * 6).attr("y", yOf(c) + 4).attr("text-anchor", dir > 0 ? "start" : "end").attr("font-size", 11.5).attr("font-weight", (isF || isBM) && !og ? 700 : 400).attr("fill", og ? cssVar("--muted") : isF ? focalCol : isP ? partnerCol : cssVar("--ink")).text(labelOf(c.name));
-        lab.append("title").text(og ? `${name(c.name)}: the outgroup both trees are rooted on (the taxon at this locus most distant from these taxa genome-wide); its branch is drawn shortened` : `${name(c.name)}: ${fmt1(c.depth)}% ${D.format >= 3 ? "corrected divergence" : "divergence"} from the root of this tree`); }
+        else gg.append("circle").attr("cx", xb).attr("cy", yOf(c)).attr("r", 3.2).attr("fill", dot).attr("stroke", dot).attr("stroke-width", 1);
+        const lab = gg.append("text").attr("x", xb + dir * 6).attr("y", yOf(c) + 4).attr("text-anchor", dir > 0 ? "start" : "end").attr("font-size", 11.5).attr("font-weight", (isF || isBold) && !og ? 700 : 400).attr("fill", og ? cssVar("--muted") : isF ? focalCol : isP ? partnerCol : inSet ? cssVar("--ink") : outCol).text(labelOf(c.name));
+        lab.append("title").text(og ? `${name(c.name)}: the outgroup both trees are rooted on (the taxon at this locus most distant from these taxa genome-wide); its branch is drawn shortened` : `${name(c.name)}${isF ? " (the focal sequence)" : inSet ? " (a comparator)" : " (not one of the comparators)"}${isBold ? "; the closest to the focal in this tree" : ""}: ${fmt1(c.depth)}% ${D.format >= 3 ? "corrected divergence" : "divergence"} from the root`); }
       walk(c); } }; walk(root); return gg; };
-  draw(exp, 8, 1, obsSplits); draw(obs, W - 8, -1, expSplits);
+  draw(exp, 8, 1, obsSplits, closName(0)); draw(obs, W - 8, -1, expSplits, closName(1));
   const obsTips = new Map(); tipsOf(obs).forEach(t => obsTips.set(t.name, t));
   for (const t of tipsOf(exp)) { const o = obsTips.get(t.name); if (!o) continue;      // the connector runs through the gap between the two label columns
     const x1 = t.xdraw + 6 + meas.measureText(labelOf(t.name)).width + 4, x2 = o.xdraw - 6 - meas.measureText(labelOf(t.name)).width - 4;
-    svg.append("line").attr("x1", x1).attr("x2", x2).attr("y1", yOf(t)).attr("y2", yOf(o)).attr("stroke", yOf(t) === yOf(o) ? cssVar("--grid") : cssVar("--floor")).attr("stroke-dasharray", "2 3"); }
+    svg.append("line").attr("x1", x1).attr("x2", x2).attr("y1", yOf(t)).attr("y2", yOf(o)).attr("stroke", cssVar("--floor")).attr("stroke-width", 1).attr("stroke-dasharray", "2 3"); }
   const bar = Math.pow(10, Math.floor(Math.log10(maxD))) * (maxD / Math.pow(10, Math.floor(Math.log10(maxD))) >= 5 ? 2 : 1);
   const by = H - 12; svg.append("line").attr("x1", 8).attr("x2", 8 + sx(bar)).attr("y1", by).attr("y2", by).attr("stroke", cssVar("--ink")).attr("stroke-width", 1.5);
   svg.append("text").attr("x", 12 + sx(bar)).attr("y", by + 4).attr("font-size", 10.5).attr("fill", cssVar("--muted")).text(`${bar}% ${D.format >= 3 ? "corrected divergence" : "divergence"}`);
@@ -972,9 +956,9 @@ function drawCophylo(host, D, entry, k, cell) {
   const q = svg.append("g").attr("transform", `translate(${W - 20},${by})`).style("cursor", "help");
   q.append("circle").attr("r", 8).attr("fill", "none").attr("stroke", cssVar("--muted")).attr("stroke-width", 1.2); q.append("text").attr("y", 4).attr("text-anchor", "middle").attr("font-size", 11).attr("font-weight", 700).attr("fill", cssVar("--muted")).text("?");
   const explain = el("div", { style: "max-width: 380px" },
-    el("div", null, el("b", null, "Two neighbour-joining trees"), " over the focal sequence (filled dot, in its mask colour), its comparators, the partner of a too-similar pair (in the too-similar colour), and the best match, the taxon closest to the focal by per-site divergence compared on the same sites (in bold; marked * when it is not one of the comparators" + (bmId !== null ? `; identity ${fmt1(bmId)}%` : "") + ")."),
+    el("div", null, el("b", null, "Two neighbour-joining trees"), " over the focal sequence (orange), its comparators (black dots), the partner of a too-similar pair (blue label) and, when it is not one of the comparators, the best match (crimson dot and label; the taxon closest to the focal by per-site divergence compared on the same sites" + (bmId !== null ? `, identity ${fmt1(bmId)}%` : "") + "). In each tree the taxon closest to the focal by that tree's own distances is in bold: the closest relative genome-wide on the left, the closest at this locus on the right."),
     el("div", { style: "margin-top: 4px" }, el("b", null, "Left:"), (D.format >= 3 ? " the distances the test expects for every pair: each pair's genome-wide divergence, F81-corrected with this locus's plateau and scaled by its rate. " : " the distances the test expects for every pair, each pair's genome-wide divergence through this locus's expectation. "), el("b", null, "Right:"), (D.format >= 3 ? " the divergence observed at this locus over shared sites, corrected the same way (capped at 0.98 of the plateau). " + (ogName ? "Both rooted on the same outgroup (hollow square, muted): the taxon at this locus most distant from these taxa genome-wide; its branch is drawn shortened, with a break. One scale over the ingroup, in corrected divergence; negative branches drawn as zero." : "Both midpoint-rooted, one scale in corrected divergence; negative branches drawn as zero.") : " the mismatch fractions observed at this locus over shared sites. Both midpoint-rooted, one scale; negative branches drawn as zero.")),
-    el("div", { style: "margin-top: 4px" }, "Thick branches are splits absent from the other tree; dotted lines join the same taxon on both sides."),
+    el("div", { style: "margin-top: 4px" }, "Thick branches are splits absent from the other tree; dotted lines join the same taxon on both sides. A black closest taxon on the right means the sequence has moved away from everything; a crimson one means it has moved towards that taxon."),
     el("div", { style: "margin-top: 4px", class: "more" }, "A long focal branch with its neighbours unchanged is a damaged copy of the right sequence. A focal that moves across to its best match points to contamination or a paralogue. A whole clade pushed away from the rest on one long branch is a paralogue shared by the clade. A best match on its own long branch is merely the least different taxon, not a relative."));
   q.on("mouseenter", ev => showHover(explain, ev.clientX, ev.clientY)).on("mouseleave", hideHover);
   return svg.node();
@@ -1178,13 +1162,12 @@ const Hist = (() => {
 // ------------------------------------------------------------------ the table view (virtualised)
 const Table = (() => {
   let rows = [], keys = [{ k: "excess_m", dir: -1 }], maskedOnly = true, root = null;          // keys[0] sorts first, keys[1] breaks its ties
-  const COLS = [["taxon", "taxon"], ["locus", "locus"], ["cls", "class"], ["to", "moved towards"], ["bm", "best match"], ["n_fail", "fails"], ["n_similar", "similar"], ["obs", "observed %"], ["exp", "expected %"], ["excess_m", "excess (m)"], ["bm_id", "best match %"], ["away", "away %"], ["lam", "|2 ln LR|"]];
+  const COLS = [["taxon", "taxon"], ["locus", "locus"], ["bm", "best match"], ["n_fail", "fails"], ["n_similar", "similar"], ["obs", "observed %"], ["exp", "expected %"], ["excess_m", "excess (m)"], ["bm_id", "best match %"], ["lam", "|2 ln LR|"]];
   function build() {
     const D = App.D; rows = [];
     for (let g = 0; g < D.n; g++) for (let li = 0; li < D.nloc; li++) { const i = g * D.nloc + li; if (D.cols.n_comp[i] === 0) continue; if (maskedOnly && !(D.cols.side[i] & 3)) continue;
       const mi = D.num("med_identity", g, li), me = D.num("med_expected", g, li); const bm = D.num("best_match", g, li), pt = D.num("partner", g, li);
-      const cc = D.cols.class[i]; const to = D.movedTo(g, li); const aw = D.num("away_frac", g, li);
-      rows.push({ g, li, taxon: D.taxa.names[g], locus: D.loci.names[li], cls: D.CLASS[cc] || "", to: to >= 0 ? D.taxa.names[to] : "", n_fail: D.cols.n_fail[i], n_similar: D.cols.n_similar[i], obs: mi === null ? null : 100 - mi, exp: me === null ? null : 100 - me, excess_m: D.num("excess_m", g, li), bm_id: D.num("best_match_identity", g, li), away: aw === null ? null : 100 * aw, lam: D.num("lam", g, li), bm: bm !== null && bm >= 0 ? D.taxa.names[bm] : "", code: D.state[i] }); }
+      rows.push({ g, li, taxon: D.taxa.names[g], locus: D.loci.names[li], n_fail: D.cols.n_fail[i], n_similar: D.cols.n_similar[i], obs: mi === null ? null : 100 - mi, exp: me === null ? null : 100 - me, excess_m: D.num("excess_m", g, li), bm_id: D.num("best_match_identity", g, li), lam: D.num("lam", g, li), bm: bm !== null && bm >= 0 ? D.taxa.names[bm] : "", code: D.state[i] }); }
     sort();
   }
   const cmp = (a, b, k, dir) => { const x = a[k], y = b[k]; const ex = x === null || x === undefined || x === "", ey = y === null || y === undefined || y === ""; if (ex && ey) return 0; if (ex) return 1; if (ey) return -1; return (typeof x === "string" ? x.localeCompare(y) : x - y) * dir; };
@@ -1203,14 +1186,14 @@ const Table = (() => {
     const RH = 22;
     const paint = () => { inner.style.height = rows.length * RH + "px"; inner.style.position = "relative"; inner.replaceChildren(); const top = body.scrollTop; const i0 = Math.max(0, Math.floor(top / RH) - 5), i1 = Math.min(rows.length, i0 + Math.ceil(body.clientHeight / RH) + 10);
       for (let i = i0; i < i1; i++) { const r = rows[i]; inner.append(el("div", { class: "trow", style: `position:absolute; top:${i * RH}px; left:0; right:0`, onclick: () => Sequence.open(r.g, r.li), onmouseenter: () => { App.sel.cells.clear(); App.sel.cells.add(r.g * D.nloc + r.li); } },
-        el("span", null, sw(D.colorOf(r.code)), r.taxon), el("span", null, r.locus), el("span", { class: r.cls ? "cls-" + r.cls : null }, r.cls), el("span", null, r.to), el("span", null, r.bm), el("span", null, r.n_fail), el("span", null, r.n_similar), el("span", null, r.obs === null ? "" : fmt2(r.obs)), el("span", null, r.exp === null ? "" : fmt2(r.exp)), el("span", null, r.excess_m === null ? "" : fmt2(r.excess_m)), el("span", null, r.bm_id === null ? "" : fmt1(r.bm_id)), el("span", null, r.away === null ? "" : fmt1(r.away)), el("span", null, r.lam === null ? "" : fmt1(r.lam)))); }
+        el("span", null, sw(D.colorOf(r.code)), r.taxon), el("span", null, r.locus), el("span", null, r.bm), el("span", null, r.n_fail), el("span", null, r.n_similar), el("span", null, r.obs === null ? "" : fmt2(r.obs)), el("span", null, r.exp === null ? "" : fmt2(r.exp)), el("span", null, r.excess_m === null ? "" : fmt2(r.excess_m)), el("span", null, r.bm_id === null ? "" : fmt1(r.bm_id)), el("span", null, r.lam === null ? "" : fmt1(r.lam)))); }
       $(".n", foot).textContent = `${fmtInt(rows.length)} rows · click a row for the alignment · click a header to sort, shift-click for the tie-breaking key`; };
     body.addEventListener("scroll", paint); paint();
   }
   function download() {
     const D = App.D; const keep = maskedOnly; maskedOnly = false; build(); maskedOnly = keep;
-    const lines = ["taxon\tlocus\tstate\tclass\tmoved_towards\taway_frac\tn_fail\tn_similar\tobserved_divergence\texpected_divergence\texcess_m\tbest_match\tbest_match_identity\tpartner\tlrt"];
-    for (const r of rows) { const pt = D.num("partner", r.g, r.li); const bm = D.num("best_match", r.g, r.li); lines.push([r.taxon, r.locus, D.labelOf(r.code), r.cls, r.to, r.away === null ? "" : (r.away / 100).toFixed(3), r.n_fail, r.n_similar, r.obs ?? "", r.exp ?? "", r.excess_m ?? "", bm !== null && bm >= 0 ? D.taxa.names[bm] : "", r.bm_id ?? "", pt !== null && pt >= 0 ? D.taxa.names[pt] : "", r.lam ?? ""].join("\t")); }
+    const lines = ["taxon\tlocus\tstate\tn_fail\tn_similar\tobserved_divergence\texpected_divergence\texcess_m\tbest_match\tbest_match_identity\tpartner\tlrt"];
+    for (const r of rows) { const pt = D.num("partner", r.g, r.li); const bm = D.num("best_match", r.g, r.li); lines.push([r.taxon, r.locus, D.labelOf(r.code), r.n_fail, r.n_similar, r.obs ?? "", r.exp ?? "", r.excess_m ?? "", bm !== null && bm >= 0 ? D.taxa.names[bm] : "", r.bm_id ?? "", pt !== null && pt >= 0 ? D.taxa.names[pt] : "", r.lam ?? ""].join("\t")); }
     const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/tab-separated-values" })); a.download = `${D.man.dataset || "report"}_cells.tsv`; a.click(); build();
   }
   return { render, download };
