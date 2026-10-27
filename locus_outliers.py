@@ -838,6 +838,7 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
         LOG(f"report.html not written: the viewer template is not beside the script ({tpl}); report.npz holds the data"); return
     html = open(tpl, encoding="utf-8").read()
     def inline_script(mt):
+        if mt.group(1) == "report_data.js": return mt.group(0)                    # the sidecar tag just inserted stays a reference
         src = os.path.join(tpl_dir, mt.group(1)); return "<script>\n" + open(src, encoding="utf-8").read() + "\n</script>"
     def inline_style(mt):
         src = os.path.join(tpl_dir, mt.group(1)); return "<style>\n" + open(src, encoding="utf-8").read() + "\n</style>"
