@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Where along each masked sequence do its differences from its closest relatives sit?
     python bad_exon.py DIR ALIGNMENT TAXON [--out FILE]
+DIR is a LocusMasker run (0.11 or later: masked.csv and report.npz); ALIGNMENT the NEXUS file it was run on.
 A difference: a site where the focal taxon differs from every one of its 4 closest relatives that has the site.
 Windows: runs of differences no more than GAP sites apart with at least MINW differences."""
-import argparse, csv, re, sys, collections, numpy as np, matplotlib
+import argparse, csv, io, json, re, sys, zipfile, collections, numpy as np, matplotlib
 matplotlib.use("Agg"); import matplotlib.pyplot as plt
 ap = argparse.ArgumentParser(); ap.add_argument("dir"); ap.add_argument("aln"); ap.add_argument("taxon"); ap.add_argument("--out"); ap.add_argument("--gap", type=int, default=12); ap.add_argument("--minw", type=int, default=4)
 a = ap.parse_args(); GAP, MINW = a.gap, a.minw
@@ -28,10 +29,12 @@ def read_nexus_simple(path):
 names, seqs, cs = read_nexus_simple(a.aln)
 X = np.frombuffer("".join(s.upper() for s in seqs).encode(), dtype=np.uint8).reshape(len(names), -1)
 miss = np.isin(X, np.frombuffer(b"-?XN*", dtype=np.uint8)); ix = {t: i for i, t in enumerate(names)}
-m = np.load(f"{a.dir}/m.npy"); mt = open(f"{a.dir}/taxa.txt").read().split(); mi = {t: i for i, t in enumerate(mt)}
-row = m[mi[a.taxon]]; rel = [mt[j] for j in np.argsort(np.where(np.isnan(row), np.inf, row))[:4]]
+z = zipfile.ZipFile(f"{a.dir}/report.npz"); npy = lambda k: np.load(io.BytesIO(z.read(k)))
+mt = json.loads(z.read("taxa.json"))["names"]; lnames = json.loads(z.read("loci.json"))["names"]; mi = {t: i for i, t in enumerate(mt)}
+if a.taxon not in mi: sys.exit(f"{a.taxon} is not a taxon of the run in {a.dir}")
+rel = [mt[j] for j in npy("taxa/closest.npy")[mi[a.taxon]] if j >= 0][:4]                 # its 4 closest relatives by m, in the run's order
 masked = [r for r in csv.DictReader(open(f"{a.dir}/masked.csv")) if r["taxon"] == a.taxon]
-tested = [r["locus"] for r in csv.DictReader(open(f"{a.dir}/cells.tsv"), delimiter="\t") if r["taxon"] == a.taxon]
+tested = [lnames[li] for li in np.flatnonzero(npy("cells/n_comp.npy")[mi[a.taxon]] > 0)]   # the loci where the run tested it (it had comparators there)
 mset = {r["locus"] for r in masked}
 def analyse(loc):
     s = cs[loc]; f = X[ix[a.taxon], s]; fp = ~miss[ix[a.taxon], s]
@@ -82,6 +85,7 @@ with open(f"{a.dir}/badexon_{a.taxon}.tsv", "w") as f:
     w = csv.writer(f, delimiter="\t"); w.writerow(["locus", "masked", "class", "L", "ncomp", "ndiff", "nwin", "winlen", "id_in", "id_out", "windows"])
     for r in res: w.writerow([r["locus"], r["locus"] in mset, classify(r), r["L"], r["ncomp"], r["ndiff"], r["nwin"], r["winlen"], f"{r['id_in']:.1f}", f"{r['id_out']:.1f}", ";".join(f"{s0}-{s1}" for s0, s1, _ in r["wins"])])
 # ------------------------------------------------------------------ barcode figure: one row per masked sequence
+if not M: sys.exit(f"{a.taxon}: no masked sequences, so no figure (wrote {a.dir}/badexon_{a.taxon}.tsv)")
 INK, MUTED, GRID, SPINE, SURF = "#0b0b0b", "#52514e", "#ebeae6", "#d4d2cc", "#ffffff"
 RED, BLUE, GREY = "#a8201f", "#3987e5", "#c9c7c2"
 order = {"windowed, clean elsewhere": 0, "windowed, but not clean elsewhere": 1, "spread along the sequence": 2, "too few differences": 3}

@@ -40,7 +40,7 @@
 <body>
 <div id="run" class="run">
   <h1>LocusMasker</h1>
-  <p class="lead">Finds and masks the sequences in a multi-locus alignment that do not belong: too divergent from their closest relatives at a locus, or too similar to one of them. The whole analysis runs here in your browser; nothing is uploaded.</p>
+  <p class="lead">Finds and masks the sequences in a multi-locus alignment that do not belong: too divergent from their closest relatives at a locus, or copied from another taxon in the alignment. The whole analysis runs here in your browser; nothing is uploaded.</p>
   <div class="form">
     <label>alignment</label>
     <div class="files"><input type="file" id="aln" accept=".nex,.nexus,.fasta,.fa,.fas,.phy,.phylip,.txt"> <span class="k" id="alnInfo"></span></div>
@@ -67,7 +67,7 @@
   </div>
   <div class="progress" id="progress"></div>
   <div class="live" id="live" style="display:none">
-    <div class="tally"><span><b id="tDiv">0</b> too divergent</span><span><b id="tSim">0</b> too similar</span><span><b id="tLoci">0</b> loci tested</span></div>
+    <div class="tally"><span><b id="tDiv">0</b> too divergent</span><span><b id="tSim">0</b> copied</span><span><b id="tLoci">0</b> loci tested</span></div>
     <canvas id="liveCanvas"></canvas>
     <div class="k" style="font-size: 11.5px; margin-top: 4px">the alignment as a matrix of taxa (rows) by loci (columns), painted as each locus is tested: greys pass, reds masked as too divergent, blues as too similar</div>
   </div>

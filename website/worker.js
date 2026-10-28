@@ -45,7 +45,9 @@ _err
     const err = await py.runPythonAsync(code);
     if (err) { const [kind, text] = err.toJs(); postMessage({ type: "error", text: kind === "memory" ? text : text || "the tool stopped" }); return; }
     const outputs = {};
-    for (const f of FS.readdir("/work/out")) { if (f === "." || f === ".." || f === "report.html" || f === "pairs.npy" || f === "trends.tsv" || f.endsWith(".npy") && f !== "report.npz") continue; outputs[f] = FS.readFile("/work/out/" + f); }
+    // every file the run wrote (the masked alignment, masked.csv, report.npz, tests.tsv.gz with --all-tests) except the
+    // report page and its data sidecar: the page assembles its own report.html from the viewer and report.npz
+    for (const f of FS.readdir("/work/out")) { if (f === "." || f === ".." || f === "report.html" || f === "report_data.js") continue; outputs[f] = FS.readFile("/work/out/" + f); }
     const bundle = outputs["report.npz"]; delete outputs["report.npz"];
     // free the inputs and outputs held in the worker's file system
     for (const f of FS.readdir("/work/out")) if (f !== "." && f !== "..") FS.unlink("/work/out/" + f);

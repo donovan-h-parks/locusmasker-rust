@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
 """Is a masked sequence the reverse complement of its gene? Needs the nucleotide alignment that the protein
-alignment was translated from, codon-matched (loci named by a shared ENSG id, as in Wu_2018).
+alignment was translated from, codon-matched (loci paired by a shared ENSG id, as in Wu_2018, or else by name).
 
     python strand.py DIR --aa AA.nex --dna DNA.nex [--example ENSG00000161544 --taxon MACAC_FAS]
-                     [--windows DIR/badexon_TAXON.tsv --ref HOMO_SAP] [--out DIR/strand.tsv]
+                     [--windows DIR/badexon_TAXON.tsv --ref HOMO_SAP] [--out DIR/strand.tsv] [--threads 8]
 
-For every row of DIR/masked.csv: the ungapped DNA of the masked sequence against the ungapped DNA of up to
-five of its closest relatives genome-wide (by m.npy) that have the locus, 12-mer sharing forward and
-reverse-complement, the median over references (so one relative carrying the same error cannot decide):
-reverse if the reverse-complement share beats the forward share by 0.05, forward if the opposite,
-undecided otherwise. A control of 1,500 unmasked sequences is scored the same way. --example prints one
-locus in full (the taxon's forward translation and the three reverse-complement frames next to the
-reference protein). --windows runs the same test on the windows of a bad_exon.py table: do the windows
-share 12-mers with the reference's coding sequence in either orientation?"""
-import argparse, csv, re, sys, collections, numpy as np
+DIR is a LocusMasker run (0.11 or later: masked.csv and report.npz) on AA.nex. For every row of DIR/masked.csv:
+the ungapped DNA of the masked sequence against the ungapped DNA of up to five of its closest relatives
+genome-wide (by m, which a run does not write: recomputed from AA.nex with locus_outliers.divergence_matrix)
+that have the locus, 12-mer sharing forward and reverse-complement, the median over references (so one
+relative carrying the same error cannot decide): reverse if the reverse-complement share beats the forward
+share by 0.05, forward if the opposite, undecided otherwise. A control of 1,500 unmasked sequences is
+scored the same way. --example prints one locus in full (the taxon's forward translation and the three
+reverse-complement frames next to the reference protein). --windows runs the same test on the windows of
+a bad_exon.py table: do the windows share 12-mers with the reference's coding sequence in either orientation?"""
+import argparse, csv, hashlib, io, json, os, re, sys, zipfile, collections, numpy as np
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")); import locus_outliers as lo
 ap = argparse.ArgumentParser(); ap.add_argument("dir"); ap.add_argument("--aa", required=True); ap.add_argument("--dna", required=True)
 ap.add_argument("--example"); ap.add_argument("--taxon", default="MACAC_FAS"); ap.add_argument("--windows"); ap.add_argument("--ref", default="HOMO_SAP"); ap.add_argument("--out")
+ap.add_argument("--threads", type=int, default=8, help="threads for recomputing m")
 a = ap.parse_args(); S = a.dir
 def read_nexus_rows(path, want=None):
     names, seqs, charsets, inmat = [], {}, {}, False
@@ -57,10 +60,20 @@ if a.example:
     for fr in range(3): print(f"  {a.taxon} revcomp frame {fr + 1}:   ", translate(revcomp(f)[fr:])[:60])
     print(f"  15-mers of {a.taxon} found in {a.ref}: forward {100 * kshare(f, h):.0f}%, reverse complement {100 * kshare(revcomp(f), h):.0f}%")
 # 2. every masked sequence in Wu: forward vs reverse-complement 15-mer sharing with its closest relative that has data
-ens = {re.search(r"(ENSG\d+)", k).group(1): k for k in cs}
-def dna_of(aa_locus): return cs[ens[re.search(r"(ENSG\d+)", aa_locus).group(1)]]
-m = np.load(f"{S}/m.npy"); mt = open(f"{S}/taxa.txt").read().split(); mi = {t: i for i, t in enumerate(mt)}
-orders = {t: np.argsort(np.where(np.isnan(m[mi[t]]), np.inf, m[mi[t]])) for t in mt}
+def gene(name): g = re.search(r"(ENSG\d+)", name); return g.group(1) if g else name   # what pairs a protein locus with its DNA locus
+ens = {gene(k): k for k in cs}
+def dna_of(aa_locus): return cs[ens[gene(aa_locus)]]
+z = zipfile.ZipFile(f"{S}/report.npz"); npy = lambda k: np.load(io.BytesIO(z.read(k))); man = json.loads(z.read("manifest.json")); opt = man["options"]
+with open(a.aa, "rb") as fh:
+    if hashlib.sha256(fh.read()).hexdigest() != man["input"]["sha256"]: print(f"warning: {a.aa} is not the file the run read ({man['input']['file']}); m is recomputed from it", file=sys.stderr)
+mt, m, _ = lo.divergence_matrix(a.aa, None, opt["datatype"], fit_overlap=opt["fit_overlap"], n_comp=opt["n_comp"], threads=a.threads)
+if list(mt) != json.loads(z.read("taxa.json"))["names"]: sys.exit(f"{a.aa} does not hold the taxa of the run in {S}")
+closest = npy("taxa/closest.npy")
+def by_m(i):
+    """every other taxon in order of m from taxon i: the run's own 5 closest first (so its tie-break), then the rest"""
+    head = [int(j) for j in closest[i] if j >= 0]
+    return head + [j for j in np.argsort(np.where(np.isnan(m[i]), np.inf, m[i]), kind="stable").tolist() if j != i and j not in head]
+orders = {t: by_m(i) for i, t in enumerate(mt)}
 def classify(l, t, seq=None, k=12, margin=0.05, nref=5):
     """forward or reverse complement, judged against the taxon's closest relatives that have data: the median k-mer
     sharing over up to nref references, so that one relative carrying the same error does not decide"""
@@ -80,7 +93,7 @@ res = collections.defaultdict(lambda: collections.Counter()); rows = []
 for r in masked:
     c = classify(r["locus"], r["taxon"])
     kind = c[3] if c else "too short"; res[r["taxon"]][kind] += 1
-    if c: rows.append((r["locus"], r["taxon"], c[0], f"{c[1]:.2f}", f"{c[2]:.2f}", kind, r["side"]))
+    if c: rows.append((r["locus"], r["taxon"], c[0], f"{c[1]:.2f}", f"{c[2]:.2f}", kind, r["reason"]))
 tot = collections.Counter()
 print("\nmasked sequences by taxon: reverse complement / forward / undecided, judged by median 12-mer sharing with up to 5 closest relatives")
 for t, v in sorted(res.items(), key=lambda kv: -kv[1]["reverse"]):
@@ -88,13 +101,14 @@ for t, v in sorted(res.items(), key=lambda kv: -kv[1]["reverse"]):
     if v["reverse"] or sum(v.values()) >= 40: print(f"  {t:10s} reverse {v['reverse']:4d}  forward {v['forward']:4d}  undecided {v['undecided']:4d}  too short {v['too short']:3d}")
 print(f"  {'all':10s} reverse {tot['reverse']:4d}  forward {tot['forward']:4d}  undecided {tot['undecided']:4d}  too short {tot['too short']:3d}")
 with open(a.out or f"{S}/strand.tsv", "w") as fh:
-    w = csv.writer(fh, delimiter="\t"); w.writerow(["locus", "taxon", "reference", "fwd_15mer_share", "rev_15mer_share", "kind", "side"]); w.writerows(rows)
-# control: unmasked cells
-cells = [r for r in csv.DictReader(open(f"{S}/cells.tsv"), delimiter="\t")]
+    w = csv.writer(fh, delimiter="\t"); w.writerow(["locus", "taxon", "reference", "fwd_12mer_share", "rev_12mer_share", "kind", "reason"]); w.writerows(rows)
+# control: unmasked sequences the run tested (those with comparators), in locus order
+lnames = json.loads(z.read("loci.json"))["names"]
 mk = {(r["locus"], r["taxon"]) for r in masked}
-rng = np.random.default_rng(0); um = [r for r in cells if (r["locus"], r["taxon"]) not in mk]; um = [um[i] for i in rng.choice(len(um), 1500, replace=False)]
-ctrl = collections.Counter((classify(r["locus"], r["taxon"]) or [None] * 4)[3] or "too short" for r in um)
-print("control, 1,500 unmasked sequences:", dict(ctrl))
+um = [(lnames[li], mt[g]) for li, g in np.argwhere(npy("cells/n_comp.npy").T > 0).tolist() if (lnames[li], mt[g]) not in mk]
+rng = np.random.default_rng(0); um = [um[i] for i in rng.choice(len(um), min(1500, len(um)), replace=False)]
+ctrl = collections.Counter((classify(l, t) or [None] * 4)[3] or "too short" for l, t in um)
+print(f"control, {len(um):,} unmasked sequences:", dict(ctrl))
 # 3. the windows of a bad_exon.py table: on the reverse strand, forward, or foreign to the reference's CDS?
 if a.windows:
     aa_cs = {}

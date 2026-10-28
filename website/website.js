@@ -129,7 +129,7 @@ async function showResult() {
   const add = (label, name, bytes, type) => { const b = document.createElement("button"); b.textContent = label; b.title = name; b.onclick = () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([bytes], { type })); a.download = name; a.click(); }; bar.append(b); };
   const k = document.createElement("span"); k.className = "k"; k.textContent = "downloads:"; bar.append(k);
   const masked = Object.keys(outputs).find(n => n.includes(".masked.")); if (masked) add("masked alignment", masked, outputs[masked], "text/plain");
-  for (const n of ["masked.csv", "cells.tsv", "per_locus.tsv", "similar.tsv", "run.log"]) if (outputs[n]) add(n, n, outputs[n], "text/plain");
+  for (const [n, type] of [["masked.csv", "text/csv"], ["tests.tsv.gz", "application/gzip"]]) if (outputs[n]) add(n, n, outputs[n], type);   // tests.tsv.gz: only a run with --all-tests writes it
   add("report.npz", "report.npz", bundleBytes, "application/zip");
   const rb = document.createElement("button"); rb.textContent = "report.html"; rb.className = "primary"; rb.onclick = async () => { rb.disabled = true; rb.textContent = "assembling…"; const html = await assembleReport(); const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([html], { type: "text/html" })); a.download = "report.html"; a.click(); rb.disabled = false; rb.textContent = "report.html"; }; bar.append(rb);
   const again = document.createElement("button"); again.textContent = "new run"; again.onclick = () => location.reload(); bar.append(Object.assign(document.createElement("span"), { style: "flex:1" }), again);

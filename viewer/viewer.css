@@ -102,7 +102,7 @@ a { color: var(--accent); }
 .trees-card { position: absolute; right: 10px; top: 6px; background: var(--surface); border: 1px solid var(--spine); border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,0.14); z-index: 5; max-width: 680px; }
 .trees-card .close { position: absolute; right: 4px; top: 4px; padding: 0 6px; }
 .trees-card svg { display: block; }
-.trees-card .tangle text { fill: var(--ink); }
+.trees-card .tangle text:not([fill]) { fill: var(--ink); }   /* labels that carry their own colour (focal, outsiders, partner) keep it */
 button.help { border-radius: 50%; width: 22px; height: 22px; padding: 0; font-weight: 700; color: var(--muted); }
 .controls label { color: var(--muted); display: inline-flex; gap: 5px; align-items: center; }
 .legend { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--ink); }

@@ -1,15 +1,49 @@
-"""Simulation suite for locus_outliers.py: random trees, planted truths, scoring.
+"""Simulation suite for locus_outliers.py (LocusMasker 0.11 outputs): random trees, planted truths, scoring.
 
 Each config: a random bifurcating tree, 14 loci (lengths 200-3000, rates 0.3-3x, gamma site
 rates, lognormal branch noise, optional fragment missingness), then planted events on disjoint
 taxa: contaminants (random residues), swaps (random partner), near-copies (partner among the 5
 patristically nearest; recipient recorded), a chimera (5 loci from one distant donor), and a
 misalignment window (30% of a cell's sites shuffled). Runs locus_outliers.py (LO_TOOL overrides the
-path; LO_BASE the working directory), scores masked.csv / similar.tsv against truth. Nothing is kept.
+path; LO_BASE the working directory, where each config keeps its alignment, the run's outputs in
+scan/ and the run's log in scan.log) and scores masked.csv and report.npz against the truth.
 
-usage: python sim_suite.py [ncpu]
+One line per config, summed in TOTALS. The leading fields keep their 0.10 meaning, so parsers of
+them still work and the numbers compare across versions; two had to change, marked CHANGED.
+  contam, swap, chimera, misalign a/b
+          a of the b planted cells masked by test 1, too divergent: masked.csv reason divergent or
+          both. CHANGED: 0.10 counted side == divergent only. "both" is a cell that failed test 1
+          and is also an identified copy; in 0.11 test 2 looks at every pair of taxa, so a swapped
+          or chimeric cell that fails test 1 is often also named a copy of its new sequence's
+          relatives, and reading "divergent" alone would score those test 1 catches as misses.
+  nearcopy a/b (dir c/d)
+          a of the b planted pairs are significant too-similar pairs with an identified recipient,
+          either way round: the pairs 0.11 masks (report.npz similar/<locus>.json, which replaces
+          similar.tsv). d = a, and c of them identify the true recipient. TOTALS prints the
+          direction as "direction c/d".
+  FPdiv   cells masked by test 1 (divergent or both) that were not planted; planted is every cell
+          an event touched, near-copy and chimera donors included. CHANGED like the counts above.
+  FPsim   significant too-similar pairs with an identified recipient in which neither taxon was
+          planted at that locus: pairs, as in 0.10.
+  cells   tested cells (taxon x locus with comparators), report.npz manifest counts.cells, the
+          rows the old cells.tsv had: in the TOTALS header and on the huge line.
+Appended, new in 0.11:
+  contam_any, swap_any, chimera_any, misalign_any a/b   planted cells masked for any reason.
+  nearcopy_named a/b   the true recipient is masked as a copy (reason similar or both) and
+          masked.csv names the donor as its source (similar_partner).
+  nearcopy_reversed n  the donor is masked as a copy naming the true recipient: the wrong direction.
+  swap_named a/b, swap_named_ok n   of the b planted swap cells masked for any reason, a name a
+          source (similar_role recipient), and n of those name the swap partner or one of its five
+          closest taxa by m (report.npz taxa/closest.npy): the lineage the cell's sequence came from.
+  chimera_named a/b, chimera_named_ok n   the same for chimeric cells; the right source is the donor.
+  FPsim_cells  cells masked as a copy (similar or both) where neither the cell nor its named source
+          was planted at that locus.
+  FPany   cells masked for any reason that were not planted.
+
+usage: python sim_suite.py [ncpu [tag,tag,...]]          the 20 standard configs, or those named
+       python sim_suite.py ncpu huge [mid|deep|shallow]  one 10,000-taxon config, run alone
 """
-import json, os, subprocess, sys
+import csv, io, json, os, subprocess, sys, zipfile
 import numpy as np
 from concurrent.futures import ProcessPoolExecutor
 
@@ -17,6 +51,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.environ.get("LO_TOOL", os.path.join(os.path.dirname(HERE), "locus_outliers.py"))
 BASE = os.environ.get("LO_BASE", f"{HERE}/simsuite")
 PROTEIN = "ACDEFGHIKLMNPQRSTVWY"
+KINDS = ("contam", "swap", "nearcopy", "chimera", "misalign")
+ANY = ("contam", "swap", "chimera", "misalign")                  # the kinds scored as planted cells
+DIV, SIM = ("divergent", "both"), ("similar", "both")           # masked.csv reasons: failed test 1; an identified copy
 
 
 def sim_dataset(cfg, rng):
@@ -148,51 +185,112 @@ def run_config(cfg):
         for i in range(len(bounds) - 1):
             fh.write(f"DNA, locus{i + 1} = {bounds[i] + 1}-{bounds[i + 1]}\n")
     r = subprocess.run([sys.executable, TOOL, "--aln", f"{d}/a.fasta", "--partitions",
-                        f"{d}/a.parts.txt", "--out", f"{d}/scan",
-                        "--datatype", "aa" if cfg["alpha_size"] == 20 else "dna"],
+                        f"{d}/a.parts.txt", "--out", f"{d}/scan", "--progress", "none",
+                        "--datatype", "aa" if cfg["alpha_size"] == 20 else "dna"] + (["--threads", str(cfg["threads"])] if cfg.get("threads") else []),
                        capture_output=True, text=True, timeout=cfg.get("timeout", 1800))
+    with open(f"{d}/scan.log", "w") as fh: fh.write(r.stderr)        # the run's log: 0.11 writes no run.log
     if r.returncode != 0:
         return {"tag": tag, "error": r.stderr.strip().splitlines()[-1] if r.stderr else "?"}
-    div, sim = set(), {}
-    for ln in open(f"{d}/scan/masked.csv").read().splitlines()[1:]:
-        f = ln.split(",")
-        if f[3] == "divergent": div.add((f[0], f[1]))
-    for ln in open(f"{d}/scan/similar.tsv").read().splitlines()[1:]:
-        f = ln.split("\t")
-        sim[(f[0], frozenset((f[1], f[2])))] = f
-    planted = set()
-    res = dict(tag=tag, error=None, contam=[0, 0], swap=[0, 0], nearcopy=[0, 0],
-               chimera=[0, 0], misalign=[0, 0], dir_ok=0, dir_called=0, fp_div=0, fp_sim=0)
+    try:
+        res = score(f"{d}/scan", events)
+    except Exception as e:
+        return {"tag": tag, "error": f"scoring {d}/scan: {type(e).__name__}: {e}"}
+    res["tag"] = tag
+    return res
+
+
+def zero():
+    """a score with every field at zero: a/b fields are [a, b], the rest counts"""
+    res = {k: [0, 0] for k in KINDS + tuple(f"{k}_any" for k in ANY) + ("nearcopy_named", "swap_named", "chimera_named")}
+    res.update(dir_ok=0, dir_called=0, fp_div=0, fp_sim=0, cells=0, nearcopy_reversed=0, swap_named_ok=0,
+               chimera_named_ok=0, fp_sim_cells=0, fp_any=0)
+    return res
+
+
+def read_scan(scan):
+    """a 0.11 run's outputs: masked.csv rows by (locus, taxon); from report.npz every significant too-similar pair
+    at each locus with its identified recipient (None when no direction was identified), each taxon's five closest
+    taxa by m, and the manifest"""
+    with zipfile.ZipFile(f"{scan}/report.npz") as z:
+        man = json.loads(z.read("manifest.json"))
+        if man.get("format_version", 0) < 4:
+            raise RuntimeError(f"report format {man.get('format_version')} (LocusMasker {man.get('version')}): "
+                               "this suite scores the outputs of 0.11 and later (format 4)")
+        names = json.loads(z.read("taxa.json"))["names"]
+        loci = json.loads(z.read("loci.json"))["names"]
+        pairs = {}
+        for member in z.namelist():
+            if member.startswith("similar/") and member.endswith(".json"):
+                locus = loci[int(member[len("similar/"):-len(".json")])]
+                for e in json.loads(z.read(member)):
+                    pairs[(locus, frozenset((names[e["a"]], names[e["b"]])))] = names[e["recipient"]] if e["recipient"] >= 0 else None
+        cl = np.load(io.BytesIO(z.read("taxa/closest.npy")))
+    closest = {names[i]: {names[j] for j in row if j >= 0} for i, row in enumerate(cl.tolist())}
+    with open(f"{scan}/masked.csv", newline="") as fh:
+        masked = {(r["locus"], r["taxon"]): r for r in csv.DictReader(fh)}
+    return masked, pairs, closest, man
+
+
+def score(scan, events):
+    """one run's scores against its planted events; the module docstring defines every field"""
+    masked, pairs, closest, man = read_scan(scan)
+    why = {c: r["reason"] for c, r in masked.items()}
+    def source(c):                                  # the taxon a masked sequence is named a copy of, else None
+        r = masked.get(c)
+        return r["similar_partner"] if r is not None and r["similar_role"] == "recipient" else None
+    res = zero(); planted = set()
+    def caught(kind, c, right=None):                # one planted cell: test 1, any reason, and the source it names
+        res[kind][1] += 1; res[kind][0] += why.get(c) in DIV
+        res[f"{kind}_any"][1] += 1; res[f"{kind}_any"][0] += c in why
+        if right is not None and c in why:
+            s = source(c); res[f"{kind}_named"][1] += 1
+            if s is not None: res[f"{kind}_named"][0] += 1; res[f"{kind}_named_ok"] += s in right
     for ev in events:
         k = ev["kind"]
         if k == "chimera":
-            cells = [(l, ev["taxon"]) for l in ev["loci"]]
-            res[k][1] += len(cells); res[k][0] += sum(c in div for c in cells)
-            planted |= set(cells) | {(l, ev["donor"]) for l in ev["loci"]}
+            for l in ev["loci"]: caught(k, (l, ev["taxon"]), {ev["donor"]})
+            planted |= {(l, t) for l in ev["loci"] for t in (ev["taxon"], ev["donor"])}
         elif k == "swap":
-            cells = [(ev["locus"], ev["taxon"]), (ev["locus"], ev["taxon2"])]
-            res[k][1] += 2; res[k][0] += sum(c in div for c in cells)
-            planted |= set(cells)
+            l = ev["locus"]
+            for t, p in ((ev["taxon"], ev["taxon2"]), (ev["taxon2"], ev["taxon"])):
+                caught(k, (l, t), {p} | closest.get(p, set()))       # the cell now holds p's sequence: p's lineage is its source
+            planted |= {(l, ev["taxon"]), (l, ev["taxon2"])}
         elif k == "nearcopy":
-            key = (ev["locus"], frozenset((ev["donor"], ev["recipient"])))
-            res[k][1] += 1
-            hit = key in sim
-            res[k][0] += hit
-            planted |= {(ev["locus"], ev["donor"]), (ev["locus"], ev["recipient"])}
-            if hit:
-                f = sim[key]
-                if f[10] != "NA":
-                    res["dir_called"] += 1
-                    res["dir_ok"] += f[10] == ev["recipient"]
+            l, dn, rc = ev["locus"], ev["donor"], ev["recipient"]
+            called = pairs.get((l, frozenset((dn, rc))))                # the identified recipient of the planted pair
+            res[k][1] += 1; res["nearcopy_named"][1] += 1
+            if called is not None:
+                res[k][0] += 1; res["dir_called"] += 1; res["dir_ok"] += called == rc
+            res["nearcopy_named"][0] += why.get((l, rc)) in SIM and source((l, rc)) == dn
+            res["nearcopy_reversed"] += why.get((l, dn)) in SIM and source((l, dn)) == rc
+            planted |= {(l, dn), (l, rc)}
         else:
-            c = (ev["locus"], ev["taxon"])
-            res[k][1] += 1; res[k][0] += c in div
-            planted.add(c)
-    res["fp_div"] = len(div - planted)
-    res["fp_sim"] = sum(1 for (l, pr) in sim
-                        if not any((l, t) in planted for t in pr))
-    res["cells"] = sum(1 for _ in open(f"{d}/scan/cells.tsv")) - 1
+            c = (ev["locus"], ev["taxon"]); caught(k, c); planted.add(c)
+    res["fp_div"] = sum(1 for c, w in why.items() if w in DIV and c not in planted)
+    res["fp_sim"] = sum(1 for (l, pr), rc in pairs.items() if rc is not None and not any((l, t) in planted for t in pr))
+    res["fp_sim_cells"] = sum(1 for (l, t), r in masked.items()
+                              if r["reason"] in SIM and (l, t) not in planted and (l, r["similar_partner"]) not in planted)
+    res["fp_any"] = sum(1 for c in why if c not in planted)
+    res["cells"] = int(man["counts"]["cells"])
     return res
+
+
+def ab(v): return f"{v[0]}/{v[1]}"
+
+
+def config_line(r):
+    """the fields every version has printed, in their order"""
+    return (f"{r['tag']:16s} contam {ab(r['contam'])}  swap {ab(r['swap'])}  nearcopy {ab(r['nearcopy'])} (dir {r['dir_ok']}/{r['dir_called']})"
+            f"  chimera {ab(r['chimera'])}  misalign {ab(r['misalign'])}  FPdiv {r['fp_div']}  FPsim {r['fp_sim']}")
+
+
+def new_fields(r):
+    """the fields added for 0.11, appended after the old ones"""
+    return ("".join(f"  {k}_any {ab(r[f'{k}_any'])}" for k in ANY)
+            + f"  nearcopy_named {ab(r['nearcopy_named'])}  nearcopy_reversed {r['nearcopy_reversed']}"
+            + f"  swap_named {ab(r['swap_named'])}  swap_named_ok {r['swap_named_ok']}"
+            + f"  chimera_named {ab(r['chimera_named'])}  chimera_named_ok {r['chimera_named_ok']}"
+            + f"  FPsim_cells {r['fp_sim_cells']}  FPany {r['fp_any']}")
 
 
 # the large datasets (10,000 taxa x 100 loci), run one at a time with all threads: mid depth like the
@@ -204,20 +302,10 @@ HUGE = {"mid": dict(_huge, id=99, tag="dna_huge_s0", depth=0.2),
         "shallow": dict(_huge, id=97, tag="dna_huge_shallow_s0", depth=0.01)}
 
 
-def main():
-    ncpu = int(sys.argv[1]) if len(sys.argv) > 1 else 32
-    os.makedirs(BASE, exist_ok=True)
+def standard_configs():
+    """the 20 standard configs, in the order (so with the ids, seeds and data) they have always had"""
     cfgs = []
     i = 0
-    if len(sys.argv) > 2 and sys.argv[2] == "huge":                 # one large dataset, run alone with all threads
-        os.environ["OMP_NUM_THREADS"] = str(ncpu)
-        r = run_config(HUGE[sys.argv[3] if len(sys.argv) > 3 else "mid"])
-        if r.get("error"): print(f"{r['tag']}: ERROR {r['error']}"); return
-        print(f"{r['tag']:16s} contam {r['contam'][0]}/{r['contam'][1]}  swap {r['swap'][0]}/{r['swap'][1]}"
-              f"  nearcopy {r['nearcopy'][0]}/{r['nearcopy'][1]} (dir {r['dir_ok']}/{r['dir_called']})"
-              f"  chimera {r['chimera'][0]}/{r['chimera'][1]}  misalign {r['misalign'][0]}/{r['misalign'][1]}"
-              f"  FPdiv {r['fp_div']}  FPsim {r['fp_sim']}  cells {r['cells']:,}")
-        return
     for seed in range(4):
         for depth, dn in ((0.02, "shallow"), (0.2, "mid"), (0.8, "deep")):
             cfgs.append(dict(id=i, seed=seed, tag=f"dna_{dn}_s{seed}", n=80, depth=depth,
@@ -236,24 +324,36 @@ def main():
         cfgs.append(dict(id=i, seed=seed, tag=f"dna_small_s{seed}", n=14, depth=0.1,
                          alpha_size=4, pmiss=0.1, contam=2, swap=2, nearcopy=1,
                          chimera=0, misalign=1)); i += 1
+    return cfgs
+
+
+def main():
+    ncpu = int(sys.argv[1]) if len(sys.argv) > 1 else 32
+    os.makedirs(BASE, exist_ok=True)
+    if len(sys.argv) > 2 and sys.argv[2] == "huge":                 # one large dataset, run alone with all threads
+        os.environ["OMP_NUM_THREADS"] = "1"                          # the tool's own threads do the work (BLAS stays single-threaded, as in the tool)
+        r = run_config(dict(HUGE[sys.argv[3] if len(sys.argv) > 3 else "mid"], threads=ncpu))
+        if r.get("error"): print(f"{r['tag']}: ERROR {r['error']}"); return
+        print(config_line(r) + f"  cells {r['cells']:,}" + new_fields(r))
+        return
+    cfgs = standard_configs()
+    if len(sys.argv) > 2:                                           # only the configs named
+        want = sys.argv[2].split(","); bad = [t for t in want if t not in {c["tag"] for c in cfgs}]
+        if bad: sys.exit(f"unknown config {', '.join(bad)}; the configs are {', '.join(c['tag'] for c in cfgs)}")
+        cfgs = [c for c in cfgs if c["tag"] in want]
     os.environ["OMP_NUM_THREADS"] = "2"
-    with ProcessPoolExecutor(max_workers=min(ncpu // 2, 16)) as ex:
+    with ProcessPoolExecutor(max_workers=max(1, min(ncpu // 2, 16, len(cfgs)))) as ex:
         results = list(ex.map(run_config, cfgs))
-    tot = dict(contam=[0, 0], swap=[0, 0], nearcopy=[0, 0], chimera=[0, 0], misalign=[0, 0])
-    fp_div = fp_sim = cells = dir_ok = dir_called = 0
+    tot = zero()
     for r in results:
         if r.get("error"):
             print(f"{r['tag']}: ERROR {r['error']}"); continue
-        for k in tot:
-            tot[k][0] += r[k][0]; tot[k][1] += r[k][1]
-        fp_div += r["fp_div"]; fp_sim += r["fp_sim"]; cells += r["cells"]
-        dir_ok += r["dir_ok"]; dir_called += r["dir_called"]
-        print(f"{r['tag']:16s} contam {r['contam'][0]}/{r['contam'][1]}  swap {r['swap'][0]}/{r['swap'][1]}"
-              f"  nearcopy {r['nearcopy'][0]}/{r['nearcopy'][1]} (dir {r['dir_ok']}/{r['dir_called']})"
-              f"  chimera {r['chimera'][0]}/{r['chimera'][1]}  misalign {r['misalign'][0]}/{r['misalign'][1]}"
-              f"  FPdiv {r['fp_div']}  FPsim {r['fp_sim']}")
-    print(f"\nTOTALS over {cells:,} cells: " + "  ".join(f"{k} {v[0]}/{v[1]}" for k, v in tot.items())
-          + f"  direction {dir_ok}/{dir_called}  FPdiv {fp_div}  FPsim {fp_sim}")
+        for k, v in r.items():
+            if isinstance(v, list): tot[k][0] += v[0]; tot[k][1] += v[1]
+            elif k not in ("tag", "error"): tot[k] += v
+        print(config_line(r) + new_fields(r))
+    print(f"\nTOTALS over {tot['cells']:,} cells: " + "  ".join(f"{k} {ab(tot[k])}" for k in KINDS)
+          + f"  direction {tot['dir_ok']}/{tot['dir_called']}  FPdiv {tot['fp_div']}  FPsim {tot['fp_sim']}" + new_fields(tot))
 
 
 if __name__ == "__main__":
