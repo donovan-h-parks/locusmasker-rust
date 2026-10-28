@@ -1380,9 +1380,11 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         A, B, overlap, mismatches, E, f, log p.
         Without --all-tests only the pairs that could fail get exact tails, after two screens that only drop certain
         passes. (1) The method of types: a binomial lower tail is at least exp(-o KL(q || p)) / (o + 1), q and p the
-        observed and expected mismatch fractions, and the beta-binomial's is at least (1 - d) >= 0.05 times the
-        binomial's (the rate falls below its mean with probability >= 1 - d, d <= 0.95 the expected fraction): a pair
-        whose bound clears the bar by SIM_SCREEN_SLACK (5 nats, against log 20 = 3) cannot fail. (2) The exact
+        observed and expected mismatch fractions. The beta-binomial's is at least P(rate <= its mean) times the
+        binomial's at the mean (the binomial tail falls as the rate rises), and for expected fractions d <= 0.95 that
+        probability is at least 0.05 at any dispersion (checked numerically: it tends to 1 - d as the dispersion grows
+        and to 1/2 as it vanishes): a pair whose bound clears the bar by SIM_SCREEN_SLACK (5 nats, against log 20 = 3)
+        cannot fail. (2) The exact
         beta-binomial pmf at the observed count: the tail is at least the pmf, so a pair whose pmf clears the bar
         cannot fail."""
         As, Bs, Os, Ms, Es = [], [], [], [], []

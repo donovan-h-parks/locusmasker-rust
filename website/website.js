@@ -73,6 +73,7 @@ async function run() {
   const dtype = document.querySelector("input[name=dt]:checked").value;
   const args = ["--datatype", dtype, "--n-comp", $("#ncomp").value, "--fit-overlap", $("#fit").value, "--alpha", $("#alpha").value];
   if ($("#simonly").checked) args.push("--mask-similar-only"); if ($("#divonly").checked) args.push("--mask-different-only");
+  if ($("#alltests").checked) args.push("--all-tests");
   args.push("--name", f.name.replace(/\.[^.]+$/, ""));
   $("#go").disabled = true; $("#cancel").style.display = ""; $("#err").textContent = ""; $("#status").textContent = "starting…";
   const prog = $("#progress"); prog.replaceChildren(...STAGES.map(([k, l]) => stageRow(k, l))); prog.style.display = "block";
