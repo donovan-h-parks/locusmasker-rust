@@ -70,12 +70,17 @@ Method:
             comparators do (fewer comparators than requested failing a majority = "ambiguous").
             TEST 2, too similar: every pair of taxa at the locus that share >= --fit-overlap
             sites and have an m (not only the comparators) fails when P(X <= observed) is below
-            the bar both against E and against the row-adjusted expectation E x min(1, f) (the
-            row factor rescues a pair, never condemns one). The row factor f is the median of
-            (observed + 0.5) / (expected + 0.5) over each taxon's comparators other than the
-            partner (1 with fewer than two of them), the smaller of the pair's two factors: a
-            lineage that is slow at a locus is close to everything there, and that is not a copy;
-            the half mismatch keeps comparators that expect about none from saying anything.
+            the bar against E, against E x f and against E x f x g, f <= 1 the row factor and
+            g <= 1 the locus's depth curve (each can rescue a pair, never condemn one). The row factor f is the median of (observed + 0.5) / (expected + 0.5) over each
+            taxon's comparators other than the partner (1 with fewer than two of them), the
+            smaller of the pair's two factors: a lineage that is slow at a locus is close to
+            everything there, and that is not a copy; the half mismatch keeps comparators that
+            expect about none from saying anything. The depth curve g(m) is the locus's pooled
+            observed/expected over every testable pair, in 2,000 equal-count bins of m, made
+            non-increasing in m and capped at 1, each pair held to the curve computed without
+            itself where it would weigh on it: the expectation is fitted on close relatives, and
+            at a locus with much rate variation among sites deep pairs saturate more slowly than
+            the one-rate curve, so every deep pair sits below it; where the curve fits, g is 1.
             Pairs whose exact tail cannot reach the bar (a method-of-types bound, then the exact
             probability of the observed count) are not evaluated: they pass for certain. A
             failing pair's direction is attributed by a likelihood ratio over the sites the pair
@@ -108,8 +113,10 @@ Outputs (in --out; <stem> is the alignment file's name without extension)
                        is the identified recipient of), similar_partner (its source when it is a
                        recipient, else its strongest partner) and similar_role (the sequence's own
                        role in that pair: recipient, donor or undetermined), the pair's observed and
-                       expected divergence (%; the expectation before the row factor; the test used
-                       both it and expected x row factor), similar_row_factor, similar_log10p and
+                       expected divergence (%; the expectation before the row and depth factors; the
+                       test used it, expected x row factor and expected x row factor x depth factor),
+                       similar_row_factor, similar_depth_factor (the locus's depth curve at the pair's m,
+                       computed without the pair where the pair could fail), similar_log10p and
                        direction_log10p (empty when fewer than three third parties could be used),
                        and other_partners: up to four more, each as "name (source)" (this sequence
                        copied it), "name (copy)" (it copied this sequence) or "name (undetermined)".
@@ -117,8 +124,8 @@ Outputs (in --out; <stem> is the alignment file's name without extension)
                        held to. p-values are floored at 1e-300 (log10 -300).
   tests.tsv.gz         with --all-tests only: one row per test performed. test (divergent, similar,
                        direction), locus, taxon_a, taxon_b, overlap (shared sites), mismatches,
-                       expected (expected mismatches; for similar rows before the row factor),
-                       row_factor, lr (2 ln LR, positive when taxon_b is the recipient), log10p
+                       expected (expected mismatches; for similar rows before the row and depth factors),
+                       row_factor, depth_factor, lr (2 ln LR, positive when taxon_b is the recipient), log10p
                        (exact for divergent and similar rows; the approximate chi-square p for
                        direction rows), fail (1 = failed; for direction rows 1 = recipient identified)
                        and recipient. Divergent rows: each distinct comparator pair once; similar rows:
@@ -150,7 +157,7 @@ MIN_LOCI_FOR_M = 5      # pairs overlapping in fewer loci have no m and are neve
 MIN_LOCI_PER_TAXON = 10 # a taxon needs this many loci with >= fit-overlap residues to take part
 MIN_FIT_PAIRS = 8       # a locus needs this many fit pairs to be tested (or to get a rate)
 TEST_THREAD_PAIRS = 4000  # --threads applies to the test stage only when a locus has this many comparisons on average
-__version__ = "0.11.0"
+__version__ = "0.11.1"
 REPORT_FORMAT = 4                 # bundle format version; the viewer refuses a newer one (3: tree branch lengths are F81-corrected; 4: the too-similar test over every pair)
 DENSE_CELLS_MAX = 8_000_000       # per-cell numeric report columns are dense (taxa x loci) up to this many cells, sparse beyond
 BEST_MATCH_ALL_MAX_TAXA = 2000    # best matches for every tested cell up to this many taxa; beyond, only for cells with a fail
@@ -609,6 +616,18 @@ def bb_tails(o, n, E, phi, upper):
     return np.maximum(np.minimum(out, 0.0), _LOG_FLOOR)
 
 
+def depth_blocks(bO, bE):
+    """a locus's depth curve from its bins of m (ascending): pooled observed over expected mismatches per bin, made
+    non-increasing in m by pooling adjacent bins whose ratios are out of order (the pool-adjacent-violators algorithm
+    on ratios of sums), capped at 1. Returns the exclusive end index of each block and its g"""
+    ends, O, E = [], [], []
+    for i in range(len(bO)):
+        ends.append(i + 1); O.append(float(bO[i])); E.append(float(bE[i]))
+        while len(O) > 1 and O[-1] / max(E[-1], 1e-12) > O[-2] / max(E[-2], 1e-12):
+            o2, e2 = O.pop(), E.pop(); ends.pop(); O[-1] += o2; E[-1] += e2; ends[-1] = i + 1
+    return np.array(ends, dtype=np.intp), np.minimum(np.array(O) / np.maximum(np.array(E), 1e-12), 1.0)
+
+
 def bb_logpmf(k, n, E, phi):
     """log P(X = k) under the same model as bb_tails (beta-binomial with mean E and variance E + phi E^2, the binomial
     limit where the overdispersion is negligible or phi is 0); used to screen pairs: P(X <= k) >= P(X = k)"""
@@ -845,7 +864,7 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
         def put_json(name, obj): zf.writestr(name, json.dumps(obj, indent=1))
         for k in ("n_comp", "n_fail", "n_similar", "side", "focal_sites"): put(f"cells/{k}.npy", rep[k])
         numcols = ("med_identity", "med_expected", "excess_m", "closest", "closest_overlap", "closest_identity", "closest_expected",
-                   "best_match", "best_match_identity", "partner", "lam", "lam_p", "row_factor", "div_log10p", "sim_log10p", "dir_log10p")
+                   "best_match", "best_match_identity", "partner", "lam", "lam_p", "row_factor", "depth_factor", "div_log10p", "sim_log10p", "dir_log10p")
         if dense:
             for k in numcols: put(f"cells/{k}.npy", rep[k])
             put("cells/comparators.npy", rep["comparators"])
@@ -879,7 +898,8 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
             names=[nm for nm, _ in loci], length=[int(len(st)) for _, st in loci], ranges=[_ranges(st) for _, st in loci],
             status=list(rep["loc_status"]), rate=[None if not np.isfinite(v) else round(float(v), 5) for v in rep["rate"]],
             plateau=[round(float(v), 3) for v in rep["plateaus"]], phi=[None if not np.isfinite(v) else float(v) for v in rep["phi"]],
-            test_rate=[None if not np.isfinite(v) else round(float(v), 5) for v in rep["test_rate"]], pair_tests=[int(v) for v in rep["pair_tests"]]))
+            test_rate=[None if not np.isfinite(v) else round(float(v), 5) for v in rep["test_rate"]], pair_tests=[int(v) for v in rep["pair_tests"]],
+            depth_curve=rep["depth_curve"]))
         put_json("manifest.json", dict(
             format_version=REPORT_FORMAT, tool="LocusMasker", version=__version__, commit=_git_commit(),
             python=platform.python_version(), numpy=np.__version__, platform=("pyodide" if sys.platform == "emscripten" else "native"),
@@ -1207,11 +1227,14 @@ def main():
 SIM_SCREEN_SLACK = 5.0  # nats of slack in the first (binomial) screen of the too-similar test; see similar_tests
 SIM_CHUNK = 1 << 21     # pairs per chunk when a locus's pairs are screened for the too-similar test
 TAIL_CHUNK = 1 << 15    # pairs per call when exact tails are computed (bounds the memory of bb_tails' blocks)
+DEPTH_BINS = 2000       # equal-count bins of m for a locus's depth curve (see similar_tests)
+DEPTH_LOO_SHARE = 1e-3  # a pair holding more than this share of its bin's expected mismatches gets the curve without itself
 LN10 = math.log(10.0)
 MASKED_COLUMNS = ["locus", "taxon", "reason", "residues_masked",
                   "divergent_fails", "divergent_comparators", "divergent_observed", "divergent_expected", "divergent_excess_m",
                   "divergent_log10p", "similar_partners", "similar_sources", "similar_partner", "similar_role", "similar_observed",
-                  "similar_expected", "similar_row_factor", "similar_log10p", "direction_log10p", "other_partners", "comparators", "log10_bar"]
+                  "similar_expected", "similar_row_factor", "similar_depth_factor", "similar_log10p", "direction_log10p", "other_partners",
+                  "comparators", "log10_bar"]
 PARTNER_IS = {"recipient": "source", "donor": "copy", "undetermined": "undetermined"}   # this sequence's role -> what the partner is to it
 
 
@@ -1219,7 +1242,7 @@ def fnum(v, nd):
     """a number for the text outputs: fixed decimals, no negative zero, empty when not finite"""
     v = float(v)
     return "" if not math.isfinite(v) else f"{round(v, nd) + 0.0:.{nd}f}"
-TESTS_COLUMNS = ["test", "locus", "taxon_a", "taxon_b", "overlap", "mismatches", "expected", "row_factor", "lr", "log10p", "fail", "recipient"]
+TESTS_COLUMNS = ["test", "locus", "taxon_a", "taxon_b", "overlap", "mismatches", "expected", "row_factor", "depth_factor", "lr", "log10p", "fail", "recipient"]
 
 
 def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, plateaus, rate, masked, K_eff, M_eff, rep):
@@ -1272,6 +1295,11 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     # and m's diagonal is NaN, so no self pairs). The pairs are the upper triangle, in the order of iu.
     m_tri = m[iu].astype(np.float32); ok_tri = np.isfinite(m_tri)
     iu0, iu1 = iu
+    # the depth curve's bins: equal-count bins of m over every pair that has one, the same bins at every locus
+    _mf = np.sort(m_tri[ok_tri].astype(np.float64))
+    dedges = np.unique(_mf[(np.arange(1, DEPTH_BINS) * len(_mf)) // DEPTH_BINS]) if len(_mf) else np.zeros(0)
+    del _mf
+    ndbins = len(dedges) + 1
     def pair_count(Wl):
         return sum(int(np.count_nonzero((Wl[c0:c0 + SIM_CHUNK] >= a.fit_overlap) & ok_tri[c0:c0 + SIM_CHUNK]))
                    for c0 in range(0, ntri, SIM_CHUNK))
@@ -1347,14 +1375,14 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     NUMCOLS = (("med_identity", np.float32, np.nan), ("med_expected", np.float32, np.nan), ("excess_m", np.float32, np.nan),
                ("closest", np.int32, -1), ("closest_overlap", np.uint32, 0), ("closest_identity", np.float32, np.nan), ("closest_expected", np.float32, np.nan),
                ("best_match", np.int32, -1), ("best_match_identity", np.float32, np.nan), ("partner", np.int32, -1), ("lam", np.float32, np.nan),
-               ("lam_p", np.float32, np.nan), ("row_factor", np.float32, np.nan), ("div_log10p", np.float32, np.nan), ("sim_log10p", np.float32, np.nan),
+               ("lam_p", np.float32, np.nan), ("row_factor", np.float32, np.nan), ("depth_factor", np.float32, np.nan), ("div_log10p", np.float32, np.nan), ("sim_log10p", np.float32, np.nan),
                ("dir_log10p", np.float32, np.nan))
     for k in ("n_comp", "n_fail", "n_similar", "side"): rep[k] = np.zeros((n, nloc), np.uint8)
     for k, dt, fill in NUMCOLS: rep[k] = np.full((n, nloc), fill, dt) if dense else []
     rep["comparators"] = np.full((n, nloc, K_eff), -1, np.int32) if dense else []
     rep["dense"] = dense; sparse_loc, sparse_tax = [], []
     rep["codes"] = {}; rep["seqs"] = {}; rep["trees"] = {}; rep["similar"] = {}; rep["loc_status"] = ["tested"] * nloc
-    rep["phi"] = np.full(nloc, np.nan); rep["test_rate"] = np.full(nloc, np.nan); rep["pair_tests"] = npt_l
+    rep["phi"] = np.full(nloc, np.nan); rep["test_rate"] = np.full(nloc, np.nan); rep["pair_tests"] = npt_l; rep["depth_curve"] = [None] * nloc
     codes_policy, seq_policy = rep["codes_policy"], rep["seq_policy"]
     bm_all = n <= BEST_MATCH_ALL_MAX_TAXA
 
@@ -1374,10 +1402,18 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     def similar_tests(Wl, Sl, expect, phi, row_factor):
         """test 2 at one locus: every testable pair (A < B), its mismatches over the sites the two share against the
         expectation E from their genome-wide divergence. The p-value is the exact lower tail P(X <= observed)
-        (beta-binomial with the locus's dispersion) against E and against E x f, f <= 1 the row factor, whichever is
-        larger: a pair fails only when it is too similar against both, so the row factor can rescue a pair and never
-        condemn one (the beta-binomial's lower tail is not monotone in its mean at a fixed dispersion). Returns arrays
-        A, B, overlap, mismatches, E, f, log p.
+        (beta-binomial with the locus's dispersion) against E, against E x f, f <= 1 the row factor, and against
+        E x f x g, g <= 1 the locus's depth curve, whichever is largest: a pair fails only when it is too similar
+        against all three, so the factors can rescue a pair and never condemn one (the beta-binomial's lower tail is
+        not monotone in its mean at a fixed dispersion). The DEPTH CURVE: the expectation is fitted on close relatives, and at a
+        locus with much rate variation among sites deep pairs saturate more slowly than the one-rate curve says, so
+        they sit below it, all of them, by an amount that grows with depth. g is the locus's own pooled
+        observed/expected over every testable pair in DEPTH_BINS equal-count bins of m, made non-increasing in m
+        (depth_blocks) and capped at 1: it can only lower an expectation, and where the curve fits it is 1. A pair
+        that could fail and holds more than DEPTH_LOO_SHARE of its bin's expected mismatches is held to the curve
+        computed without it (a copy between the two most distant taxa cannot rescue itself); a pair that passes
+        against E or E x f is reported with the locus's curve, which cannot change its verdict. Returns arrays A, B,
+        overlap, mismatches, E, f, g, log p, and the curve as blocks [m from, m to, g] (None when g is 1 throughout).
         Without --all-tests only the pairs that could fail get exact tails, after two screens that only drop certain
         passes. (1) The method of types: a binomial lower tail is at least exp(-o KL(q || p)) / (o + 1), q and p the
         observed and expected mismatch fractions. The beta-binomial's is at least P(rate <= its mean) times the
@@ -1387,34 +1423,68 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         cannot fail. (2) The exact
         beta-binomial pmf at the observed count: the tail is at least the pmf, so a pair whose pmf clears the bar
         cannot fail."""
-        As, Bs, Os, Ms, Es = [], [], [], [], []
+        As, Bs, Os, Ms, Es, Mv, Bi = [], [], [], [], [], [], []
+        cntb = np.zeros(ndbins); Ob = np.zeros(ndbins); Eb = np.zeros(ndbins); Mb = np.zeros(ndbins)
         for c0 in range(0, ntri, SIM_CHUNK):
             c1 = min(c0 + SIM_CHUNK, ntri)
             ow = Wl[c0:c1]
             j = np.flatnonzero((ow >= a.fit_overlap) & ok_tri[c0:c1])
             if not len(j): continue
             oo = ow[j].astype(np.float64); mm_ = oo - Sl[c0:c1][j].astype(np.float64)
-            Ee = oo * expect(m_tri[c0:c1][j].astype(np.float64)) / 100.0
+            mv = m_tri[c0:c1][j].astype(np.float64)
+            Ee = oo * expect(mv) / 100.0
+            bi = np.searchsorted(dedges, mv, side="right")
+            cntb += np.bincount(bi, minlength=ndbins); Ob += np.bincount(bi, weights=mm_, minlength=ndbins)
+            Eb += np.bincount(bi, weights=Ee, minlength=ndbins); Mb += np.bincount(bi, weights=mv, minlength=ndbins)
             if not every:
                 q = mm_ / oo; p = Ee / oo
                 with np.errstate(divide="ignore", invalid="ignore"):
                     kl = np.where(q > 0, q * np.log(np.where(q > 0, q, 1.0) / p), 0.0) + (1.0 - q) * np.log((1.0 - q) / (1.0 - p))
                 k_ = (mm_ < Ee) & (-oo * kl < logbar + np.log(oo + 1.0) + SIM_SCREEN_SLACK)
-                j, oo, mm_, Ee = j[k_], oo[k_], mm_[k_], Ee[k_]
+                j, oo, mm_, Ee, mv, bi = j[k_], oo[k_], mm_[k_], Ee[k_], mv[k_], bi[k_]
                 if len(j):
                     k_ = bb_logpmf(mm_, oo, Ee, phi) < logbar
-                    j, oo, mm_, Ee = j[k_], oo[k_], mm_[k_], Ee[k_]
+                    j, oo, mm_, Ee, mv, bi = j[k_], oo[k_], mm_[k_], Ee[k_], mv[k_], bi[k_]
             if len(j):
-                t = j + c0; As.append(iu0[t]); Bs.append(iu1[t]); Os.append(oo); Ms.append(mm_); Es.append(Ee)
+                t = j + c0; As.append(iu0[t]); Bs.append(iu1[t]); Os.append(oo); Ms.append(mm_); Es.append(Ee); Mv.append(mv); Bi.append(bi)
+        # the depth curve over the locus's non-empty bins
+        keep = np.flatnonzero(cntb > 0)
+        bO, bE, bM = Ob[keep], Eb[keep], Mb[keep] / cntb[keep]
+        def curve(bO_, bE_, bM_):
+            ends, gb = depth_blocks(bO_, bE_)
+            return bM_, np.repeat(gb, np.diff(np.r_[0, ends])), ends, gb
+        bm0, g0, ends0, gb0 = curve(bO, bE, bM)
+        blocks = None
+        if (gb0 < 1.0).any():
+            st0 = np.r_[0, ends0[:-1]]
+            blocks = [[round(float(bm0[s_]), 4), round(float(bm0[e_ - 1]), 4), round(float(g_), 4)] for s_, e_, g_ in zip(st0.tolist(), ends0.tolist(), gb0.tolist())]
         if not As:
-            z = np.zeros(0); return np.zeros(0, np.int64), np.zeros(0, np.int64), z, z, z, z, z
+            z = np.zeros(0); return np.zeros(0, np.int64), np.zeros(0, np.int64), z, z, z, z, z, z, blocks
         A = np.concatenate(As).astype(np.int64); B = np.concatenate(Bs).astype(np.int64)
-        oo = np.concatenate(Os); mm_ = np.concatenate(Ms); Ee = np.concatenate(Es)
+        oo = np.concatenate(Os); mm_ = np.concatenate(Ms); Ee = np.concatenate(Es); mv = np.concatenate(Mv); bi = np.concatenate(Bi)
+        g = np.interp(mv, bm0, g0)
         f = row_factor(A, B)
         lnp = tails_chunked(mm_, oo, Ee, phi, False)
         r_ = np.flatnonzero(f < 1.0)
         if len(r_): lnp[r_] = np.maximum(lnp[r_], tails_chunked(mm_[r_], oo[r_], Ee[r_] * f[r_], phi, False))
-        return A, B, oo, mm_, Ee, f, lnp
+        # the depth curve is consulted only for the pairs that fail against E and E x f: it can only rescue, so the
+        # others pass whatever it says (they are reported with the locus's curve). Of those, a pair that weighs on its
+        # bin (more than DEPTH_LOO_SHARE of its expected mismatches), sits below expectation and has g < 1 at its depth
+        # is held to the curve computed without itself: removing it can only raise g, and that is the self-rescue to
+        # exclude (removing a pair above the curve could only lower g)
+        pos = np.searchsorted(keep, bi)                             # the pair's bin among the non-empty ones
+        cand = np.flatnonzero((lnp < logbar) & (g < 1.0))
+        for k in cand[(Ee[cand] > DEPTH_LOO_SHARE * bE[pos[cand]]) & (mm_[cand] < Ee[cand])].tolist():
+            p_ = int(pos[k]); bO_, bE_, bM_, c_ = bO.copy(), bE.copy(), bM.copy(), cntb[keep].copy()
+            bO_[p_] -= mm_[k]; bE_[p_] -= Ee[k]; c_[p_] -= 1
+            if c_[p_] > 0: bM_[p_] = (bM[p_] * cntb[keep][p_] - mv[k]) / c_[p_]
+            else: bO_, bE_, bM_ = np.delete(bO_, p_), np.delete(bE_, p_), np.delete(bM_, p_)
+            if len(bO_) == 0: g[k] = 1.0; continue
+            bm1, g1, _, _ = curve(bO_, bE_, bM_)
+            g[k] = float(np.interp(mv[k], bm1, g1))
+        cand = cand[g[cand] < 1.0]
+        if len(cand): lnp[cand] = np.maximum(lnp[cand], tails_chunked(mm_[cand], oo[cand], Ee[cand] * f[cand] * g[cand], phi, False))
+        return A, B, oo, mm_, Ee, f, g, lnp, blocks
 
     def process_locus(li):
         """everything the test decides and writes for one locus, as rows, text blocks and mask actions; touches no
@@ -1483,7 +1553,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
                 eq = top[x] == y[:, None]; has = eq.any(1)
                 out.append(np.where(has, f_loo[x, eq.argmax(1)], f_all[x]))
             return np.minimum(out[0], out[1])
-        A, B, oo, mm_, Ee, ff, lnp = similar_tests(Wl, Sl, expect, phi, row_factor)
+        A, B, oo, mm_, Ee, ff, gg, lnp, dcurve = similar_tests(Wl, Sl, expect, phi, row_factor)
         sig = np.flatnonzero(lnp < logbar)
         # the direction of each too-similar pair: which party's expectations the shared sequence fits (likelihood ratio
         # over third parties, on the sites all three share); identified when its chi-square p-value clears the same bar
@@ -1493,7 +1563,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
             x, y = int(A[j]), int(B[j])
             lam, donor, recip, third = attribute(x, y, Xs, m, Wl[tri_idx[x]], Wl[tri_idx[y]], expect, a.fit_overlap, logbar)
             lpd = math.log(max(math.erfc(math.sqrt(abs(lam) / 2.0)), 1e-300)) if third >= 3 else 0.0
-            recs.append(dict(a=x, b=y, o=float(oo[j]), mis=float(mm_[j]), E=float(Ee[j]), f=float(ff[j]), lnp=float(lnp[j]),
+            recs.append(dict(a=x, b=y, o=float(oo[j]), mis=float(mm_[j]), E=float(Ee[j]), f=float(ff[j]), g=float(gg[j]), lnp=float(lnp[j]),
                              lam=float(lam), lpd=lpd, third=third, recip=-1 if recip is None else int(recip)))
         cpos = {int(g): q for q, g in enumerate(idx.tolist())}
         part = {}                                                   # taxon -> its too-similar partners: (log p, partner, role, pair)
@@ -1535,11 +1605,11 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
             s = int(starts[q]); comps = [names[int(c)] for c in ci[s:s + kc[q]]]
             row_ = [name, names[g], reason, int(nres[g]), int(nf[q]), int(kc[q]), fnum(100 - med_i[q], 2), fnum(100 - med_e[q], 2),
                     fnum(exm[q], 3), fnum(div_lp[q] / LN10, 3), len(lst), sum(1 for t_ in lst if t_[2] == "recipient")]
-            if rp is None: row_ += ["", "", "", "", "", "", ""]
+            if rp is None: row_ += ["", "", "", "", "", "", "", ""]
             else:
                 r = rp[3]
                 row_ += [names[rp[1]], rp[2], fnum(100 * r['mis'] / r['o'], 2), fnum(100 * r['E'] / r['o'], 2), fnum(r['f'], 3),
-                         fnum(rp[0] / LN10, 3), fnum(r['lpd'] / LN10, 3) if r['third'] >= 3 else ""]
+                         fnum(r['g'], 3), fnum(rp[0] / LN10, 3), fnum(r['lpd'] / LN10, 3) if r['third'] >= 3 else ""]
             others = [t_ for t_ in lst if rp is None or t_[1] != rp[1]][:4]
             row_ += ["; ".join(f"{names[t_[1]]} ({PARTNER_IS[t_[2]]})" for t_ in others), "; ".join(comps), fnum(lbar10, 3)]
             mrows_out.append((g, reason, row_))
@@ -1549,11 +1619,11 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         side_ |= np.where(dflag, 1 if mask_hi else 16, 0).astype(np.uint8); side_ |= (amb.astype(np.uint8) << 2)
         side_ |= np.where(recip_q, 2 if mask_lo else 32, 0).astype(np.uint8)
         partner_ = np.full(ncell, -1, np.int32); lam_ = np.full(ncell, np.nan, np.float32); lamp_ = np.full(ncell, np.nan, np.float32)
-        rowf_ = np.full(ncell, np.nan, np.float32); simlp_ = np.full(ncell, np.nan, np.float32); dirlp_ = np.full(ncell, np.nan, np.float32)
+        rowf_ = np.full(ncell, np.nan, np.float32); depf_ = np.full(ncell, np.nan, np.float32); simlp_ = np.full(ncell, np.nan, np.float32); dirlp_ = np.full(ncell, np.nan, np.float32)
         for g in part:
             q = cpos[g]; lnp_, h, role, r = reported(g)
             side_[q] |= 64 | (8 if r["recip"] >= 0 else 0) | (128 if role == "donor" else 0)
-            partner_[q] = h; rowf_[q] = r["f"]; simlp_[q] = lnp_ / LN10
+            partner_[q] = h; rowf_[q] = r["f"]; depf_[q] = r["g"]; simlp_[q] = lnp_ / LN10
             if r["third"] >= 3: lam_[q] = abs(r["lam"]); lamp_[q] = math.exp(r["lpd"]); dirlp_[q] = r["lpd"] / LN10
         rep_q = fail_q if codes_policy == "fails" else masked_q if codes_policy == "masked" else np.zeros(ncell, bool)
         # best match: per-site divergence compared on the SAME sites. The closest taxon among those sharing the most sites
@@ -1657,13 +1727,13 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
                 rows_s = np.array(sorted(rs), dtype=np.int64)
             if len(rows_s):
                 seq_out = (rows_s.astype(np.int32), np.stack([views[g][sites] for g in rows_s.tolist()]))
-        sim_json = [dict(a=r["a"], b=r["b"], overlap=int(r["o"]), mismatches=int(r["mis"]), expected=round(r["E"], 3), row_factor=round(r["f"], 4),
+        sim_json = [dict(a=r["a"], b=r["b"], overlap=int(r["o"]), mismatches=int(r["mis"]), expected=round(r["E"], 3), row_factor=round(r["f"], 4), depth_factor=round(r["g"], 4),
                          log10p=round(r["lnp"] / LN10, 3), lr=round(r["lam"], 3) if r["third"] >= 3 else None,
                          direction_log10p=round(r["lpd"] / LN10, 3) if r["third"] >= 3 else None, third_parties=r["third"], recipient=r["recip"]) for r in recs]
         repblk = dict(idx=idx, n_comp=kc.astype(np.uint8), n_fail=nf.astype(np.uint8), n_similar=np.minimum(npart, 255).astype(np.uint8), side=side_,
                       med_identity=med_i, med_expected=med_e, excess_m=exm, closest=ci[starts].astype(np.int32), closest_overlap=o[starts].astype(np.uint32),
                       closest_identity=ident[starts], closest_expected=100.0 - dhat[starts], best_match=best_, best_match_identity=bident_,
-                      partner=partner_, lam=lam_, lam_p=lamp_, row_factor=rowf_, div_log10p=div_lp / LN10, sim_log10p=simlp_, dir_log10p=dirlp_,
+                      partner=partner_, lam=lam_, lam_p=lamp_, row_factor=rowf_, depth_factor=depf_, div_log10p=div_lp / LN10, sim_log10p=simlp_, dir_log10p=dirlp_,
                       comparators=top[idx].astype(np.int32), fail_q=fail_q, codes=codes_out, seq=seq_out, trees=trees_out, similar=sim_json)
 
         # ---- every test of the locus, for --all-tests: the distinct comparisons (test 1), every testable pair (test 2),
@@ -1676,20 +1746,20 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
             key = np.minimum(gi, ci).astype(np.int64) * n + np.maximum(gi, ci)
             first = np.sort(np.unique(key, return_index=True)[1])
             ga = np.minimum(gi[first], ci[first]).tolist(); gb = np.maximum(gi[first], ci[first]).tolist()
-            tests_block = ("divergent\t" + lname + "\t%s\t%s\t%d\t%d\t%.3f\t\t\t%.3f\t%d\t\n") * len(first) % tuple(chain.from_iterable(zip(
+            tests_block = ("divergent\t" + lname + "\t%s\t%s\t%d\t%d\t%.3f\t\t\t\t%.3f\t%d\t\n") * len(first) % tuple(chain.from_iterable(zip(
                 [tnames[x] for x in ga], [tnames[x] for x in gb], o[first].astype(np.int64).tolist(), mis[first].astype(np.int64).tolist(),
                 r3(E[first]), r3(lp_hi[first] / LN10), fail_hi[first].astype(np.int64).tolist())))
-            tests_block += ("similar\t" + lname + "\t%s\t%s\t%d\t%d\t%.3f\t%.4f\t\t%.3f\t%d\t\n") * len(A) % tuple(chain.from_iterable(zip(
+            tests_block += ("similar\t" + lname + "\t%s\t%s\t%d\t%d\t%.3f\t%.4f\t%.4f\t\t%.3f\t%d\t\n") * len(A) % tuple(chain.from_iterable(zip(
                 [tnames[x] for x in A.tolist()], [tnames[x] for x in B.tolist()], oo.astype(np.int64).tolist(), mm_.astype(np.int64).tolist(),
-                r3(Ee), ff.tolist(), r3(lnp / LN10), (lnp < logbar).astype(np.int64).tolist())))
-            tests_block += "".join(f"direction\t{clean(name)}\t{tnames[r['a']]}\t{tnames[r['b']]}\t\t\t\t\t"
+                r3(Ee), ff.tolist(), gg.tolist(), r3(lnp / LN10), (lnp < logbar).astype(np.int64).tolist())))
+            tests_block += "".join(f"direction\t{clean(name)}\t{tnames[r['a']]}\t{tnames[r['b']]}\t\t\t\t\t\t"
                                    + (f"{fnum(r['lam'], 3)}\t{fnum(r['lpd'] / LN10, 3)}" if r["third"] >= 3 else "\t")
                                    + f"\t{int(r['recip'] >= 0)}\t{tnames[r['recip']] if r['recip'] >= 0 else ''}\n" for r in recs)
 
         nrec = sum(1 for r in recs if r["recip"] >= 0)
         log = (f"{name}: {ncell} cells, {len(gi)} comparator slots, {int(npt_l[li])} pair tests; too divergent {int(flag.sum())}"
                f" (+{int(amb.sum())} with fewer comparators), too-similar pairs {len(recs)} ({nrec} with an identified recipient)")
-        return dict(skipped=False, mrows=mrows_out, tests=tests_block, log=log, rep=repblk, phi=phi, rate_c=rate_c)
+        return dict(skipped=False, mrows=mrows_out, tests=tests_block, log=log, rep=repblk, phi=phi, rate_c=rate_c, depth_curve=dcurve)
 
     mrows = []; tally = collections.Counter()
     def consume(li, R):
@@ -1701,7 +1771,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
             mrows.append(row_); tally[reason] += 1
         if tests_fh is not None: tests_fh.write(R["tests"])
         LOG.detail(R["log"])
-        r = R["rep"]; idx_ = r["idx"]; rep["phi"][li] = R["phi"]; rep["test_rate"][li] = R["rate_c"]
+        r = R["rep"]; idx_ = r["idx"]; rep["phi"][li] = R["phi"]; rep["test_rate"][li] = R["rate_c"]; rep["depth_curve"][li] = R["depth_curve"]
         for k in ("n_comp", "n_fail", "n_similar", "side"): rep[k][idx_, li] = r[k]
         if dense:
             for k, _, _ in NUMCOLS: rep[k][idx_, li] = r[k]

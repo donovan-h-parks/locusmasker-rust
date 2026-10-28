@@ -107,7 +107,7 @@ async function loadBundle(bytes) {
   for (const k of byteCols) D.cols[k] = (await npy(`cells/${k}.npy`)).data;
   D.dense = man.carried.numeric_columns === "dense";
   for (const k of numCols) D.cols[k] = (await npy(`cells/${k}.npy`)).data;
-  for (const k of ["div_log10p", "sim_log10p", "dir_log10p"]) if (zip.has(`cells/${k}.npy`)) D.cols[k] = (await npy(`cells/${k}.npy`)).data;   // format 4 on; D.num gives null without them
+  for (const k of ["div_log10p", "sim_log10p", "dir_log10p", "depth_factor"]) if (zip.has(`cells/${k}.npy`)) D.cols[k] = (await npy(`cells/${k}.npy`)).data;   // format 4 on; D.num gives null without them
   D.comparators = (await npy("cells/comparators.npy")).data;
   // the closest comparator is the rank-1 comparator, so it is read from the comparators: up to 0.11.0 the tool wrote the
   // taxa's five closest relatives (taxa x 5, as in taxa/closest.npy) over cells/closest.npy
@@ -630,7 +630,7 @@ function cellHover(g, li, compact) {
     if (bm !== null && bm >= 0 && !compact) { const close = Array.from(D.closest.subarray(g * 5, g * 5 + 5)).includes(bm); row("best match", `${D.taxa.names[bm]} (${fmt1(D.num("best_match_identity", g, li))}% identity over shared sites${close ? ", one of the 5 closest relatives" : ""})`); }
     if (v4 && ns) row("too-similar partners", `${ns}${ns >= 255 ? "+" : ""} significant, among every taxon at the locus${ns > 1 ? (sd & (2 | 32) ? "; its source below" : "; the strongest below") : ""}`);
     const sr = similarRole(D, g, li);
-    if (sr) { const lam = D.num("lam", g, li), lp = D.num("lam_p", g, li), sp = D.num("sim_log10p", g, li); row("too similar to", sr.text); if (sp !== null) row("too-similar test", `log10 p = ${fmt2(sp)}${barNote(D)}`); if (lam !== null) row("direction LRT", v4 && lp !== null ? `|2 ln LR| = ${fmt1(lam)}, ${dirTxt(D, g, li, lp)} (approximate χ², 1 df${bar10(D) !== null ? `; bar ${bar10(D)}` : ""})` : `|2 ln LR| = ${fmt1(lam)}, p = ${lp < 1e-4 ? lp.toExponential(1) : fmt3(lp)} (χ², 1 df)`); const rf = D.num("row_factor", g, li); if (rf !== null && rf < 1) row("row factor", `${fmt3(rf)} (the pair was tested against ${fmt3(rf)} × its expectation: ${v4 ? "one of the two" : "the sequence"} sits below expectation against its other comparators too)`); }
+    if (sr) { const lam = D.num("lam", g, li), lp = D.num("lam_p", g, li), sp = D.num("sim_log10p", g, li); row("too similar to", sr.text); if (sp !== null) row("too-similar test", `log10 p = ${fmt2(sp)}${barNote(D)}`); if (lam !== null) row("direction LRT", v4 && lp !== null ? `|2 ln LR| = ${fmt1(lam)}, ${dirTxt(D, g, li, lp)} (approximate χ², 1 df${bar10(D) !== null ? `; bar ${bar10(D)}` : ""})` : `|2 ln LR| = ${fmt1(lam)}, p = ${lp < 1e-4 ? lp.toExponential(1) : fmt3(lp)} (χ², 1 df)`); const rf = D.num("row_factor", g, li); if (rf !== null && rf < 1) row("row factor", `${fmt3(rf)} (the pair was tested against ${fmt3(rf)} × its expectation: ${v4 ? "one of the two" : "the sequence"} sits below expectation against its other comparators too)`); const gf = D.num("depth_factor", g, li); if (gf !== null && gf < 1) row("depth factor", `${fmt3(gf)} (pairs this far apart sit at ${fmt3(gf)} × expectation at this locus; the pair was tested against row factor × depth factor × its expectation)`); }
     if (!compact) row("", el("span", { class: "more" }, "click: open the alignment"));
   }
   box.append(t); return box;
@@ -1060,7 +1060,8 @@ const Sequence = (() => {
     const dp = D.num("div_log10p", g, li); if (dp !== null) parts.push(el("span", null, ` · too-divergent test: log10 p = ${fmt2(dp)}, the comparison that decides the majority${barNote(D)}`));
     const ns = D.cols.n_similar[i]; if (D.format >= 4 && ns && D.state[i] < ST.BLUE) parts.push(el("span", null, ` · ${ns >= 255 ? "255+" : ns} too-similar partner${ns > 1 ? "s" : ""}`));
     if (sr && D.format >= 4) { const lam = D.num("lam", g, li), lp = D.num("lam_p", g, li), sp = D.num("sim_log10p", g, li), rf = D.num("row_factor", g, li);
-      const st = [sp !== null ? `too-similar log10 p = ${fmt2(sp)}` : null, lam !== null && lp !== null ? `direction LRT |2 ln LR| = ${fmt1(lam)}, ${dirTxt(D, g, li, lp)}` : null, rf !== null && rf < 1 ? `row factor ${fmt3(rf)}` : null].filter(Boolean);
+      const gf = D.num("depth_factor", g, li);
+      const st = [sp !== null ? `too-similar log10 p = ${fmt2(sp)}` : null, lam !== null && lp !== null ? `direction LRT |2 ln LR| = ${fmt1(lam)}, ${dirTxt(D, g, li, lp)}` : null, rf !== null && rf < 1 ? `row factor ${fmt3(rf)}` : null, gf !== null && gf < 1 ? `depth factor ${fmt3(gf)}` : null].filter(Boolean);
       parts.push(el("span", null, ` · too similar to ${sr.text}${st.length ? ` (${st.join("; ")})` : ""}`)); }
     else if (partner !== null && partner >= 0) { const lam = D.num("lam", g, li), lp = D.num("lam_p", g, li); parts.push(el("span", null, ` · too similar to ${D.taxa.names[partner]}${sd & 8 ? ", identified as the recipient" : ", direction not identified"}${lam !== null ? ` (direction LRT |2 ln LR| = ${fmt1(lam)}, p = ${lp < 1e-4 ? lp.toExponential(1) : fmt3(lp)})` : ""}${(() => { const rf = D.num("row_factor", g, li); return rf !== null && rf < 1 ? `, row factor ${fmt3(rf)}` : ""; })()}`)); }
     const xm = D.num("excess_m", g, li); if (xm !== null) parts.push(el("span", null, ` · excess ${fmt2(xm)} m`));
