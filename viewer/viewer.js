@@ -303,7 +303,8 @@ function buildShell() {
     el("div", null, `options: datatype ${m.options.datatype}, n-comp ${m.options.n_comp} (K ${m.options.K_eff}, majority ${m.options.M_eff}), fit-overlap ${m.options.fit_overlap}, alpha ${m.options.alpha}${m.options.mask_similar_only ? ", --mask-similar-only" : ""}${m.options.mask_different_only ? ", --mask-different-only" : ""}`),
     el("div", null, `test: ${testSummary(m.test)}, dataset dispersion ${m.test.phi_dataset}; carried: ${m.carried.sequences} sequences, codes for ${m.carried.codes} cells, best matches for ${m.carried.best_match_cells} cells`),
     el("div", null, `command: ${m.command}`));
-  app.append(el("div", { class: "topbar" },
+  const logo = document.getElementById("lm-logo");                   // the Lo Shu grid, when the page carries it
+  app.append(el("div", { class: "topbar" }, logo ? logo.content.firstElementChild.cloneNode(true) : "",
     el("h1", null, m.dataset || m.input.file), el("span", { class: "sub" }, `${fmtInt(c.masked)} of ${fmtInt(c.cells)} sequences masked (${pct(c.masked, c.cells)}) · ${fmtInt(c.taxa)} taxa × ${fmtInt(c.loci)} loci`),
     el("span", { class: "spacer" }), about));
   const panels = el("div", { class: "panels", id: "panels" }); app.append(panels);

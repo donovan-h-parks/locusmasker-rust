@@ -144,6 +144,10 @@ async function assembleReport() {                          // the same page the 
   html = html.replace("@@" + "BUNDLE@@", data).replace("@@" + "SIDECAR@@", "");
   for (const m of Array.from(html.matchAll(/<script src="([^"]+)"><\/script>/g))) html = html.replace(m[0], "<script>\n" + await get(m[1]) + "\n</script>");
   for (const m of Array.from(html.matchAll(/<link rel="stylesheet" href="([^"]+)">/g))) html = html.replace(m[0], "<style>\n" + await get(m[1]) + "\n</style>");
+  for (const m of Array.from(html.matchAll(/(href|src)="(icons\/[^"]+)"/g))) {                 // the logo and favicons, as data: URIs
+    const bytes = new Uint8Array(await (await fetch(VIEWER_DIR + m[2])).arrayBuffer());
+    html = html.replace(m[0], `${m[1]}="data:${m[2].endsWith(".svg") ? "image/svg+xml" : "image/png"};base64,${b64(bytes)}"`);
+  }
   return html;
 }
 // ---- opening a finished report

@@ -909,6 +909,9 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
         src = os.path.join(tpl_dir, mt.group(1)); return "<script>\n" + open(src, encoding="utf-8").read() + "\n</script>"
     def inline_style(mt):
         src = os.path.join(tpl_dir, mt.group(1)); return "<style>\n" + open(src, encoding="utf-8").read() + "\n</style>"
+    def inline_icon(mt):                                           # the logo and favicons, as data: URIs
+        src = os.path.join(tpl_dir, mt.group(2)); kind = "image/svg+xml" if src.endswith(".svg") else "image/png"
+        return f'{mt.group(1)}="data:{kind};base64,' + base64.b64encode(open(src, "rb").read()).decode("ascii") + '"'
     b64 = base64.b64encode(data).decode("ascii")
     if len(b64) <= REPORT_INLINE_MAX:                              # the markers first, so nothing inlined afterwards can carry them
         html = html.replace("@@BUNDLE@@", b64).replace("@@SIDECAR@@", "")
@@ -918,6 +921,7 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
         LOG(f"report.html: the data ({len(b64) >> 20} MB as text) is beside the page in report_data.js; keep the two files together")
     html = re.sub(r'<script src="([^"]+)"></script>', inline_script, html)
     html = re.sub(r'<link rel="stylesheet" href="([^"]+)">', inline_style, html)
+    html = re.sub(r'(href|src)="(icons/[^"]+)"', inline_icon, html)
     with open(f"{a.out}/report.html", "w", encoding="utf-8") as fh: fh.write(html)
     LOG(f"report: report.html ({os.path.getsize(f'{a.out}/report.html') >> 20} MB), report.npz ({len(data) >> 20} MB)")
 

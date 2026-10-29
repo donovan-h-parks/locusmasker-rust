@@ -34,6 +34,7 @@ a { color: var(--accent); }
 /* ---- layout */
 #app { height: 100%; display: flex; flex-direction: column; }
 .topbar { display: flex; align-items: baseline; gap: 14px; padding: 8px 16px 6px; border-bottom: 1px solid var(--spine); flex: 0 0 auto; flex-wrap: wrap; }
+.topbar .logo { width: 16px; height: 16px; align-self: center; flex: none; margin-right: -4px; }
 .topbar h1 { font-size: 16px; margin: 0; font-weight: 650; }
 .topbar .sub { color: var(--muted); }
 .topbar .spacer { flex: 1; }
