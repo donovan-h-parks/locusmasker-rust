@@ -1,34 +1,18 @@
-/* LocusMasker report viewer. Text wears ink tokens; marks wear the verdict colours. */
+/* LocusMasker report viewer. Text wears ink tokens; marks wear the verdict colours. One theme: a white page. */
 :root {
+  color-scheme: light;
   --surface: #ffffff; --surface-2: #f6f5f2; --surface-3: #ecebe7;
   --ink: #0b0b0b; --muted: #52514e; --faint: #8c8a85; --spine: #d4d2cc; --grid: #ebeae6; --model: #3b3a37; --floor: #a5a39d;
-  --grey-1: #dedcd7; --grey-2: #c4c2bd; --grey-3: #a8a6a1;
-  --red-1: #e05a52; --red-2: #b8261f; --red-3: #7c1512;
-  --blue-1: #5b9bec; --blue-2: #2a6fcb; --blue-3: #1a4489; --both: #d49a00;
+  --grey-1: #dedcd7;                                   /* a neutral for bars and tracks */
+  /* one colour per outcome, no levels (dataviz validator, white page, all pairs): not masked (a point; a matrix cell),
+     too divergent, copied from another taxon, both tests */
+  --pass: #c4c2bd; --pass-cell: #dedcd7; --red: #b5172e; --blue: #2f6bd8; --yellow: #e9ca00;
+  /* the alignment: the plain cell, and the ink its grey grades are mixed from over white */
+  --cell: #e9e8e4; --grade-grey: #52514e;
   --accent: #2a6fcb; --focus: #1a4489;
   --hatch: repeating-linear-gradient(135deg, transparent 0 3px, #d4d2cc 3px 4px);
   --sans: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --surface: #161614; --surface-2: #1e1e1b; --surface-3: #292926;
-    --ink: #f1efe9; --muted: #b5b2aa; --faint: #7f7d77; --spine: #3f3e3a; --grid: #2b2a27; --model: #d8d6cf; --floor: #6f6d67;
-    --grey-1: #4a4945; --grey-2: #67655f; --grey-3: #85837c;
-    --red-1: #f0756c; --red-2: #d6433a; --red-3: #a4231b;
-    --blue-1: #7fb3f5; --blue-2: #4d8fe0; --blue-3: #2f67b8; --both: #e3b23a;
-    --accent: #7fb3f5; --focus: #a9ccf8;
-    --hatch: repeating-linear-gradient(135deg, transparent 0 3px, #3f3e3a 3px 4px);
-  }
-}
-:root[data-theme="dark"] {
-  --surface: #161614; --surface-2: #1e1e1b; --surface-3: #292926;
-  --ink: #f1efe9; --muted: #b5b2aa; --faint: #7f7d77; --spine: #3f3e3a; --grid: #2b2a27; --model: #d8d6cf; --floor: #6f6d67;
-  --grey-1: #4a4945; --grey-2: #67655f; --grey-3: #85837c;
-  --red-1: #f0756c; --red-2: #d6433a; --red-3: #a4231b;
-  --blue-1: #7fb3f5; --blue-2: #4d8fe0; --blue-3: #2f67b8; --both: #e3b23a;
-  --accent: #7fb3f5; --focus: #a9ccf8;
-  --hatch: repeating-linear-gradient(135deg, transparent 0 3px, #3f3e3a 3px 4px);
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: var(--surface); color: var(--ink); font: 13px/1.4 var(--sans); }
@@ -41,7 +25,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 select, input[type="text"], input[type="search"] { background: var(--surface); border: 1px solid var(--spine); border-radius: 6px; padding: 3px 7px; }
 a { color: var(--accent); }
 .loading, .error { padding: 40px; color: var(--muted); font-size: 15px; }
-.error { color: var(--red-2); white-space: pre-wrap; font-family: var(--mono); font-size: 12px; }
+.error { color: var(--red); white-space: pre-wrap; font-family: var(--mono); font-size: 12px; }
 .picker { padding: 40px; max-width: 640px; }
 .picker h1 { font-size: 20px; margin: 0 0 8px; }
 .drop { border: 2px dashed var(--spine); border-radius: 12px; padding: 36px; text-align: center; color: var(--muted); margin-top: 16px; }
@@ -187,10 +171,11 @@ button.help { border-radius: 50%; width: 22px; height: 22px; padding: 0; font-we
 .seq-names .seqnm { display: flex; align-items: center; gap: 6px; padding-left: 8px; white-space: nowrap; overflow: hidden; }
 .seq-names .seqnm .nm { overflow: hidden; text-overflow: ellipsis; }
 .seq-names .seqnm.focal .nm { font-weight: 650; }
-.seq-names .seqnm .role { color: var(--faint); font-size: 10.5px; }
 .seq-canvas-wrap { position: relative; overflow: hidden; min-width: 0; }
 .seq-canvas-wrap canvas { display: block; cursor: ew-resize; touch-action: none; }
-.seq-foot { padding: 3px 10px; color: var(--faint); font-size: 11.5px; border-top: 1px solid var(--grid); display: flex; gap: 12px; align-items: center; }
+.seq-foot { padding: 3px 10px; color: var(--faint); font-size: 11.5px; border-top: 1px solid var(--grid); display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.seq-foot .seq-key { color: var(--muted); }
+.seq-foot .sw { display: inline-block; width: 11px; height: 11px; margin-right: 1px; vertical-align: -1px; }
 
 /* ---- histograms and table */
 .hist-wrap svg { display: block; }
