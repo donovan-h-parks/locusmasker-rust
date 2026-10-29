@@ -139,8 +139,8 @@ class Run:
         out = {self.taxa[x] for x in (c.tolist() if c is not None else []) if x >= 0}
         if l not in self._sim:
             k = f"similar/{l}.json"; self._sim[l] = self.json(k) if k in self.members else []
-        for e in self._sim[l]:
-            if t in (e["a"], e["b"]): out.add(self.taxa[e["b"] if e["a"] == t else e["a"]])
+        for e in self._sim[l]:                                   # 0.12: one entry per too-similar test (taxon, partner)
+            if e.get("fail") and t in (e["taxon"], e.get("partner", -1)): out.add(self.taxa[e["partner"] if e["taxon"] == t else e["taxon"]])
         return out
 
 

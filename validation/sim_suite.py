@@ -33,7 +33,7 @@ Appended, new in 0.11:
           masked.csv names the donor as its source (similar_partner).
   nearcopy_reversed n  the donor is masked as a copy naming the true recipient: the wrong direction.
   swap_named a/b, swap_named_ok n   of the b planted swap cells masked for any reason, a name a
-          source (similar_role recipient), and n of those name the swap partner or one of its five
+          source (similar_role copy), and n of those name the swap partner or one of its five
           closest taxa by m (report.npz taxa/closest.npy): the lineage the cell's sequence came from.
   chimera_named a/b, chimera_named_ok n   the same for chimeric cells; the right source is the donor.
   FPsim_cells  cells masked as a copy (similar or both) where neither the cell nor its named source
@@ -222,8 +222,10 @@ def read_scan(scan):
         for member in z.namelist():
             if member.startswith("similar/") and member.endswith(".json"):
                 locus = loci[int(member[len("similar/"):-len(".json")])]
-                for e in json.loads(z.read(member)):
-                    pairs[(locus, frozenset((names[e["a"]], names[e["b"]])))] = names[e["recipient"]] if e["recipient"] >= 0 else None
+                for e in json.loads(z.read(member)):                 # 0.12: one entry per too-similar test; a failing one is a pair
+                    if e.get("fail") and e.get("partner", -1) >= 0:
+                        key = (locus, frozenset((names[e["taxon"]], names[e["partner"]])))
+                        pairs[key] = names[e["taxon"]] if e.get("role") == "copy" else names[e["partner"]]
         cl = np.load(io.BytesIO(z.read("taxa/closest.npy")))
     closest = {names[i]: {names[j] for j in row if j >= 0} for i, row in enumerate(cl.tolist())}
     with open(f"{scan}/masked.csv", newline="") as fh:
@@ -237,7 +239,7 @@ def score(scan, events):
     why = {c: r["reason"] for c, r in masked.items()}
     def source(c):                                  # the taxon a masked sequence is named a copy of, else None
         r = masked.get(c)
-        return r["similar_partner"] if r is not None and r["similar_role"] == "recipient" else None
+        return r["similar_partner"] if r is not None and r["similar_role"] == "copy" else None
     res = zero(); planted = set()
     def caught(kind, c, right=None):                # one planted cell: test 1, any reason, and the source it names
         res[kind][1] += 1; res[kind][0] += why.get(c) in DIV

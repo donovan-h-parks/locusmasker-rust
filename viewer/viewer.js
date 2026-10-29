@@ -99,15 +99,15 @@ async function loadBundle(bytes) {
   const json = async name => JSON.parse(td.decode(await zip.read(name)));
   const npy = async name => parseNpy(await zip.read(name));
   const man = await json("manifest.json");
-  if (man.format_version > 4) throw new Error(`this report was written in bundle format ${man.format_version}; this viewer reads formats 1 to 4. Please use the viewer that came with the tool version ${man.version}.`);
+  if (man.format_version > 5) throw new Error(`this report was written in bundle format ${man.format_version}; this viewer reads formats 1 to 5. Please use the viewer that came with the tool version ${man.version}.`);
   const taxa = await json("taxa.json"), loci = await json("loci.json");
   const D = { zip, man, format: man.format_version || 1, taxa, loci, n: taxa.names.length, nloc: loci.names.length, K: man.options.K_eff, M: man.options.M_eff, cols: {}, cache: { codes: new Map(), seq: new Map() } };
   const byteCols = ["n_comp", "n_fail", "n_similar", "side", "focal_sites"];
-  const numCols = ["med_identity", "med_expected", "excess_m", "closest_overlap", "closest_identity", "closest_expected", "best_match", "best_match_identity", "partner", "lam", "lam_p", "row_factor"];
+  const numCols = ["med_identity", "med_expected", "excess_m", "closest_overlap", "closest_identity", "closest_expected", "best_match", "best_match_identity", "partner"];
   for (const k of byteCols) D.cols[k] = (await npy(`cells/${k}.npy`)).data;
   D.dense = man.carried.numeric_columns === "dense";
   for (const k of numCols) D.cols[k] = (await npy(`cells/${k}.npy`)).data;
-  for (const k of ["div_log10p", "sim_log10p", "dir_log10p", "depth_factor"]) if (zip.has(`cells/${k}.npy`)) D.cols[k] = (await npy(`cells/${k}.npy`)).data;   // format 4 on; D.num gives null without them
+  for (const k of ["lam", "lam_p", "row_factor", "div_log10p", "sim_log10p", "dir_log10p", "depth_factor"]) if (zip.has(`cells/${k}.npy`)) D.cols[k] = (await npy(`cells/${k}.npy`)).data;   // not in every format; D.num gives null without them
   D.comparators = (await npy("cells/comparators.npy")).data;
   // the closest comparator is the rank-1 comparator, so it is read from the comparators: up to 0.11.0 the tool wrote the
   // taxa's five closest relatives (taxa x 5, as in taxa/closest.npy) over cells/closest.npy
