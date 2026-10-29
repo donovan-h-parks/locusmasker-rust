@@ -14,7 +14,7 @@ divergent) on 1, blue (copied) on 2, yellow (both) on 3, the values the report's
 import os, struct, zlib, numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GREY, RED, BLUE, YELLOW = "#c4c2bd", "#b5172e", "#2f6bd8", "#e9ca00"
+GREY, RED, BLUE, YELLOW = "#8f8d88", "#b5172e", "#2f6bd8", "#e9ca00"   # grey darker than the report's pass grey: it shows on grey tab bars
 MASKED = {(2, 1): RED, (0, 2): BLUE, (1, 0): YELLOW}        # (row, column) of Lo Shu 1, 2 and 3
 RX = 1.0                                                    # corner radius, in units of the 32-unit square
 DRAWINGS = {"logo": ([10, 10, 10], 1), "favicon-16": ([10, 8, 10], 2)}   # cell sizes along each axis, gap; no margin
