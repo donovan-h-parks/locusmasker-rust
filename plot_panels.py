@@ -25,10 +25,7 @@ Pages
                   have, so a fragment covering only a locus's conserved part cannot win; ties go to the closest
                   relative genome-wide; identity is over the sites the pair shares; the excluded taxa are never a
                   best match). Bars are stacked by mask kind (a sequence masked for both reasons with the
-                  too-similar ones); the black tick is the count expected if the masked sequences matched like
-                  the taxon's unmasked ones; the names of the 5 closest relatives genome-wide are bold. Masked
-                  sequences that match the same taxa as the unmasked ones (bars on their ticks) are damaged
-                  copies of the right sequence, such as a wrong exon in a gene model; bars shifted onto a taxon
+                  too-similar ones); the names of the 5 closest relatives genome-wide are bold. Bars on a taxon
                   that is not a close relative point to contamination from it, or to a shared paralogue. A run
                   of more than 2000 taxa (or with a sparse report) carries best matches only for sequences with a
                   failing test: the page then recomputes them from the alignment (--alignment, and --partitions
@@ -446,20 +443,17 @@ def matches():
     for ax, t in zip(axs.ravel(), order):
         idx, best, ident = get(t); close = close_of(t)
         ok = best != ""; mk = MASKED[idx] & ok; um = ~MASKED[idx] & ok
-        cm = collections.Counter(best[mk]); cu = collections.Counter(best[um]); nm, nu = int(mk.sum()), int(um.sum())
-        taxa_sorted = sorted({u for u in cm} | {u for u in cu if cu[u] / max(nu, 1) * nm >= 1}, key=lambda u: (-cm[u], -cu[u], u))   # a taxon the unmasked sequences predict stays on the axis even with no bar; equal bars by name
+        cm = collections.Counter(best[mk]); nm, nu = int(mk.sum()), int(um.sum())
+        taxa_sorted = sorted(cm, key=lambda u: (-cm[u], u))   # equal bars by name
         if len(taxa_sorted) > MAXBARS:
             rest = taxa_sorted[MAXBARS - 1:]; taxa_sorted = taxa_sorted[:MAXBARS - 1] + [f"other ({len(rest)} taxa)"]
-            cm[taxa_sorted[-1]] = sum(cm[u] for u in rest); cu[taxa_sorted[-1]] = sum(cu[u] for u in rest)
             for u in rest: best[mk & (best == u)] = taxa_sorted[-1]
         xs = np.arange(len(taxa_sorted)); bottom = np.zeros(len(xs))
         for c, f in cats:
             h = np.array([float((mk & f(idx) & (best == u)).sum()) for u in taxa_sorted])
             if h.any(): ax.bar(xs, h, bottom=bottom, width=0.82, color=c, edgecolor=SURF, lw=0.4)
             bottom += h
-        expd = np.array([cu[u] / max(nu, 1) * nm for u in taxa_sorted])
-        ax.hlines(expd, xs - 0.41, xs + 0.41, color=INK, lw=1.1, zorder=4)
-        top = max(bottom.max(), expd.max(), 1)
+        top = max(bottom.max(), 1)
         for x_, o_ in zip(xs, bottom): ax.text(x_, o_ + top * 0.015, f"{int(o_)}", ha="center", va="bottom", fontsize=5.8, color=INK)
         ax.set_xticks(xs); ax.set_xticklabels(taxa_sorted, rotation=90, fontsize=5.8, color=INK)
         for lab, u in zip(ax.get_xticklabels(), taxa_sorted):
@@ -481,13 +475,12 @@ def matches():
     head = f"{NAME}  ·  Best match of each masked sequence"
     sub = f"{int(MASKED.sum()):,} of {NCELL:,} sequences masked ({100 * MASKED.sum() / NCELL:.1f}%)"
     note = (f"the {len(order)} most masked taxa; a sequence's best match is the taxon closest to it at its locus, per-site divergence compared on the same sites (identity over the sites the pair shares; "
-            "ties to the closest relative genome-wide); bars count masked sequences by the taxon they match best; the tick is the count expected if they matched like the taxon's unmasked sequences; bold: the 5 closest relatives genome-wide")
+            "ties to the closest relative genome-wide); bars count masked sequences by the taxon they match best; bold: the 5 closest relatives genome-wide")
     fig.text(0.01, 1 - 0.14 / H, head, fontsize=11, color=INK, fontweight="bold", ha="left", va="top")
     fig.text(0.01, 1 - 0.36 / H, sub, fontsize=9, color=INK, ha="left", va="top")
     fig.text(0.01, 1 - 0.55 / H, note, fontsize=7.2, color=MUTED, ha="left", va="top", wrap=True)
     handles = [Patch(facecolor=c, edgecolor=SURF, label=f"masked, too divergent · fails {j} of {NC}") for j, c in REDS.items()] + \
-              [Patch(facecolor=BLUES[j], edgecolor=SURF, label=f"masked, too similar · {j}{'+' if j == 3 else ''} pair{'s' if j > 1 else ''}") for j in (1, 2, 3)] + \
-              [Line2D([], [], color=INK, lw=1.1, label="count expected if the masked sequences matched like the unmasked ones")]
+              [Patch(facecolor=BLUES[j], edgecolor=SURF, label=f"masked, too similar · {j}{'+' if j == 3 else ''} pair{'s' if j > 1 else ''}") for j in (1, 2, 3)]
     fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.005, 1 - 0.78 / H), ncol=3, frameon=False, fontsize=7, handletextpad=0.5, columnspacing=2.0, labelcolor=INK)
     fig.tight_layout(rect=(0.012, 0.012, 1, 1 - 1.5 / H), h_pad=2.2, w_pad=1.0)
     return [fig]

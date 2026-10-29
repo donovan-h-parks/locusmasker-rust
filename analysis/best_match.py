@@ -92,10 +92,10 @@ RED3 = ["#d9433f", "#a8201f", "#6f0d0f"]; BLUE3 = ["#86b6ef", "#3987e5", "#184f9
 NC = 5; FAILS = (3, 4, 5); REDS = dict(zip(FAILS, RED3)); BLUES = {1: BLUE3[0], 2: BLUE3[1], 3: BLUE3[2]}
 cats = [(f"masked, too divergent · fails {j} of {NC}", REDS[j], lambda r, j=j: r["reason"] != "similar" and min(max(r["divergent_fails"], 3), NC) == j) for j in FAILS] + \
        [(f"masked, copied · {j}{'+' if j == 3 else ''} too-similar partner{'s' if j > 1 else ''}", BLUES[j], lambda r, j=j: r["reason"] == "similar" and min(r["similar_partners"], 3) == j) for j in (1, 2, 3)]
-nm = sum(r["masked"] for r in rows); nu = len(rows) - nm
-taxa_sorted = sorted({t for t in cm} | {t for t in cu if cu[t] / max(nu, 1) * nm >= 1}, key=lambda t: (-cm[t], -cu[t]))
+nm = sum(r["masked"] for r in rows)
+taxa_sorted = sorted(cm, key=lambda t: (-cm[t], t))
 comp = np.array([[sum(1 for r in rows if r["masked"] and r["best"] == t and f(r)) for _, _, f in cats] for t in taxa_sorted], float)
-obs = comp.sum(1); expd = np.array([cu[t] / max(nu, 1) * nm for t in taxa_sorted]); close = np.array([t in nn for t in taxa_sorted])
+obs = comp.sum(1); close = np.array([t in nn for t in taxa_sorted])
 W = max(10.0, 0.22 * len(taxa_sorted) + 1.5)
 fig, ax = plt.subplots(figsize=(W, 4.8), dpi=150); fig.patch.set_facecolor(SURF); ax.set_facecolor(SURF)
 fig.subplots_adjust(left=0.6 / W, right=1 - 0.15 / W, top=0.71, bottom=0.25)
@@ -107,14 +107,12 @@ for k, (lab, c, _) in enumerate(cats):
     h = comp[:, k]
     if h.any(): ax.bar(xs, h, bottom=bottom, width=0.82, color=c, edgecolor=SURF, lw=0.4)
     bottom += h
-ax.hlines(expd, xs - 0.41, xs + 0.41, color=INK, lw=1.1, zorder=4)
 for x_, o_ in zip(xs, obs): ax.text(x_, o_ + obs.max() * 0.012, f"{int(o_)}", ha="center", va="bottom", fontsize=6.2, color=INK)
 ax.set_xticks(xs); ax.set_xticklabels(taxa_sorted, rotation=90, fontsize=6.4, color=INK)
 for lab, c_ in zip(ax.get_xticklabels(), close):
     if c_: lab.set_fontweight("bold")
 ax.set_xlim(-0.7, len(xs) - 0.3); ax.set_ylabel("masked sequences", color=MUTED, fontsize=8); ax.set_xlabel("the taxon the masked sequence matches best  (identity over the masked sequence's sites; a site the other taxon lacks counts as a mismatch)", color=MUTED, fontsize=8)
-handles = [Patch(facecolor=c, edgecolor=SURF, label=lab) for lab, c, _ in cats if comp[:, [l for l, _ in enumerate(cats)][cats.index((lab, c, _))]].any()] + \
-          [plt.Line2D([], [], color=INK, lw=1.1, label="count expected if masked sequences matched like unmasked ones")]
+handles = [Patch(facecolor=c, edgecolor=SURF, label=lab) for lab, c, _ in cats if comp[:, [l for l, _ in enumerate(cats)][cats.index((lab, c, _))]].any()]
 fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.6 / W, 0.83), ncol=3, frameon=False, fontsize=6.5, labelcolor=INK, columnspacing=2.0, handletextpad=0.5)
 ds = os.path.basename(os.path.normpath(a.dir))
 fig.text(0.6 / W, 0.97, f"{ds}  ·  {a.taxon}  ·  best match of each masked sequence", fontsize=11, fontweight="bold", color=INK, ha="left", va="top")

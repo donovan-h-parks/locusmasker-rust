@@ -885,20 +885,20 @@ const Detail = (() => {
     note = el("div", { style: "max-width: 420px" }, el("b", null, "Observed vs expected divergence."), " Each point is one sequence: its observed divergence at the locus, the median over its comparators, against the divergence the genome predicts. Diagonal: observed = expected. The contours mark, above it, an observed divergence 100%, 200% and 500% above the expectation and, below it, an expectation 100%, 200% and 500% above the observed. Grey: not masked; red: masked, too divergent; blue: " + (D.format >= 4 ? "masked as a copy of another taxon (its source can be any taxon, not only a comparator, so a copy can sit anywhere here)" : "masked, too similar") + "; yellow: masked by both tests. Hover a point for its numbers; click it for the alignment.");
     return box;
   }
-  // best matches of the masked sequences, with the count expected from the unmasked ones
+  // best matches of the masked sequences
   function matchesPlot(cells) {
     const D = App.D; const g0 = cur.i; const box = el("div", { class: "plot" });
     const close = new Set(Array.from(D.closest.subarray(g0 * 5, g0 * 5 + 5)).filter(x => x >= 0));
     const masked = [], unmasked = [];
     for (const [g, li] of cells) { const bm = D.num("best_match", g, li); if (bm === null || bm < 0) continue; ((D.cols.side[g * D.nloc + li] & 3) ? masked : unmasked).push({ g, li, bm, id: D.num("best_match_identity", g, li), code: D.state[g * D.nloc + li] }); }
     if (!masked.length) { box.append(el("div", { class: "note" }, unmasked.length ? "no masked sequence for this taxon" : "best matches were not carried for this taxon (the dataset is large: they are carried for cells with a fail only)")); return box; }
-    const cm = d3.rollup(masked, v => v.length, d => d.bm), cu = d3.rollup(unmasked, v => v.length, d => d.bm); const nm = masked.length, nu = unmasked.length;
-    let taxaSorted = Array.from(new Set([...cm.keys(), ...Array.from(cu.keys()).filter(u => (cu.get(u) / Math.max(nu, 1)) * nm >= 1)])).sort((a, b) => (cm.get(b) || 0) - (cm.get(a) || 0) || (cu.get(b) || 0) - (cu.get(a) || 0));
+    const cm = d3.rollup(masked, v => v.length, d => d.bm); const nu = unmasked.length;
+    let taxaSorted = Array.from(cm.keys()).sort((a, b) => cm.get(b) - cm.get(a) || D.taxa.names[a].localeCompare(D.taxa.names[b]));
     const { W, H: H0 } = area(); const H = H0 - 60; const MAXB = Math.max(6, Math.floor((W - 60) / 34));
-    let other = null; if (taxaSorted.length > MAXB) { const rest = taxaSorted.slice(MAXB - 1); taxaSorted = taxaSorted.slice(0, MAXB - 1); other = { n: rest.length, cm: d3.sum(rest, u => cm.get(u) || 0), cu: d3.sum(rest, u => cu.get(u) || 0), set: new Set(rest) }; }
+    let other = null; if (taxaSorted.length > MAXB) { const rest = taxaSorted.slice(MAXB - 1); taxaSorted = taxaSorted.slice(0, MAXB - 1); other = { n: rest.length, cm: d3.sum(rest, u => cm.get(u)), set: new Set(rest) }; }
     const m = { l: 44, r: 10, t: 14, b: Math.min(130, H * 0.42) };
-    const cats = taxaSorted.map(u => ({ key: u, name: D.taxa.names[u], cm: cm.get(u) || 0, cu: cu.get(u) || 0, rows: masked.filter(d => d.bm === u) })); if (other) cats.push({ key: -1, name: `other (${other.n} taxa)`, cm: other.cm, cu: other.cu, rows: masked.filter(d => other.set.has(d.bm)) });
-    const xs = d3.scaleBand().domain(cats.map(c => c.name)).range([m.l, W - m.r]).padding(0.18); const top = Math.max(d3.max(cats, c => Math.max(c.cm, c.cu / Math.max(nu, 1) * nm)), 1);
+    const cats = taxaSorted.map(u => ({ key: u, name: D.taxa.names[u], cm: cm.get(u), rows: masked.filter(d => d.bm === u) })); if (other) cats.push({ key: -1, name: `other (${other.n} taxa)`, cm: other.cm, rows: masked.filter(d => other.set.has(d.bm)) });
+    const xs = d3.scaleBand().domain(cats.map(c => c.name)).range([m.l, W - m.r]).padding(0.18); const top = Math.max(d3.max(cats, c => c.cm), 1);
     const ys = d3.scaleLinear().domain([0, top * 1.15]).range([H - m.b, m.t]);
     const svg = d3.create("svg").attr("width", W).attr("height", H);
     svg.append("g").attr("class", "axis").attr("transform", `translate(${m.l},0)`).call(d3.axisLeft(ys).tickValues(d3.range(0, top + 1, Math.max(1, Math.ceil(top / 4)))).tickFormat(d3.format("d")));
@@ -907,14 +907,13 @@ const Detail = (() => {
     for (const c of cats) {
       let y0 = H - m.b; const byCode = d3.rollup(c.rows, v => v.length, d => D.famOf(d.code)); const codes = Array.from(byCode.keys()).sort(d3.ascending);   // one segment per outcome
       for (const code of codes) { const h = ys(0) - ys(byCode.get(code)); svg.append("rect").attr("x", xs(c.name)).attr("y", y0 - h).attr("width", xs.bandwidth()).attr("height", Math.max(h, 0)).attr("fill", D.colorOf(code)).attr("stroke", cssVar("--surface")).attr("stroke-width", 0.8).style("cursor", "pointer")
-        .on("mousemove", ev => showHover(el("div", null, el("b", null, c.name), el("div", null, `${byCode.get(code)} masked sequence${byCode.get(code) > 1 ? "s" : ""} match it best (${D.famLabel(code)})`), el("div", { class: "more" }, `${c.cm} masked in all; ${fmt1(c.cu / Math.max(nu, 1) * nm)} expected from the unmasked sequences`)), ev.clientX, ev.clientY)).on("mouseleave", hideHover)
+        .on("mousemove", ev => showHover(el("div", null, el("b", null, c.name), el("div", null, `${byCode.get(code)} masked sequence${byCode.get(code) > 1 ? "s" : ""} match it best (${D.famLabel(code)})`), el("div", { class: "more" }, `${c.cm} masked in all`)), ev.clientX, ev.clientY)).on("mouseleave", hideHover)
         .on("click", () => { App.sel.cells.clear(); for (const d of c.rows) App.sel.cells.add(d.g * D.nloc + d.li); Overview.redraw(); }); y0 -= h; }
-      const e = c.cu / Math.max(nu, 1) * nm; svg.append("line").attr("x1", xs(c.name) - 1).attr("x2", xs(c.name) + xs.bandwidth() + 1).attr("y1", ys(e)).attr("y2", ys(e)).attr("stroke", cssVar("--ink")).attr("stroke-width", 1.4);
-      if (c.cm) svg.append("text").attr("x", xs(c.name) + xs.bandwidth() / 2).attr("y", ys(c.cm) - 3).attr("text-anchor", "middle").style("fill", cssVar("--ink")).text(c.cm);
+      svg.append("text").attr("x", xs(c.name) + xs.bandwidth() / 2).attr("y", ys(c.cm) - 3).attr("text-anchor", "middle").style("fill", cssVar("--ink")).text(c.cm);
     }
     box.append(svg.node());
     const pm = 100 * d3.mean(masked, d => close.has(d.bm) ? 1 : 0), pu = nu ? 100 * d3.mean(unmasked, d => close.has(d.bm) ? 1 : 0) : NaN;
-    note = el("div", { style: "max-width: 420px" }, el("b", null, "Best matches."), ` Masked sequences by the taxon each matches best at its locus, stacked by mask kind; the tick is the count expected if they matched like the taxon's ${fmtInt(nu)} unmasked sequences; bold names are the 5 closest relatives genome-wide. The best match is one of the 5 closest for ${fmt1(pm)}% of masked and ${Number.isFinite(pu) ? fmt1(pu) : "–"}% of unmasked sequences; median identity to it ${fmt1(d3.median(masked, d => d.id))}% masked vs ${nu ? fmt1(d3.median(unmasked, d => d.id)) : "–"}% unmasked.`, el("div", { class: "more", style: "margin-top: 4px" }, "Bars on their ticks are damaged copies of the right sequence (a wrong exon); bars shifted onto a distant taxon point to contamination or a shared paralogue."));
+    note = el("div", { style: "max-width: 420px" }, el("b", null, "Best matches."), ` Masked sequences by the taxon each matches best at its locus, stacked by mask kind; bold names are the 5 closest relatives genome-wide. The best match is one of the 5 closest for ${fmt1(pm)}% of masked and ${Number.isFinite(pu) ? fmt1(pu) : "–"}% of unmasked sequences; median identity to it ${fmt1(d3.median(masked, d => d.id))}% masked vs ${nu ? fmt1(d3.median(unmasked, d => d.id)) : "–"}% unmasked.`, el("div", { class: "more", style: "margin-top: 4px" }, "Bars on a distant taxon point to contamination or a shared paralogue."));
     return box;
   }
   // site ribbons of the masked sequences: one pixel-row each, coloured by the site code
