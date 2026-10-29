@@ -226,6 +226,20 @@ function similarRole(D, g, li) {
   if (sd & 128) return { pt, role: "donor", tag: "copy", text: `${P}, its copy: ${P} is the identified recipient; this sequence is the source, not masked for it`, note: "the identified recipient, a copy of the focal sequence" };
   return { pt, role: "undetermined", tag: "partner", text: `${P}, direction not identified: neither sequence is masked for it`, note: "too similar to the focal sequence, direction not identified" };
 }
+// every copied sequence (from format 4): the recipient, the cell identified as the copy of a too-similar pair, its donor
+// (its source: the member that fits its own relatives better) and the locus
+function copiesOf(D) {
+  if (D._copies) return D._copies; const out = [];
+  if (D.format >= 4) for (let g = 0; g < D.n; g++) for (let li = 0; li < D.nloc; li++) { if (!(D.cols.side[g * D.nloc + li] & (2 | 32))) continue; const p = D.num("partner", g, li); if (p !== null && p >= 0) out.push({ rec: g, don: p, li }); }
+  return (D._copies = out);
+}
+// the copies grouped by donor, recipient or pair (mode), most copies first, ties by name
+function copyGroups(D, mode) {
+  const nm = D.taxa.names, keyOf = c => mode === "donor" ? String(c.don) : mode === "recipient" ? String(c.rec) : `${c.don},${c.rec}`;
+  const label = k => mode === "pair" ? k.split(",").map(x => nm[+x]).join(" → ") : nm[+k];
+  return d3.groups(copiesOf(D), keyOf).map(([k, v]) => ({ k, label: label(k), list: v })).sort((a, b) => b.list.length - a.list.length || a.label.localeCompare(b.label));
+}
+
 // the log10 p every test is held to, when the bundle gives it (format 4), and " (bar −7.25)" built on it
 const bar10 = D => D.man.test && D.man.test.log10_bar != null ? fmt2(D.man.test.log10_bar) : null;
 const barNote = D => bar10(D) !== null ? ` (bar ${bar10(D)})` : "";
@@ -410,14 +424,14 @@ const Overview = (() => {
   }
   function renderWorst() {
     const D = App.D; const w = viewEl.worst; w.replaceChildren();
-    const col = (title, items, open) => {
-      const c = el("div", { class: "col" }, el("h3", null, title));
+    const col = (title, items, open, head) => {
+      const c = el("div", { class: "col" }, el("h3", head || null, title));
       const max = d3.max(items, d => d.v) || 1;
       for (const it of items) {
         const bar = el("div", { class: "bar" });
         const div = it.div / (it.div + it.sim || 1);
         bar.append(el("i", { style: `width:${100 * it.v / max}%; background: linear-gradient(90deg, ${D.col.red} ${100 * div}%, ${D.col.blue} ${100 * div}%)` }));
-        c.append(el("div", { class: "row", title: it.title, onclick: () => open(it.i), onmouseenter: () => highlight(it.kind, it.i), onmouseleave: () => highlight(null) },
+        c.append(el("div", { class: "row", title: it.title, onclick: () => open(it), onmouseenter: () => it.kind && highlight(it.kind, it.i), onmouseleave: () => it.kind && highlight(null) },
           el("span", { class: "nm" }, it.name), bar, el("span", { class: "num" }, it.label)));
       }
       return c;
@@ -426,12 +440,23 @@ const Overview = (() => {
       .sort((a, b) => b.v - a.v || b.div + b.sim - a.div - a.sim).slice(0, 10);
     const loci = d3.range(D.nloc).filter(l => D.locCount.masked[l] > 0).map(l => ({ i: l, kind: "col", name: D.loci.names[l], v: D.locCount.masked[l], div: D.locCount.div[l], sim: D.locCount.sim[l], label: fmtInt(D.locCount.masked[l]), title: `${D.locCount.masked[l]} of ${D.locCount.tested[l]} tested taxa masked` }))
       .sort((a, b) => b.v - a.v).slice(0, 10);
-    const ct = col("most masked taxa (share of tested loci)", taxa, g => Detail.open("taxon", g)), cl = col("most masked loci (sequences)", loci, l => Detail.open("locus", l));
-    w.append(ct, cl);
+    const ct = col("most masked taxa (share of tested loci)", taxa, it => Detail.open("taxon", it.i)), cl = col("most masked loci (sequences)", loci, it => Detail.open("locus", it.i));
+    w.append(el("div", { class: "worst-row" }, ct, cl));
+    // the copies (from format 4): who gave and who received, most copies first. A title opens the site ribbons of every copy
+    // in blocks; a row opens its block alone
+    if (copiesOf(D).length) {
+      const MODES = [["donor", "most common donors", "the taxon a copy was more likely copied from"], ["recipient", "most common recipients", "the taxon holding the copy (masked)"], ["pair", "most common donor-recipient pairs", "donor → recipient"]];
+      const cols = MODES.map(([mode, title, what]) => {
+        const items = copyGroups(D, mode).slice(0, 10).map(gr => ({ k: gr.k, i: mode === "pair" ? null : +gr.k, kind: mode === "pair" ? null : "row", name: gr.label, v: gr.list.length, div: 0, sim: gr.list.length, label: fmtInt(gr.list.length),
+          title: `${gr.label}: ${gr.list.length} cop${gr.list.length > 1 ? "ies" : "y"} (${what}) · click: their site ribbons` }));
+        return col(title, items, it => Detail.openCopies(mode, it.k), { class: "link", title: `click: the site ribbons of every copy, in blocks by ${mode === "pair" ? "donor-recipient pair" : mode}, most copies first`, onclick: () => Detail.openCopies(mode, null) });
+      });
+      w.append(el("div", { class: "worst-row" }, ...cols));
+    }
     // the histograms under the lists, sized to the room left in the panel
     const room = P.body.getBoundingClientRect().height - viewEl.tiles.getBoundingClientRect().height - w.getBoundingClientRect().height - 60;
     const hh = clamp(room, 190, 420), hw = (w.getBoundingClientRect().width || 800) / 2 - 20;
-    const ht = el("div", { class: "hist-wrap" }), hl = el("div", { class: "hist-wrap" }); ct.append(ht); cl.append(hl);
+    const ht = el("div", { class: "hist-wrap" }), hl = el("div", { class: "hist-wrap" }); w.append(el("div", { class: "worst-row" }, el("div", { class: "col" }, ht), el("div", { class: "col" }, hl)));
     Hist.render(ht, "taxon", hw, hh); Hist.render(hl, "locus", hw, hh);
   }
   // ---- ordering
@@ -743,16 +768,19 @@ const Ribbons = (() => {
 // ------------------------------------------------------------------ the taxon / locus panel: one plot at a time, sized to the panel
 const Detail = (() => {
   let cur = null, view = "scatter", viewSel = null, body = null, note = null;      // note: the explanation of the plot on show, behind the ? mark
+  function ensurePanel() {
+    if (App.panels.detail) return;
+    const P = makePanel("detail", [], () => closePanel("detail")); App.panels.detail = { el: P.el, P, render, redraw: render };
+    App.topEl.append(App.vsplitEl, P.el); App.vsplitEl.style.display = "";
+    new ResizeObserver(debounce(() => { if (App.panels.detail && cur) draw(); }, 120)).observe(P.body);
+  }
   function open(kind, i) {
-    cur = { kind, i };
-    if (!App.panels.detail) {
-      const P = makePanel("detail", [], () => closePanel("detail")); App.panels.detail = { el: P.el, P, render, redraw: render };
-      App.topEl.append(App.vsplitEl, P.el); App.vsplitEl.style.display = "";
-      new ResizeObserver(debounce(() => { if (App.panels.detail && cur) draw(); }, 120)).observe(P.body);
-    }
+    cur = { kind, i }; ensurePanel();
     if (kind === "locus" && view === "matches") view = "scatter";
     render(); writeHash(); Overview.highlight(kind === "taxon" ? "row" : "col", i);
   }
+  // the copies' site ribbons in blocks by donor, recipient or pair (mode); key: one block alone, null for all
+  function openCopies(mode, key) { cur = { kind: "copies", mode, key: key === undefined ? null : key }; ensurePanel(); render(); writeHash(); }
   function cellsOf() {
     const D = App.D; const out = [];
     if (cur.kind === "taxon") { const g = cur.i; for (let li = 0; li < D.nloc; li++) if (D.cols.n_comp[g * D.nloc + li] > 0) out.push([g, li]); }
@@ -762,6 +790,7 @@ const Detail = (() => {
   function area() { const r = body.getBoundingClientRect(); return { W: Math.max(300, r.width - 20), H: Math.max(220, r.height - 20) }; }
   function render() {
     if (!cur || !App.panels.detail) return;
+    if (cur.kind === "copies") return renderCopies();
     const D = App.D; const { kind, i } = cur; const P = App.panels.detail.P; const name = kind === "taxon" ? D.taxa.names[i] : D.loci.names[i];
     const cnt = kind === "taxon" ? D.taxCount : D.locCount;
     const views = [["scatter", "observed vs expected"], ...(kind === "taxon" ? [["matches", "best matches"]] : []), ["ribbons", "site ribbons"]];
@@ -771,8 +800,42 @@ const Detail = (() => {
     P.body.replaceChildren(); body = P.body; body.classList.add("detail-body");
     draw();
   }
+  function renderCopies() {
+    const D = App.D; const P = App.panels.detail.P; const n = copiesOf(D).length;
+    const modeSel = el("select", { onchange: e => openCopies(e.target.value, null) }, ...[["donor", "by donor"], ["recipient", "by recipient"], ["pair", "by donor-recipient pair"]].map(([v, t]) => el("option", { value: v, selected: v === cur.mode ? "" : null }, t)));
+    const q = el("span", { class: "help-q", title: "what this shows", onmouseenter: ev => { if (note) showHover(note, ev.clientX, ev.clientY); }, onmouseleave: hideHover }, "?");
+    const one = cur.key === null ? null : copyGroups(D, cur.mode).find(gr => gr.k === String(cur.key));
+    P.setCrumb([el("span", null, "copies", one ? [" ", el("b", null, one.label)] : ""), el("span", { class: "sub" }, one ? `${one.list.length} of ${fmtInt(n)} copies` : `${fmtInt(n)} copies`), el("label", { class: "crumb-ctl" }, "blocks ", modeSel, q)]);
+    P.body.replaceChildren(); body = P.body; body.classList.add("detail-body");
+    draw();
+  }
+  // the site ribbons of the copies (the recipients' sequences) in blocks, most copies first
+  function copiesRibbons() {
+    const D = App.D; const box = el("div", { class: "plot ribbons-plot" }); const nm = D.taxa.names, ln = D.loci.names;
+    const groups = copyGroups(D, cur.mode).filter(gr => cur.key === null || gr.k === String(cur.key));
+    if (!groups.length) { box.append(el("div", { class: "note" }, "no copies here")); return box; }
+    const maxLen = d3.max(groups, gr => d3.max(gr.list, c => D.loci.length[c.li]));
+    const [leftHead, rightHead] = cur.mode === "donor" ? ["recipient", "locus"] : cur.mode === "recipient" ? ["locus", "donor"] : ["locus", ""];
+    const wrap = el("div", { class: "ribbons-wrap" }); box.append(wrap);
+    wrap.append(el("div", { class: "rib-head2" }, el("span", null, leftHead), el("span", null, ""), el("span", null, rightHead)));
+    for (const gr of groups) {
+      wrap.append(el("div", { class: "rule", title: cur.mode === "pair" ? "donor → recipient" : cur.mode }, `${gr.label} · ${gr.list.length} cop${gr.list.length > 1 ? "ies" : "y"}`));
+      const rows = gr.list.slice().sort((a, b) => cur.mode === "donor" ? nm[a.rec].localeCompare(nm[b.rec]) || a.li - b.li : a.li - b.li);
+      for (const c of rows) {
+        const { rec: g, li } = c; const cv = el("canvas");
+        const [left, right] = cur.mode === "donor" ? [nm[g], ln[li]] : cur.mode === "recipient" ? [ln[li], nm[c.don]] : [ln[li], ""];
+        const row = el("div", { class: "rib-row2", title: `${nm[g]} at ${ln[li]}, copied from ${nm[c.don]} · click: the alignment`, onclick: () => Sequence.open(g, li), onmouseenter: () => { App.sel.cells.clear(); App.sel.cells.add(g * D.nloc + li); Overview.redraw(); }, onmouseleave: () => { App.sel.cells.clear(); Overview.redraw(); } },
+          el("span", { class: "nm" }, sw(D.colorOf(D.state[g * D.nloc + li])), left), cv, el("span", { class: "nm bm" }, right));
+        wrap.append(row);
+        D.codes(li).then(C => drawRibbon(cv, C, g, li, maxLen));
+      }
+    }
+    note = el("div", { style: "max-width: 420px" }, el("b", null, "Copies."), " Each row is a copied sequence (the recipient, masked) at one locus, drawn along its sites: blue where it shares its donor's residue while two or more of its comparators differ, grey to red as more of its comparators differ from it. The donor is the member of the too-similar pair that fits its own relatives better. Blocks run from the most copies to the fewest. Click a row for the alignment.");
+    return box;
+  }
   function draw() {
     if (!cur || !App.panels.detail) return; body.replaceChildren(); note = null;
+    if (cur.kind === "copies") { body.append(copiesRibbons()); return; }
     const cells = cellsOf();
     if (view === "scatter") body.append(scatterPlot(cells)); else if (view === "matches") body.append(matchesPlot(cells)); else body.append(ribbonsList(cells));
   }
@@ -892,7 +955,7 @@ const Detail = (() => {
     cv.addEventListener("mousemove", ev => { const rr = cv.getBoundingClientRect(); const s = Math.floor((ev.clientX - rr.left) / rr.width / span * len); if (s >= 0 && s < len) showHover(el("div", null, el("b", null, `${D.taxa.names[g]} · ${D.loci.names[li]}`), el("div", null, `site ${s + 1} of ${fmtInt(len)} (alignment position ${fmtInt(alignmentPos(D, li, s) + 1)}): ${codeLabel(D, C.blk[base + s])}`)), ev.clientX, ev.clientY); });
     cv.addEventListener("mouseleave", hideHover);
   }
-  return { open, render, cur: () => cur, setView: v => { view = v; } };
+  return { open, openCopies, render, cur: () => cur, setView: v => { view = v; } };
 })();
 
 // site-code helpers shared by the ribbons and the alignment panel
@@ -1084,7 +1147,8 @@ const Sequence = (() => {
     const Pn = sr ? D.taxa.names[sr.pt] : partner !== null && partner >= 0 ? D.taxa.names[partner] : null;
     const masked = sd & 3, off = !masked && (sd & (16 | 32)), says = [];
     if (sd & (1 | 16)) says.push("significantly too divergent");
-    if (Pn && (D.format < 4 || sd & (2 | 32 | 128))) says.push(`significantly too similar to ${Pn}${sd & 128 && !(sd & (2 | 32)) ? ` (${Pn} is the copy)` : ""}`);
+    const donor = D.format < 4 ? null : sd & (2 | 32) ? Pn : sd & 128 ? D.taxa.names[g] : null;   // the member that fits its own relatives better
+    if (Pn && (D.format < 4 || sd & (2 | 32 | 128))) says.push(`significantly too similar to ${Pn}${donor ? ` (${donor} looks more likely to be the donor)` : ""}`);
     const verdict = D.cols.n_comp[i] === 0 ? `Not tested: ${stateReason(D, g, li) || "no comparators"}` : `${masked ? "Masked" : off ? "Not masked (masking was off)" : "Not masked"}${says.length ? ": " + says.join("; ") : ""}${sd & 4 ? " (fewer comparators than requested)" : ""}`;
     const parts = [el("span", { class: "state" }, sw(D.colorOf(D.state[i])), verdict)];
     const schemeSel = el("select", { onchange: e => { scheme = e.target.value; draw(); } }, ...SCHEME_LIST[dtype === "dna" ? "dna" : "aa"].map(([v, t]) => el("option", { value: v, selected: v === scheme ? "" : null }, t)));
@@ -1284,7 +1348,7 @@ function writeHash() {
     const D = App.D; if (!D) return; const V = Overview.V; const p = new URLSearchParams();
     p.set("d", D.man.input.sha256.slice(0, 10)); p.set("view", App.view); p.set("o", `${App.order.taxaMode},${App.order.lociMode}`);
     p.set("v", [V.x0, V.y0, V.cw, V.ch].map(v => +v.toFixed(3)).join(","));
-    const dc = Detail.cur(); if (dc && App.panels.detail) { p.set(dc.kind === "taxon" ? "t" : "l", dc.i); const ds = App.panels.detail.P.el.querySelector(".crumb select"); if (ds) p.set("dv", ds.value); }
+    const dc = Detail.cur(); if (dc && App.panels.detail) { if (dc.kind === "copies") p.set("cp", dc.mode + (dc.key !== null ? ":" + dc.key : "")); else { p.set(dc.kind === "taxon" ? "t" : "l", dc.i); const ds = App.panels.detail.P.el.querySelector(".crumb select"); if (ds) p.set("dv", ds.value); } }
     const sc = Sequence.cur(); if (sc && App.panels.sequence) p.set("c", `${sc.g},${sc.li}`);
     try { history.replaceState(null, "", "#" + p.toString()); } catch (e) { /* a sandboxed host may refuse */ }
   }, 150);
@@ -1296,7 +1360,7 @@ function readHash() {
   if (p.get("v")) { const [x0, y0, cw, ch] = p.get("v").split(",").map(Number); if ([x0, y0, cw, ch].every(Number.isFinite)) { Overview.V.x0 = x0; Overview.V.y0 = y0; Overview.V.cw = cw; Overview.V.ch = ch; Overview.V.user = true; Overview.labelSpace(); App._viewFromHash = true; } }
   if (p.get("view")) App.view = p.get("view");
   if (p.get("dv")) Detail.setView(p.get("dv"));
-  if (p.get("t")) Detail.open("taxon", +p.get("t")); else if (p.get("l")) Detail.open("locus", +p.get("l"));
+  if (p.get("t")) Detail.open("taxon", +p.get("t")); else if (p.get("l")) Detail.open("locus", +p.get("l")); else if (p.get("cp")) { const [m, k] = p.get("cp").split(":"); Detail.openCopies(m, k === undefined ? null : k); }
   if (p.get("c")) { const [g, li] = p.get("c").split(",").map(Number); Sequence.open(g, li); }
 }
 const _render = Overview.render;
