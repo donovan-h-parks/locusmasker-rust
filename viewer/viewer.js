@@ -708,10 +708,11 @@ function drawResidualRow(cv, kind, u, W, H, opts) {
   c.strokeStyle = cssVar("--model"); c.lineWidth = 1; c.beginPath(); c.moveTo(xs(0) + 0.5, 1); c.lineTo(xs(0) + 0.5, H - 1); c.stroke();
   const jit = d3.randomUniform.source(d3.randomLcg(0.31 + (u % 97) / 100))(-(H / 2 - 4), H / 2 - 4); const cy = H / 2;
   pts.sort((a, b) => D.sev[a.g * D.nloc + a.li] - D.sev[b.g * D.nloc + b.li]);
-  const many = pts.length > 400;
+  const many = pts.length > 400, ring = cssVar("--surface");
   for (const p of pts) {
     p.py = cy + jit(); const col = D.pointColorOf(p.code) || cssVar("--grey-1");
-    c.globalAlpha = p.code >= ST.RED ? 1 : many ? 0.35 : 0.7; c.fillStyle = col; c.beginPath(); c.arc(p.px, p.py, many ? 1.8 : 2.4, 0, 2 * Math.PI); c.fill(); c.globalAlpha = 1;   // one size, no borders
+    c.globalAlpha = p.code >= ST.RED ? 1 : many ? 0.35 : 0.7; c.fillStyle = col; c.beginPath(); c.arc(p.px, p.py, many ? 1.8 : 2.4, 0, 2 * Math.PI); c.fill(); c.globalAlpha = 1;
+    if (p.code >= ST.RED) { c.strokeStyle = ring; c.lineWidth = 0.6; c.stroke(); }   // one size; a fine white ring on the masked points only
   }
   return { pts, identical, xs };
 }
@@ -872,8 +873,10 @@ const Detail = (() => {
     wrap.append(svg.node());
     const cv = el("canvas"); const dpr = devicePixelRatio || 1; cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + "px"; cv.style.height = H + "px"; wrap.append(cv);
     const c = cv.getContext("2d"); c.scale(dpr, dpr);
+    const ring = cssVar("--surface");
     const drawPt = (p, r) => { const x = xs(X(p)), y = ys(Y(p)); c.fillStyle = D.pointColorOf(p.code) || cssVar("--grey-1"); c.beginPath();
-      c.globalAlpha = p.code >= ST.RED ? 1 : 0.8; c.arc(x, y, r, 0, 2 * Math.PI); c.fill(); c.globalAlpha = 1; };   // one size and one colour per outcome; no shapes, no borders
+      c.globalAlpha = p.code >= ST.RED ? 1 : 0.8; c.arc(x, y, r, 0, 2 * Math.PI); c.fill(); c.globalAlpha = 1;
+      if (p.code >= ST.RED) { c.strokeStyle = ring; c.lineWidth = 0.6; c.stroke(); } };   // one size and one colour per outcome; a fine white ring on the masked points only
     const order = pts.slice().sort((a, b) => D.sev[a.g * D.nloc + a.li] - D.sev[b.g * D.nloc + b.li]);
     const r = pts.length > 2000 ? 2.4 : pts.length > 500 ? 3.2 : 4.2;
     for (const p of order) drawPt(p, r);
