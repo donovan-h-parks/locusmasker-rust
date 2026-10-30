@@ -25,6 +25,13 @@ def simulated(rng, n, nloc, ll, d=0.1):
     return DNA[X]
 
 
+def two_clades(rng, n, nloc, ll, d):
+    """two clades of identical sequences, the second a fraction d of its sites from the first"""
+    anc = rng.integers(0, 4, nloc * ll); X = np.tile(anc, (n, 1)); mut = rng.random(nloc * ll) < d
+    X[n // 2:, mut] = (X[n // 2:, mut] + rng.integers(1, 4, int(mut.sum()))) % 4
+    return DNA[X]
+
+
 def not_tested_summary(log):
     """the numbers the log must state: taxa, loci and sequences not tested"""
     m = re.search(r"not tested: (\d+) of (\d+) taxa[^\n]*?(\d+) of (\d+) loci[^\n]*?(\d+) of ([\d,]+) (?:present )?sequences", log, re.I)
@@ -80,22 +87,52 @@ class TestIdentical:
         assert r.rc != 0 and re.search(r"nothing could be tested", r.log, re.I) and re.search(r"resolved beyond|too similar", r.log, re.I), r.log
         m = lo.divergence_matrix(aln, parts, "dna")[1]; off = ~np.eye(20, dtype=bool); assert np.isnan(m[off]).all()     # no locus has a rate, so no pair has a divergence
 
-    def test_almost_identical_sequences_cannot_be_tested_and_say_so(self, tmp_path, tmp_out):
+    def test_almost_identical_sequences_are_tested_where_a_pair_is_resolved(self, tmp_path, tmp_out):
+        """0.4% from the ancestor each: some pairs are resolved beyond their floor and some are not; the resolved ones set the
+        rates and serve as comparators, a sequence with no resolved relative is reported as untested, nothing is masked"""
         rng = np.random.default_rng(5); X = simulated(rng, 20, 12, 100, d=0.004); aln, parts = write(tmp_path, X, 12)
         r = run_tool(aln, tmp_out, "dna", parts); assert "Traceback" not in r.log, r.log
-        assert r.rc != 0 and re.search(r"nothing could be tested", r.log, re.I), r.log
+        assert r.rc == 0 and r.masked == [], r.log; c = r.report.man["counts"]; assert 0 < c["cells"] <= 20 * 12
+        if c["cells"] < 20 * 12: assert "no resolved relative" in r.log and c["untested_sequences"] == 20 * 12 - c["cells"]
 
     def test_slightly_divergent_sequences_are_tested_and_mask_nothing(self, tmp_path, tmp_out):
         rng = np.random.default_rng(10); X = simulated(rng, 20, 12, 100, d=0.03); aln, parts = write(tmp_path, X, 12)
         r = run_tool(aln, tmp_out, "dna", parts); assert r.rc == 0 and "Traceback" not in r.log, r.log
         c = r.report.man["counts"]; assert c["masked"] == 0 and c["cells"] == 20 * 12
 
-    @pytest.mark.xfail(strict=True, reason="LIMIT: a contaminant among identical relatives cannot be found: no locus has the 8 resolved comparator pairs a rate needs")
-    def test_one_contaminant_among_identical_sequences_is_found(self, tmp_path, tmp_out):
-        rng = np.random.default_rng(6); X = simulated(rng, 20, 12, 100, d=0.0)
+    def test_one_contaminant_among_identical_relatives_is_found(self, tmp_path, tmp_out):
+        """two clades of identical sequences 5% apart: the contaminated sequence is no longer identical to its clade-mates, so
+        one of them is a comparator (tested at the pair's floor) beside one of the other clade; no two comparators are
+        identical to each other, so the cell is ambiguous (two comparators) and still masked; the rates come from the
+        cross-clade pairs"""
+        rng = np.random.default_rng(6); X = two_clades(rng, 20, 12, 100, d=0.05)
         X[7, 300:400] = DNA[rng.integers(0, 4, 100)]                                   # taxon 7 at locus 4
-        aln, parts = write(tmp_path, X, 12); r = run_tool(aln, tmp_out, "dna", parts); assert r.rc == 0
+        aln, parts = write(tmp_path, X, 12); r = run_tool(aln, tmp_out, "dna", parts); assert r.rc == 0, r.log
         assert [(x["taxon"], x["locus"], x["reason"]) for x in r.masked] == [("t007", "locus4", "divergent")]
+        comps = r.report.arr("cells/comparators.npy"); assert comps[7, 3].tolist() == [0, 10, -1, -1, -1]                # one clade-mate (identical elsewhere, not here) and one of the other clade: two classes, two comparators
+        assert r.report.man["counts"]["cells"] == 20 * 12 and all(v is not None for v in r.report.loci["rate"])
+
+    def test_duplicate_sequences_are_neither_comparators_nor_copies(self, tmp_path, tmp_out):
+        """every taxon twice: a twin is never a comparator, a closest match or one of the closest relatives, nothing is masked,
+        and every locus has a rate"""
+        rng = np.random.default_rng(12); X = np.repeat(simulated(rng, 10, 12, 100, d=0.1), 2, axis=0)
+        aln, parts = write(tmp_path, X, 12); r = run_tool(aln, tmp_out, "dna", parts); assert r.rc == 0, r.log
+        assert r.masked == [] and r.report.man["counts"]["cells"] == 20 * 12 and all(v is not None for v in r.report.loci["rate"])
+        comps = r.report.arr("cells/comparators.npy"); lc = r.report.arr("cells/locus_closest.npy"); cl = r.report.arr("taxa/closest.npy")
+        for g in range(20): assert (comps[g] != (g ^ 1)).all() and not (lc[g] == (g ^ 1)).any() and (g ^ 1) not in cl[g].tolist()
+        for g in range(20):
+            for li in range(12): assert len({c // 2 for c in comps[g, li]}) == 5                                   # five distinct genomes, never two copies of one
+
+    def test_six_copies_of_a_bad_sequence_do_not_vouch_for_each_other(self, tmp_path, tmp_out):
+        """Rob's case: a dataset full of errors must not pass because every sequence is in six times; the contaminated
+        sequence and its five copies are all found against the other genomes"""
+        rng = np.random.default_rng(13); Y = simulated(rng, 8, 12, 100, d=0.1); Y[3, 300:400] = DNA[rng.integers(0, 4, 100)]   # taxon 3 at locus 4
+        X = np.repeat(Y, 6, axis=0); aln, parts = write(tmp_path, X, 12); r = run_tool(aln, tmp_out, "dna", parts); assert r.rc == 0, r.log
+        assert sorted((x["taxon"], x["locus"], x["reason"]) for x in r.masked) == [(f"t{18 + k:03d}", "locus4", "divergent") for k in range(6)]
+        assert r.report.man["counts"]["cells"] == 48 * 12
+        comps = r.report.arr("cells/comparators.npy")
+        for g in range(48):
+            for li in range(12): assert len({c // 6 for c in comps[g, li]}) == 5 and (comps[g, li] // 6 != g // 6).all()
 
     def test_one_contaminant_among_slightly_divergent_sequences_is_found(self, tmp_path, tmp_out):
         rng = np.random.default_rng(11); X = simulated(rng, 20, 12, 100, d=0.03)

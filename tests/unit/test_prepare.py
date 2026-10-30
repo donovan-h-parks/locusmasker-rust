@@ -150,3 +150,28 @@ class TestDivergenceMatrix:
         ds = dataset("dna_small"); names, m, m_hi = lo.divergence_matrix(ds.aln, ds.parts, "dna", threads=2)
         n2, rows, loci, *_ = lo.read_input(ds.aln, ds.parts); P = lo.prepare(argparse.Namespace(fit_overlap=20, threads=1), n2, rows, loci, "dna", 5, time.time())
         assert np.array_equal(m, P.m, equal_nan=True)
+
+
+class TestUnresolvedPairs:
+    """an identical genome is never a comparator and never votes on a rate; an unresolved pair never votes; the rates
+    come from the nearest resolved, non-identical neighbours, so every taxon duplicated still gives every locus a rate"""
+    def test_identical_twins_are_never_comparators_and_the_rates_come_from_the_rest(self):
+        rng = np.random.default_rng(21); n, nloc, ll = 12, 12, 120
+        anc = rng.integers(0, 4, nloc * ll); X = np.tile(anc, (n, 1)); mut = rng.random(X.shape) < 0.08
+        X[mut] = (X[mut] + rng.integers(1, 4, int(mut.sum()))) % 4; X = np.repeat(X, 2, axis=0)                  # every taxon twice
+        rows = [bytearray(bytes(np.frombuffer(b"ACGT", dtype=np.uint8)[r])) for r in X]; names = [f"t{i:02d}" for i in range(2 * n)]
+        loci = [(f"l{i}", np.arange(i * ll, (i + 1) * ll)) for i in range(nloc)]
+        P = lo.prepare(argparse.Namespace(fit_overlap=20, threads=1), names, rows, loci, "dna", 5, time.time())
+        for g in range(2 * n):
+            assert P.m[g, g ^ 1] == 0 and P.m_xs[g, g ^ 1] == 0 and not np.isfinite(P.mj[g, g ^ 1])                 # the twin: identical, never a comparator
+            others = [h for h in range(2 * n) if h not in (g, g ^ 1)]; assert np.isfinite(P.mj[g, others]).all()
+        assert np.isfinite(P.rate).all() and (P.rate > 0).all()
+
+    def test_two_clades_of_identical_sequences_get_rates_from_the_other_clade(self):
+        rng = np.random.default_rng(22); nloc, ll = 12, 100; anc = rng.integers(0, 4, nloc * ll); X = np.tile(anc, (20, 1))
+        mut = rng.random(nloc * ll) < 0.05; X[10:, mut] = (X[10:, mut] + rng.integers(1, 4, int(mut.sum()))) % 4
+        rows = [bytearray(bytes(np.frombuffer(b"ACGT", dtype=np.uint8)[r])) for r in X]; names = [f"t{i:02d}" for i in range(20)]
+        loci = [(f"l{i}", np.arange(i * ll, (i + 1) * ll)) for i in range(nloc)]
+        P = lo.prepare(argparse.Namespace(fit_overlap=20, threads=1), names, rows, loci, "dna", 5, time.time())
+        assert np.isfinite(P.rate).all() and (P.rate > 0).all()
+        assert (P.m_xs[:10, :10][~np.eye(10, dtype=bool)] == 0).all() and (P.m_xs[:10, 10:] > 0).all()
