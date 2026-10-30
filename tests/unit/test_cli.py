@@ -145,12 +145,15 @@ class TestOptions:
         ds = dataset("dna_clean"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--threads", "0"]); assert r.rc == 0 and r.report.man["options"]["threads"] == lo._cpus()
         r = run_tool(ds.aln, str(tmp_path / "b"), "dna", ds.parts, ["--threads", "100000"]); assert r.rc == 0 and "asked" in r.log and r.report.man["options"]["threads"] == lo._cpus()
 
-    def test_progress_lines_mode(self, tmp_out):
-        ds = dataset("dna_clean"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, progress="lines")
+    def test_progress_auto_without_a_terminal_prints_sparse_lines(self, tmp_out):
+        ds = dataset("dna_clean"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, progress="auto")      # stderr is captured: not a terminal
         lines = [l for l in r.log.split("\n") if l.startswith("progress\t")]
         stages = [l.split("\t")[1] for l in lines]
         for st in ("read", "counts", "pairs0", "rates", "pairs", "comparators", "dispersion", "test", "write"): assert st in stages, st
-        assert any(l.startswith("event\tlocus\t") for l in r.log.split("\n"))
+        assert "\r" not in r.log and not any(l.startswith("event\t") for l in r.log.split("\n"))
+
+    def test_progress_lines_is_no_longer_a_mode(self, tmp_out):
+        ds = dataset("dna_clean"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, progress="lines"); assert r.rc != 0 and "invalid choice" in r.log
 
     def test_progress_bar_mode_without_a_terminal(self, tmp_out):
         ds = dataset("dna_clean"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, progress="bar")

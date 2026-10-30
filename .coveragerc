@@ -7,7 +7,6 @@ omit =
     tests/*
     validation/*
     analysis/*
-    website/*
     notes/*
 
 [report]

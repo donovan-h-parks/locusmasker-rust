@@ -358,7 +358,7 @@ def read_nexus_fast(path):
     and taxset statements with plain site ranges. Anything else raises _Unsupported and Bio.Nexus is used instead.
     Works on the file's bytes with offsets, so the only copies made are the sequence rows themselves.
     Returns names, rows (bytearrays), charsets (name -> sorted 0-based sites), NexusInfo."""
-    data = open(path, "rb").read()
+    with open(path, "rb") as fh: data = fh.read()
     for ch in (b"[", b"'", b'"', b"(", b"{"):
         if ch in data: raise _Unsupported("comments, quotes or ambiguity sets")
     m = _RE_NEXUS_HEAD.match(data)
@@ -774,8 +774,9 @@ def _cpus():
 def _mem_available():
     """bytes of memory the run can take without swapping: Linux MemAvailable, else the free physical pages, else 2 GB"""
     try:
-        for line in open("/proc/meminfo"):
-            if line.startswith("MemAvailable:"): return int(line.split()[1]) * 1024
+        with open("/proc/meminfo") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"): return int(line.split()[1]) * 1024
     except OSError: pass
     try: return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_AVPHYS_PAGES")
     except (ValueError, OSError, AttributeError): return 2 << 30
@@ -799,9 +800,9 @@ LOG = _Log()
 
 
 class Progress:
-    """stage progress for the terminal and the website. `bar` draws one updating line per stage; `lines` prints
-    progress<TAB>stage<TAB>done<TAB>total<TAB>elapsed_s<TAB>extra at most twice a second (what the website reads);
-    `auto` is a bar on a terminal and lines at 2% steps otherwise; `none` is silent. Ticks may come from worker threads."""
+    """stage progress on stderr. `bar` draws one updating line per stage; `auto` is a bar on a terminal and, elsewhere (a
+    log file), one progress<TAB>stage<TAB>done<TAB>total<TAB>elapsed_s<TAB>extra line at 2% steps; `none` is silent.
+    Ticks may come from worker threads."""
     def __init__(self, mode="none", t0=None):
         self.mode = ("bar" if sys.stderr.isatty() else "sparse") if mode == "auto" else mode
         self.t0 = time.time() if t0 is None else t0; self.lock = threading.Lock(); self.stage = None; self.out = sys.stderr
@@ -826,16 +827,13 @@ class Progress:
             elif now - self.last >= 0.5 or self.done >= self.total: self._emit(now)
     def finish(self):
         with self.lock: self._finish()
-    def event(self, *fields):
-        """a structured line for the website (lines mode only): event<TAB>kind<TAB>..."""
-        if self.mode == "lines": self.out.write("event\t" + "\t".join(str(f) for f in fields) + "\n"); self.out.flush()
     def _finish(self):
         if self.stage is None: return
         self.done = self.total; now = time.time(); self.durations[self.stage] = round(now - self.ts, 2); self._emit(now, final=True); self.stage = None
     def _emit(self, now, final=False):
         if self.mode == "none": return
         el = now - self.t0; st = now - self.ts
-        if self.mode in ("lines", "sparse"):
+        if self.mode == "sparse":
             self.out.write(f"progress\t{self.stage}\t{self.done}\t{self.total}\t{el:.1f}\t{self.extra}\n"); self.out.flush(); self.last = now; return
         frac = self.done / self.total; w = 28; filled = int(round(frac * w))
         eta = (st / frac - st) if 0 < frac < 1 else 0.0
@@ -998,7 +996,7 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
             test_rate=[None if not np.isfinite(v) else round(float(v), 5) for v in rep["test_rate"]], similar_tests=[int(v) for v in rep["pair_tests"]]))
         put_json("manifest.json", dict(
             format_version=REPORT_FORMAT, tool="LocusMasker", version=__version__, commit=_git_commit(),
-            python=platform.python_version(), numpy=np.__version__, platform=("pyodide" if sys.platform == "emscripten" else "native"),
+            python=platform.python_version(), numpy=np.__version__,
             system=platform.platform(), date=time.strftime("%Y-%m-%d %H:%M:%S"), command=" ".join(sys.argv),
             options=dict(datatype=dtype, n_comp=K, K_eff=K_eff, M_eff=M_eff, fit_overlap=a.fit_overlap, alpha=a.alpha, donor_threshold=a.donor_threshold,
                          mask_similar_only=a.mask_similar_only, mask_different_only=a.mask_different_only, threads=a.threads, all_tests=a.all_tests,
@@ -1023,14 +1021,14 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
     tpl_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer"); tpl = os.path.join(tpl_dir, "viewer.html")
     if not os.path.exists(tpl):
         LOG(f"report.html not written: the viewer template is not beside the script ({tpl}); report.npz holds the data"); return
-    html = open(tpl, encoding="utf-8").read()
-    def inline_script(mt):
-        src = os.path.join(tpl_dir, mt.group(1)); return "<script>\n" + open(src, encoding="utf-8").read() + "\n</script>"
-    def inline_style(mt):
-        src = os.path.join(tpl_dir, mt.group(1)); return "<style>\n" + open(src, encoding="utf-8").read() + "\n</style>"
+    def text(name):
+        with open(os.path.join(tpl_dir, name), encoding="utf-8") as fh: return fh.read()
+    html = text("viewer.html")
+    def inline_script(mt): return "<script>\n" + text(mt.group(1)) + "\n</script>"
+    def inline_style(mt): return "<style>\n" + text(mt.group(1)) + "\n</style>"
     def inline_icon(mt):                                           # the logo and favicons, as data: URIs
         src = os.path.join(tpl_dir, mt.group(2)); kind = "image/svg+xml" if src.endswith(".svg") else "image/png"
-        return f'{mt.group(1)}="data:{kind};base64,' + base64.b64encode(open(src, "rb").read()).decode("ascii") + '"'
+        with open(src, "rb") as fh: return f'{mt.group(1)}="data:{kind};base64,' + base64.b64encode(fh.read()).decode("ascii") + '"'
     html = html.replace("@@BUNDLE@@", base64.b64encode(data).decode("ascii"))   # the marker first, so nothing inlined afterwards can carry it
     html = re.sub(r'<script src="([^"]+)"></script>', inline_script, html)
     html = re.sub(r'<link rel="stylesheet" href="([^"]+)">', inline_style, html)
@@ -1092,6 +1090,7 @@ def flatten_pairs(idx, top, valid, kk):
 
 def norm_quantile(p):
     """inverse standard normal CDF, via bisection on erfc (no scipy)"""
+    if p < 0.5: return -norm_quantile(1 - p)
     lo, hi = 0.0, 50.0
     for _ in range(200):
         mid = (lo + hi) / 2
@@ -1275,8 +1274,7 @@ def main():
                     "two members' test-1 excesses, in absolute value, is more than this many times the smaller; otherwise the direction is uncertain and both members are masked (default 2)")
     ap.add_argument("--mask-similar-only", action="store_true"); ap.add_argument("--mask-different-only", action="store_true")
     ap.add_argument("--threads", type=int, default=1, help="worker threads (0: every CPU available); each stage uses as many as pay off, never more than the CPUs")
-    ap.add_argument("--progress", choices=("auto", "bar", "lines", "none"), default="auto",
-                    help="auto: a progress bar on a terminal, progress lines at 2%% steps otherwise; lines: progress<TAB>stage<TAB>done<TAB>total<TAB>elapsed<TAB>extra at most twice a second")
+    ap.add_argument("--progress", choices=("auto", "bar", "none"), default="auto", help="auto: a progress bar on a terminal, progress lines at 2%% steps otherwise")
     ap.add_argument("--report-codes", choices=("fails", "masked", "none"), default="fails", help="site codes in the report: for every cell with a failing comparator (default), masked cells only, or none")
     ap.add_argument("--report-sequences", choices=("auto", "all", "fails", "masked", "none"), default="auto",
                     help="sequences in the report: the whole alignment, the rows of every cell with a failing comparator, of masked cells only, or none; auto: all when the alignment is small, else fails")
@@ -1346,7 +1344,6 @@ def main():
 
 # ------------------------------------------------------------------ the counting test
 LSET_CHUNK = 256        # taxa per chunk when a locus's closest matches are found (bounds the taxa x taxa slices)
-TAIL_CHUNK = 1 << 15    # pairs per call when exact tails are computed (bounds the memory of bb_tails' blocks)
 LN10 = math.log(10.0)
 MASKED_COLUMNS = ["locus", "taxon", "reason", "residues_masked",
                   "divergent_fails", "divergent_comparators", "divergent_observed", "divergent_expected", "divergent_excess_m",
@@ -1542,11 +1539,6 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         tests_fh = gzip.open(f"{a.out}/tests.tsv.gz", "wt", compresslevel=4, encoding="utf-8", newline="\n")
         tests_fh.write("\t".join(TESTS_COLUMNS) + "\n")
     every = tests_fh is not None
-
-    def tails_chunked(k, n_, E_, phi, upper):
-        if len(k) <= TAIL_CHUNK: return bb_tails(k, n_, E_, phi, upper)
-        return np.concatenate([bb_tails(k[i:i + TAIL_CHUNK], n_[i:i + TAIL_CHUNK], E_[i:i + TAIL_CHUNK], phi, upper)
-                               for i in range(0, len(k), TAIL_CHUNK)])
 
     def process_locus(li):
         """everything the test decides and writes for one locus, as rows, text blocks and mask actions; touches no
@@ -1882,7 +1874,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     def consume(li, R):
         name, sites = loci[li]
         if R["skipped"]:
-            LOG.detail(R["log"]); rep["loc_status"][li] = R["status"]; PROG.event("locus", li, name, "", "", ""); PROG.tick(); return
+            LOG.detail(R["log"]); rep["loc_status"][li] = R["status"]; PROG.tick(); return
         for g, reason, row_ in R["mrows"]:
             views[g][sites] = 45                                    # 45 = '-': the whole stretch of the locus
             mrows.append(row_); tally[reason] += 1
@@ -1903,9 +1895,6 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         if r["seq"] is not None: rep["seqs"][li] = r["seq"]
         if r["trees"] is not None: rep["trees"][li] = r["trees"]
         if r["similar"]: rep["similar"][li] = r["similar"]
-        if PROG.mode == "lines":
-            tb = np.zeros(n, bool); tb[idx_] = True
-            PROG.event("locus", li, name, np.packbits(tb).tobytes().hex(), ",".join(map(str, idx_[(r["side"] & 1) > 0].tolist())), ",".join(map(str, idx_[(r["side"] & 2) > 0].tolist())))
         PROG.tick(extra=f"{tally['divergent'] + tally['both']} too divergent, {tally['similar'] + tally['both']} copied")
 
     PROG.start("test", nloc, "0 too divergent, 0 copied")

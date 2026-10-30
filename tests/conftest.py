@@ -12,7 +12,7 @@ PY = sys.executable
 if ROOT not in sys.path: sys.path.insert(0, ROOT)
 lo = __import__(TOOL_MODULE)
 CONSTANTS = ("DENSE_CELLS_MAX", "BEST_MATCH_ALL_MAX_TAXA", "BEST_MATCH_MIN_SITES", "REPORT_SEQ_ALL_MAX", "TEST_THREAD_PAIRS", "PASS1_FLOPS_PER_THREAD",
-             "TAIL_CHUNK", "LSET_CHUNK", "MIN_LOCI_PER_TAXON", "MIN_LOCI_FOR_M", "MIN_FIT_PAIRS", "PHI_MIN_E", "PHI_N0", "HALF", "_mem_available", "_cpus")
+             "LSET_CHUNK", "MIN_LOCI_PER_TAXON", "MIN_LOCI_FOR_M", "MIN_FIT_PAIRS", "PHI_MIN_E", "PHI_N0", "HALF", "_mem_available", "_cpus")
 PRISTINE = {k: getattr(lo, k) for k in CONSTANTS}
 
 try:

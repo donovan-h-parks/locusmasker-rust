@@ -57,8 +57,8 @@ class TestThreads:
 
 
 class TestChunking:
-    def test_pair_chunking_and_tail_chunking_do_not_change_the_outputs(self, runs, tmp_out, monkeypatch):
-        monkeypatch.setattr(lo, "TAIL_CHUNK", 16); monkeypatch.setattr(lo, "LSET_CHUNK", 3)
+    def test_pair_chunking_does_not_change_the_outputs(self, runs, tmp_out, monkeypatch):
+        monkeypatch.setattr(lo, "LSET_CHUNK", 3)
         monkeypatch.setattr(lo, "_mem_available", lambda: 64 << 20)                      # tiny pair chunks, no cached comparator arrays
         ds = dataset("dna_small"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--threads", "4"]); assert r.rc == 0
         assert outputs(r) == outputs(runs("dna_small"))

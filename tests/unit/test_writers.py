@@ -57,11 +57,11 @@ class TestProgress:
         buf = io.StringIO(); P = lo.Progress(mode); P.out = buf; fn(P); return buf.getvalue()
 
     def test_none_is_silent(self):
-        out = self.capture("none", lambda P: (P.start("s", 10), P.tick(5), P.finish(), P.event("x")))
+        out = self.capture("none", lambda P: (P.start("s", 10), P.tick(5), P.finish()))
         assert out == ""
 
-    def test_lines_mode_reports_stage_done_total(self):
-        out = self.capture("lines", lambda P: (P.start("counts", 4), P.tick(), P.tick(3), P.finish()))
+    def test_sparse_mode_reports_stage_done_total(self):
+        out = self.capture("sparse", lambda P: (P.start("counts", 4), P.tick(), P.tick(3), P.finish()))
         lines = [l.split("\t") for l in out.strip().split("\n")]
         assert all(l[0] == "progress" and l[1] == "counts" for l in lines) and lines[-1][2] == "4" and lines[-1][3] == "4"
 
@@ -78,11 +78,10 @@ class TestProgress:
         assert set(P.durations) == {"a", "b"} and all(v >= 0 for v in P.durations.values())
 
     def test_tick_before_start_is_ignored(self):
-        P = lo.Progress("lines"); P.out = io.StringIO(); P.tick(); assert P.out.getvalue() == ""
+        P = lo.Progress("sparse"); P.out = io.StringIO(); P.tick(); assert P.out.getvalue() == ""
 
-    def test_event_only_in_lines_mode(self):
-        assert "event\tlocus\t1\n" == self.capture("lines", lambda P: P.event("locus", 1))
-        assert self.capture("sparse", lambda P: P.event("locus", 1)) == ""
+    def test_there_is_no_event_protocol(self):
+        assert not hasattr(lo.Progress, "event")
 
     def test_auto_picks_bar_on_a_tty_else_sparse(self, monkeypatch):
         class T:
@@ -92,7 +91,7 @@ class TestProgress:
         monkeypatch.setattr(sys, "stderr", io.StringIO()); assert lo.Progress("auto").mode == "sparse"
 
     def test_extra_text_is_carried(self):
-        out = self.capture("lines", lambda P: (P.start("s", 2), P.tick(extra="3 masked"), P.finish()))
+        out = self.capture("sparse", lambda P: (P.start("s", 2), P.tick(extra="3 masked"), P.finish()))
         assert "3 masked" in out
 
 

@@ -230,7 +230,6 @@ class TestNormQuantile:
         for p in (0.5, 0.6, 0.9, 0.975, 0.999, 1 - 1e-6, 1 - 1e-9, 1 - 1e-12):
             assert abs(lo.norm_quantile(p) - stats.norm.ppf(p)) < 1e-8, p
 
-    @pytest.mark.xfail(strict=True, reason="BUG: norm_quantile returns 0 for p < 0.5 (the bisection starts at 0); the tool only asks for p > 0.5")
     def test_lower_half_is_negative(self):
         """the inverse normal CDF of p < 0.5 is negative; the tool only ever asks for p > 0.5, but the function says it is the inverse CDF"""
         assert abs(lo.norm_quantile(0.1) - stats.norm.ppf(0.1)) < 1e-8

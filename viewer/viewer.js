@@ -1,6 +1,5 @@
-/* LocusMasker report viewer. One classic script: reads the bundle (a ZIP of .npy members and JSON) from the page,
-   a dropped file, or the website's worker, and draws everything. Nothing here computes a result:
-   every number comes from the bundle the tool wrote. */
+/* LocusMasker report viewer. One classic script: reads the bundle (a ZIP of .npy members and JSON) from the page
+   and draws everything. Nothing here computes a result: every number comes from the bundle the tool wrote. */
 (() => {
 "use strict";
 
@@ -291,30 +290,11 @@ function testSummary(T) {
 const App = { D: null, panels: {}, hover: null, sel: { rows: new Set(), cols: new Set(), cells: new Set() }, order: { taxa: null, loci: null, taxaMode: "input", lociMode: "input" }, hidePass: false, view: "summary" };
 
 function boot() {
-  const tag = document.getElementById("lm-bundle"); let b64 = tag ? tag.textContent.trim() : "";
+  const tag = document.getElementById("lm-bundle"); const b64 = tag ? tag.textContent.trim() : "";
   if (b64 && b64 !== "@@" + "BUNDLE@@") { start(b64ToBytes(b64)).catch(showError); return; }   // the marker the tool replaces, split so this file never carries it
-  if (window.LM_BUNDLE_BYTES) { start(window.LM_BUNDLE_BYTES).catch(showError); return; }
-  showPicker("This page carries no data. Open a report.npz or a report.html here:");
+  $("#app").replaceChildren(el("div", { class: "error" }, "This page carries no data: it is the viewer template without a report. Run locus_outliers.py; the report.html it writes has the data inside it."));
 }
 function showError(e) { console.error(e); $("#app").replaceChildren(el("div", { class: "error" }, "The report could not be read.\n\n" + (e && e.stack || e))); }
-function showPicker(msg) {
-  const inp = el("input", { type: "file", accept: ".npz,.html,.zip" });
-  const drop = el("div", { class: "drop" }, "drop a file here, or ", inp);
-  const box = el("div", { class: "picker" }, el("h1", null, "LocusMasker report"), el("p", null, msg), drop);
-  $("#app").replaceChildren(box);
-  const take = async f => {
-    const buf = new Uint8Array(await f.arrayBuffer());
-    if (f.name.endsWith(".npz") || f.name.endsWith(".zip")) return start(buf).catch(showError);
-    const text = new TextDecoder().decode(buf);
-    const m = /id="lm-bundle"[^>]*>([^<]*)</.exec(text);
-    if (m && m[1].trim()) return start(b64ToBytes(m[1])).catch(showError);
-    showError(new Error("no bundle found in " + f.name));
-  };
-  inp.addEventListener("change", () => inp.files[0] && take(inp.files[0]));
-  drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
-  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
-  drop.addEventListener("drop", e => { e.preventDefault(); drop.classList.remove("over"); if (e.dataTransfer.files[0]) take(e.dataTransfer.files[0]); });
-}
 async function start(bytes) {
   $("#app").replaceChildren(el("div", { class: "loading" }, "Reading the report…"));
   const D = await loadBundle(bytes); App.D = D;
@@ -322,13 +302,13 @@ async function start(bytes) {
   buildShell(); readHash(); renderAll();
   window.addEventListener("resize", () => { Overview.redraw(); for (const p of Object.values(App.panels)) if (p && p.redraw) p.redraw(); });
 }
-window.LM = { start, App, openCell: (g, li) => Sequence.open(g, li), openUnit: (k, i) => Detail.open(k, i), setView: v => Overview.setView(v) };   // the website hands the bundle over through LM.start(bytes); the rest is for tests
+window.LM = { start, App, openCell: (g, li) => Sequence.open(g, li), openUnit: (k, i) => Detail.open(k, i), setView: v => Overview.setView(v) };   // for the tests for tests
 
 // ------------------------------------------------------------------ shell: topbar, the two panel rows, hover card
 function buildShell() {
   const D = App.D, m = D.man; const app = $("#app"); app.replaceChildren();
   const c = m.counts;
-  const about = el("details", { class: "meta" }, el("summary", null, `${m.tool} ${m.version} · ${m.date} · ${m.platform}`),
+  const about = el("details", { class: "meta" }, el("summary", null, `${m.tool} ${m.version} · ${m.date}`),
     el("div", null, `commit ${m.commit} · python ${m.python} · numpy ${m.numpy} · ${m.system}`),
     el("div", null, `input ${m.input.file} (${(m.input.bytes / 1e6).toFixed(1)} MB, sha256 ${m.input.sha256.slice(0, 12)}…)${m.input.partitions ? ", partitions " + m.input.partitions : ""}`),
     el("div", null, `options: datatype ${m.options.datatype}, n-comp ${m.options.n_comp} (K ${m.options.K_eff}, majority ${m.options.M_eff}), fit-overlap ${m.options.fit_overlap}, alpha ${m.options.alpha}${m.options.mask_similar_only ? ", --mask-similar-only" : ""}${m.options.mask_different_only ? ", --mask-different-only" : ""}`),

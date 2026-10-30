@@ -71,9 +71,15 @@ class TestRefusals:
         open(cut, "w", encoding="utf-8").write(txt[:len(txt) * 2 // 3]); page.goto("file://" + cut); page.wait_for_timeout(1500)
         body = page.text_content("body"); assert "Loading the report" not in body and ("incomplete" in body.lower() or "could not be read" in body)
 
-    def test_a_page_without_data_offers_a_picker(self, page, tmp_path):
-        out = inline_viewer("", str(tmp_path / "empty.html")); page.goto("file://" + out); page.wait_for_selector(".picker, .drop", timeout=30000)
-        assert "carries no data" in page.text_content("#app") and page.query_selector("input[type=file]") is not None
+    def test_nothing_in_the_page_reads_undefined_or_nan(self, page, report_of):
+        html, R = report_of("dna_small"); open_report(page, html); page.wait_for_timeout(300)
+        shown = page.evaluate("() => document.getElementById('app').innerText")                      # rendered text only, not the inlined script
+        assert "undefined" not in shown and "NaN" not in shown and "null" not in shown.split()
+
+    def test_a_page_without_data_says_so(self, page, tmp_path):
+        """the viewer template without a report: a message, no file picker (the browser version is gone)"""
+        out = inline_viewer("", str(tmp_path / "empty.html")); page.goto("file://" + out); page.wait_for_selector(".error", timeout=30000)
+        assert "carries no data" in page.text_content(".error") and page.query_selector("input[type=file]") is None
 
 
 class TestOlderFormats:

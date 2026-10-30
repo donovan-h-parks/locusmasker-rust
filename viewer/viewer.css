@@ -27,10 +27,6 @@ select, input[type="text"], input[type="search"] { background: var(--surface); b
 a { color: var(--accent); }
 .loading, .error { padding: 40px; color: var(--muted); font-size: 15px; }
 .error { color: var(--red); white-space: pre-wrap; font-family: var(--mono); font-size: 12px; }
-.picker { padding: 40px; max-width: 640px; }
-.picker h1 { font-size: 20px; margin: 0 0 8px; }
-.drop { border: 2px dashed var(--spine); border-radius: 12px; padding: 36px; text-align: center; color: var(--muted); margin-top: 16px; }
-.drop.over { border-color: var(--accent); color: var(--ink); }
 
 /* ---- layout */
 #app { height: 100%; display: flex; flex-direction: column; }

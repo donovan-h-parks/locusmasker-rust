@@ -24,8 +24,8 @@ class TestNpz:
         assert m["code_map"] == dict(mismatch_count_max=5, similar_base=128, tick=254, absent=255)
         assert m["carried"]["numeric_columns"] == "dense" and m["carried"]["best_match_cells"] == "all"
 
-    def test_platform_is_native(self, runs):
-        m = runs("dna_small").report.man; assert m["platform"] == "native" and m["python"] and m["numpy"] == np.__version__
+    def test_manifest_records_the_python_and_numpy_and_no_platform(self, runs):
+        m = runs("dna_small").report.man; assert "platform" not in m and m["python"] and m["numpy"] == np.__version__
 
 
 @pytest.mark.e2e

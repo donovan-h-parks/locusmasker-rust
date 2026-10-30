@@ -47,10 +47,11 @@ if not rows: raise SystemExit(f"{a.a} and {a.b} were never tested against each o
                               f"(they share fewer than --fit-overlap sites, or are not close relatives), or one of them is not in the test (excluded, or not a taxon of the run)")
 masked = {}; copy = {}                                                 # TAXON_A's masked cells by locus; the copy of the pair where a direction was called
 if os.path.exists(f"{a.dir}/masked.csv"):
-    for r in csv.DictReader(open(f"{a.dir}/masked.csv")):
-        if r["taxon"] == a.a: masked[r["locus"]] = r["reason"]
-        if r["taxon"] in (a.a, a.b) and r.get("similar_partner") in (a.a, a.b) and r.get("similar_role") in ("copy", "uncertain"):
-            copy[r["locus"]] = r["taxon"] if r["similar_role"] == "copy" else "?"
+    with open(f"{a.dir}/masked.csv", newline="") as fh:
+        for r in csv.DictReader(fh):
+            if r["taxon"] == a.a: masked[r["locus"]] = r["reason"]
+            if r["taxon"] in (a.a, a.b) and r.get("similar_partner") in (a.a, a.b) and r.get("similar_role") in ("copy", "uncertain"):
+                copy[r["locus"]] = r["taxon"] if r["similar_role"] == "copy" else "?"
 loci = sorted(rows); R = [rows[l] for l in loci]
 def test_row(d):
     """the row whose expectation the point shows: the too-similar comparator test (at m, before the row factor), else the
