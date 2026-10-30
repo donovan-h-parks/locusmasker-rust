@@ -445,6 +445,9 @@ def matches():
         ok = best != ""; mk = MASKED[idx] & ok; um = ~MASKED[idx] & ok
         cm = collections.Counter(best[mk]); nm, nu = int(mk.sum()), int(um.sum())
         taxa_sorted = sorted(cm, key=lambda u: (-cm[u], u))   # equal bars by name
+        if not taxa_sorted:                                    # every masked sequence of the taxon is too short to have a best match
+            ax.text(0.5, 0.5, f"no best match: the taxon's {int(MASKED[idx].sum())} masked sequence{'s' if MASKED[idx].sum() != 1 else ''} share fewer than 30 sites with every other taxon", transform=ax.transAxes, ha="center", va="center", fontsize=7, color=MUTED, wrap=True)
+            ax.set_title(fit_title(t, pw - 0.5, 8)[0], fontsize=8, color=INK, pad=22); ax.axis("off"); continue
         if len(taxa_sorted) > MAXBARS:
             rest = taxa_sorted[MAXBARS - 1:]; taxa_sorted = taxa_sorted[:MAXBARS - 1] + [f"other ({len(rest)} taxa)"]
             for u in rest: best[mk & (best == u)] = taxa_sorted[-1]

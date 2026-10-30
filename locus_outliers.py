@@ -189,8 +189,12 @@ def read_phylip(txt):
             p = line.split(None, 1)
             if i < n: names.append(p[0]); seqs.append(p[1].replace(" ", "") if len(p) == 2 else "")
             else: seqs[i % n] += line.replace(" ", "")
+    if len(names) == n and any(len(s) != L for s in seqs):
+        t = next(t for t, s in zip(names, seqs) if len(s) != L); l = len(next(s for s in seqs if len(s) != L))
+        sys.exit(f"PHYLIP: the header says {L:,} sites but {t} has {l:,}: the sequences are not aligned (every sequence must have {L:,} characters), "
+                 "or the file is laid out in a form the reader does not handle (relaxed one-line and interleaved layouts are supported; try FASTA plus a partition file)")
     if len(names) != n or any(len(s) != L for s in seqs):
-        sys.exit("cannot parse PHYLIP: relaxed one-line or interleaved layouts are supported; "
+        sys.exit(f"cannot parse PHYLIP: the header says {n} sequences of {L:,} sites, {len(names)} were found; relaxed one-line or interleaved layouts are supported; "
                  "try FASTA plus a RAxML-style partition file")
     return names, seqs
 
@@ -199,8 +203,12 @@ def parse_raxml_partitions(path, L):
     """name -> 0-based site index array; ranges 'a-b', 'a-b\\s' (step) and comma lists;
     every site may belong to one partition only"""
     loci, seen = [], set()
-    covered = np.zeros(L, dtype=bool)
-    for line in open(path):
+    owner = np.full(L, -1, dtype=np.int64)                           # the partition that holds each site, for the overlap message
+    try:
+        with open(path, encoding="utf-8") as fh: lines = fh.read().splitlines()
+    except UnicodeDecodeError: sys.exit(f"the partition file {path} is not a text file")
+    except OSError as e: sys.exit(f"cannot read the partition file {path}: {e.strerror or e}")
+    for line in lines:
         line = line.split("#")[0].strip()
         if not line or "=" not in line: continue
         lhs, rhs = line.split("=", 1)
@@ -216,23 +224,64 @@ def parse_raxml_partitions(path, L):
                 a, b, s = int(m.group(1)), int(m.group(2)), int(m.group(3) or 1)
                 if a < 1 or b < a or s < 1:
                     sys.exit(f"bad range {part!r} in partition {name}: sites are 1-based and a-b needs a <= b")
+                if b > L: sys.exit(f"partition {name} runs past the alignment ({b:,} > {L:,} sites)")
                 sites.extend(range(a - 1, b, s))
             elif re.match(r"^\d+$", part):
                 if int(part) < 1: sys.exit(f"bad site {part!r} in partition {name}: sites are 1-based")
+                if int(part) > L: sys.exit(f"partition {name} runs past the alignment ({int(part):,} > {L:,} sites)")
                 sites.append(int(part) - 1)
             else:
                 sys.exit(f"cannot parse partition range {part!r} in {line!r}")
         if not sites: sys.exit(f"partition {name} has no sites")
         arr = np.array(sorted(set(sites)), dtype=int)
         if arr.max() >= L: sys.exit(f"partition {name} runs past the alignment ({arr.max() + 1} > {L})")
-        if covered[arr].any(): sys.exit(f"partition {name} overlaps an earlier partition: a site may belong to one locus only")
-        covered[arr] = True
+        dup = arr[owner[arr] >= 0]
+        if len(dup):
+            first = int(dup[0]); others = sorted({loci[int(owner[x])][0] for x in dup})
+            sys.exit(f"site {first + 1} is in partition {name} and in partition {others[0]}: a site may be in one partition only "
+                     f"({len(dup)} site{'s' if len(dup) > 1 else ''} of {name} {'are' if len(dup) > 1 else 'is'} already in {', '.join(others)}; "
+                     f"the alignment has {L} sites, a site may appear only once)")
+        owner[arr] = len(loci)
         loci.append((name, arr))
     return loci
 
 
 class _Unsupported(Exception):
     """the fast NEXUS reader met something it does not handle; Bio.Nexus takes over"""
+
+
+# the characters an alignment may hold, as Bio.Nexus accepts them: the residues, the IUPAC ambiguity codes (missing data to
+# the test), '*' for protein, and the gap and missing symbols ('-' and '?', or what a NEXUS file declares); U is read as T
+ALPHABET_CHARS = {"dna": "GATCURYWSMKHBVDN", "aa": "BZXACDEFGHIKLMNPQRSTVWY*"}
+AMBIGUITY_CHARS = {"dna": "RYWSMKHBVDN", "aa": "BZX*"}
+
+
+def check_characters(path, names, rows, dtype, gap=None, missing=None):
+    """exit with every illegal character, how often it occurs and where it first occurs; warn when the data look like the
+    other datatype"""
+    legal = ALPHABET_CHARS[dtype]; legal = legal + legal.lower() + "-?" + (gap or "") + (missing or "")
+    ok = np.zeros(256, bool); ok[[ord(c) for c in legal if ord(c) < 256]] = True
+    counts = np.zeros(256, np.int64)
+    for r in rows: counts += np.bincount(np.frombuffer(r, dtype=np.uint8), minlength=256)
+    bad = [int(c) for c in np.flatnonzero((counts > 0) & ~ok)]
+    if bad:
+        first = {}
+        for t, r in zip(names, rows):
+            b = np.frombuffer(r, dtype=np.uint8)
+            for c in bad:
+                if c not in first:
+                    pos = np.flatnonzero(b == c)
+                    if len(pos): first[c] = (t, int(pos[0]) + 1)
+            if len(first) == len(bad): break
+        shown = "; ".join(f"{(chr(c) if 32 <= c < 127 else '0x%02x' % c)!r} x{counts[c]:,} (first in {first[c][0]} at site {first[c][1]:,})" for c in bad[:8]) + (f"; and {len(bad) - 8} more" if len(bad) > 8 else "")
+        letters = sum(counts[ord(c)] for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"); acgt = sum(counts[ord(c)] for c in "ACGTUNacgtun")
+        hint = (" Fewer than half the letters are A, C, G, T or N: is this a protein alignment (--datatype aa)?" if dtype == "dna" and letters and acgt < 0.5 * letters else "")
+        sys.exit(f"illegal characters in the alignment {os.path.basename(path)}: {shown}. The {dtype} alphabet is {' '.join(ALPHABET_CHARS[dtype].replace('*', ''))}"
+                 f"{' (U is read as T)' if dtype == 'dna' else ' and * for a stop'}, with the ambiguity codes {' '.join(AMBIGUITY_CHARS[dtype].replace('*', ''))} as missing data, '-' for a gap and '?' for missing data"
+                 f"{' (this NEXUS file declares gap=' + repr(gap) + ' and missing=' + repr(missing) + ')' if (gap and gap != '-') or (missing and missing != '?') else ''}.{hint}")
+    if dtype == "aa":
+        acgt = sum(counts[ord(c)] for c in "ACGTUNacgtun"); letters = sum(counts[ord(c)] for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+        if letters and acgt > 0.95 * letters: LOG(f"WARNING: {100.0 * acgt / letters:.1f}% of the letters are A, C, G, T, U or N: this looks like a nucleotide alignment, but --datatype aa was given")
 
 
 class NexusInfo:
@@ -367,12 +416,23 @@ def read_nexus_fast(path):
             else:
                 rows[pending] += b"".join(ln.split())
                 if len(rows[pending]) >= nchar: pending = None
-    if len(names) != ntax or any(len(rows[t]) != nchar for t in names): raise _Unsupported("matrix dimensions")
+    if len(names) != ntax or any(len(rows[t]) != nchar for t in names):
+        if not interleave:                                             # one taxon per line, no continuation: an unaligned matrix reads cleanly this way
+            n2, r2 = [], {}
+            for ln in lines_between(mstart, end):
+                w = ln.split(None, 1); nm = w[0].decode("ascii", "replace")
+                if nm in r2: break
+                n2.append(nm); r2[nm] = b"".join(w[1].split()) if len(w) > 1 else b""
+            if len(n2) == ntax:
+                lens = collections.Counter(len(r2[t]) for t in n2); L2 = lens.most_common(1)[0][0]; off = [t for t in n2 if len(r2[t]) != nchar]
+                if off and len(off) == ntax and len(lens) == 1:
+                    sys.exit(f"NEXUS {os.path.basename(path)}: every sequence has {L2:,} characters but the dimensions line says nchar={nchar:,}: fix nchar")
+                if off and (L2 == nchar or lens[L2] >= 2):
+                    t = off[0]; sys.exit(f"NEXUS {os.path.basename(path)}: taxon {t} has {len(r2[t]):,} characters but nchar is {nchar:,} ({len(off)} of {ntax} taxa differ): the sequences are not aligned "
+                                         f"(every sequence must have nchar characters), or the matrix is interleaved without 'interleave' in its format line")
+        raise _Unsupported("matrix dimensions")
     del data
-    seen = np.zeros(256, bool)
-    for t in names: seen |= np.bincount(np.frombuffer(rows[t], dtype=np.uint8), minlength=256) > 0
-    valid = _NEX_VALID[dt]; valid = valid + valid.lower() + (missing or "") + (gap or "")
-    if any(chr(c) not in valid for c in np.flatnonzero(seen)): raise _Unsupported("characters outside the datatype")
+    check_characters(path, names, [rows[t] for t in names], "aa" if dt == "protein" else "dna", gap, missing)
     # the sets block
     charsets = {}; taxsets = {}
     for c in (setsb.decode("ascii") if setsb else "").split(";"):
@@ -397,10 +457,32 @@ def read_nexus_fast(path):
     return names, [rows[t] for t in names], charsets, NexusInfo(dt, missing, gap, charsets, taxsets)
 
 
+def _check_rows(path, names, rows):
+    """every sequence ASCII and all of one length, or the message says which is not"""
+    if not rows: sys.exit(f"no sequences in {path}")
+    for t, r in zip(names, rows):
+        b = np.frombuffer(r, dtype=np.uint8); hi = np.flatnonzero(b >= 128)
+        if len(hi):
+            ch = bytes(b[hi[0]:hi[0] + 4]).decode("utf-8", "replace")[0]
+            sys.exit(f"non-ASCII character {ch!r} in the sequence of taxon {t} at site {int(hi[0]) + 1:,} of {os.path.basename(path)}: sequences may hold only ASCII letters, '-' and '?'")
+    lens = collections.Counter(len(r) for r in rows); L = lens.most_common(1)[0][0]
+    bad = [(t, len(r)) for t, r in zip(names, rows) if len(r) != L]
+    if bad:
+        shown = ", ".join(f"{t} has {l:,}" for t, l in bad[:5]) + (f", and {len(bad) - 5} more" if len(bad) > 5 else "")
+        sys.exit(f"the sequences in {os.path.basename(path)} are not all the same length: {shown}, while {lens[L]} of the {len(rows)} sequences have {L:,} sites. "
+                 "The input must be an alignment: every sequence padded with gaps to the same length")
+
+
 def read_input(path, partitions):
     """returns names, rows (one bytearray per taxon), loci, format, datatype declared by a NEXUS file (or None), and
     the NEXUS record the writer needs (a Bio.Nexus object, or NexusInfo from the fast reader)"""
-    head = open(path).read(64).lstrip()[:7].upper()
+    try:
+        with open(path, "rb") as fh: raw = fh.read(64)
+    except OSError as e:
+        sys.exit(f"cannot read the alignment {path}: {e.strerror or e}")
+    if not raw.strip(): sys.exit(f"the alignment {path} is empty")
+    try: head = raw.decode("utf-8").lstrip()[:7].upper()
+    except UnicodeDecodeError: sys.exit(f"the alignment {path} is not a text file (compressed? binary?): give a plain NEXUS, FASTA or PHYLIP file")
     nexus = None; declared = None
     if head.startswith("#NEXUS"):
         try:
@@ -411,7 +493,9 @@ def read_input(path, partitions):
             try:
                 nexus = Nexus.Nexus(path)
             except Exception as e:
-                sys.exit(f"Bio.Nexus could not parse {path}:\n  {e}\n"
+                msg = str(e) or type(e).__name__
+                if isinstance(e, StopIteration) or "does not match data length" in msg: msg += " (a sequence shorter or longer than nchar: the sequences are not aligned?)"
+                sys.exit(f"Bio.Nexus could not parse {path}:\n  {msg}\n"
                          "This tool reads NEXUS with Biopython and accepts only what Bio.Nexus accepts. Common causes: "
                          "commas inside CHARSET site lists (NEXUS wants whitespace: 'CHARSET x = 1-10 21-30;'), "
                          "taxon names with '-' or other punctuation that are not quoted, or unusual block formatting. "
@@ -424,11 +508,14 @@ def read_input(path, partitions):
             sys.exit("the NEXUS file has charsets and a partition file was given: use one or the other, not both")
         if charsets:
             loci = [(k, np.array(sorted(v), dtype=int)) for k, v in charsets.items()]
-            covered = np.zeros(len(rows[0]), dtype=np.int32)
-            for k, arr in loci: covered[arr] += 1
-            if (covered > 1).any():
-                over = [k for k, arr in loci if (covered[arr] > 1).any()]
-                sys.exit(f"charsets overlap ({', '.join(over[:5])}{' ...' if len(over) > 5 else ''}): a site may belong to one locus only")
+            owner = np.full(len(rows[0]), -1, dtype=np.int64)
+            for j, (k, arr) in enumerate(loci):
+                dup = arr[owner[arr] >= 0]
+                if len(dup):
+                    first = int(dup[0]); others = sorted({loci[int(owner[x])][0] for x in dup})
+                    sys.exit(f"site {first + 1} is in charset {k} and in charset {others[0]}: a site may be in one charset only "
+                             f"({len(dup)} site{'s' if len(dup) > 1 else ''} of {k} {'are' if len(dup) > 1 else 'is'} already in {', '.join(others)})")
+                owner[arr] = j
         elif partitions:
             loci = parse_raxml_partitions(partitions, len(rows[0]))
         else:
@@ -437,14 +524,19 @@ def read_input(path, partitions):
         elif dt == "protein": declared = "aa"
     else:
         if not partitions: sys.exit("a FASTA or PHYLIP alignment needs --partitions")
-        txt = open(path).read()
-        names, seqs = read_fasta(txt) if head.startswith(">") else read_phylip(txt)
-        fmt = "fasta" if head.startswith(">") else "phylip"
+        try:
+            with open(path, encoding="utf-8") as fh: txt = fh.read()
+        except UnicodeDecodeError: sys.exit(f"the alignment {path} is not a UTF-8 text file (compressed? binary?)")
+        if head.startswith(">"):
+            names, seqs = read_fasta(txt); fmt = "fasta"
+            if len(names) != len(seqs): sys.exit(f"FASTA: {len(names)} header lines but {len(seqs)} sequences in {path}: a header with no sequence under it?")
+        else:
+            if not head[:1].isdigit(): sys.exit(f"cannot tell the format of {path}: a NEXUS file starts with #NEXUS, a FASTA file with '>', a PHYLIP file with its counts")
+            names, seqs = read_phylip(txt); fmt = "phylip"
         rows = [bytearray(s.encode()) for s in seqs]; del seqs, txt
+        _check_rows(path, names, rows)
         loci = parse_raxml_partitions(partitions, len(rows[0]))
-    L = len(rows[0])
-    bad = [t for t, r in zip(names, rows) if len(r) != L]
-    if bad: sys.exit(f"sequences differ in length (e.g. {bad[0]}): the input must be an alignment")
+    _check_rows(path, names, rows)
     dup = sorted(t for t, c in collections.Counter(names).items() if c > 1)
     if dup: sys.exit(f"duplicate taxon names: {dup[:5]}{' ...' if len(dup) > 5 else ''}")
     if not loci: sys.exit("no loci defined")
@@ -864,7 +956,8 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
                       similar_tested=int((side & 64 > 0).sum()), similar_pairs=int(sum(sum(1 for e in v if e["fail"]) for v in rep["similar"].values())),
                       similar_sources=int((side & 128 > 0).sum()), similar_uncertain=int((side & 8 > 0).sum()),
                       near_miss={str(j): int(((n_fail == j) & tested & ((side & 1) == 0)).sum()) for j in range(1, M_eff)},
-                      excluded_taxa=int(len(rep["thin"])), skipped_loci=int(sum(1 for st in rep["loc_status"] if st != "tested")))
+                      excluded_taxa=int(len(rep["thin"])), skipped_loci=int(sum(1 for st in rep["loc_status"] if st != "tested")),
+                      untested_sequences=int(rep["untested"]["sequences"]), untested=rep["untested"], uncovered_sites=int(rep.get("uncovered_sites", 0)))
         thin = set(int(t) for t in rep["thin"])
         put_json("taxa.json", dict(
             names=list(names),
@@ -1002,7 +1095,13 @@ def prepare(a, names, rows, loci, dtype, K_eff, t0):
     for i, c in enumerate(alphabet): lut[ord(c)] = i; lut[ord(c.lower())] = i
     if dtype == "dna": lut[ord("U")] = lut[ord("u")] = alphabet.index("T")
     X = np.empty((n, L), dtype=np.int8)                               # one row at a time: no joined copy of the alignment
-    for i, r in enumerate(rows): X[i] = lut[np.frombuffer(r, dtype=np.uint8)]
+    letters = np.zeros(256, np.int64)
+    for i, r in enumerate(rows): b = np.frombuffer(r, dtype=np.uint8); X[i] = lut[b]; letters += np.bincount(b, minlength=256)
+    # letters outside the alphabet are missing data; when they are most of the letters the datatype (or the file) is wrong
+    is_letter = np.zeros(256, bool); is_letter[65:91] = True; is_letter[97:123] = True
+    n_letters = int(letters[is_letter].sum()); n_in = int(letters[is_letter & (lut >= 0)].sum())
+    if n_letters and n_in < 0.95 * n_letters:
+        LOG(f"WARNING: {n_letters - n_in:,} of the {n_letters:,} letters ({100.0 * (n_letters - n_in) / n_letters:.1f}%) are ambiguity codes and count as missing data")
 
     # ---- pass 1: per-locus shared/same counts; alignment-wide identity falls out of the sums
     nloc = len(loci)
@@ -1114,8 +1213,8 @@ def prepare(a, names, rows, loci, dtype, K_eff, t0):
     fb = float((nlk < MIN_LOCI_FOR_M).mean()) if len(nlk) else 0.0
     del nl, nlk
     LOG(f"pair divergences done, {time.time() - t0:.0f}s"
-          + (f"; note: {fb:.0%} of taxon pairs overlap in <{MIN_LOCI_FOR_M} loci and are never compared"
-             if fb > 0.05 else ""))
+          + (f"; note: no locus has a rate (no nearest-neighbour pairs resolved beyond their resolution floor), so no pair has a divergence" if ok_r.sum() == 0 else
+             f"; note: {fb:.0%} of taxon pairs overlap in <{MIN_LOCI_FOR_M} loci with a rate and are never compared" if fb > 0.05 else ""))
 
     mj = np.where(np.isfinite(m), m, np.inf) + tie                    # the comparator ranking key: m with the tie-break
     del tie
@@ -1131,6 +1230,7 @@ def divergence_matrix(aln, partitions=None, datatype="dna", fit_overlap=20, n_co
     if datatype not in ("dna", "aa"): raise ValueError(f"datatype must be 'dna' or 'aa', not {datatype!r}")
     names, rows, loci, fmt, declared, nexus = read_input(aln, partitions)
     if declared and declared != datatype: raise ValueError(f"datatype {datatype!r} was given but the NEXUS file declares {declared!r}")
+    if not isinstance(nexus, NexusInfo): check_characters(aln, names, rows, datatype, getattr(nexus, "gap", None), getattr(nexus, "missing", None))
     n = len(names); K_eff = min(n_comp, n - 1); K_eff -= 1 - K_eff % 2
     P = prepare(argparse.Namespace(fit_overlap=fit_overlap, threads=max(1, min(threads, _cpus()))), names, rows, loci, datatype, K_eff, time.time())
     return names, P.m, P.m_hi
@@ -1169,12 +1269,21 @@ def main():
     if K < 3 or K % 2 == 0: sys.exit("--n-comp must be an odd number of at least 3")
     if a.mask_similar_only and a.mask_different_only:
         sys.exit("--mask-similar-only and --mask-different-only are mutually exclusive")
+    if a.partitions and not os.path.isfile(a.partitions): sys.exit(f"the partition file {a.partitions} does not exist")
     PROG.start("read", 1)
     names, rows, loci, fmt, declared, nexus = read_input(a.aln, a.partitions)
     PROG.finish()
+    covered = np.zeros(len(rows[0]), bool)
+    for _, st in loci: covered[st] = True
+    nuncov = int((~covered).sum())
+    if nuncov:
+        runs = _ranges(np.flatnonzero(~covered)); shown = ", ".join(f"{r[0] + 1}-{r[1] + 1}" if r[1] > r[0] else str(r[0] + 1) for r in runs[:6])
+        LOG(f"WARNING: {nuncov:,} of the {len(covered):,} sites are in no {'charset' if fmt == 'nexus' and not a.partitions else 'partition'} and are ignored by every test and never masked"
+            f" (sites {shown}{', ...' if len(runs) > 6 else ''})")
     if declared and declared != a.datatype:
         sys.exit(f"--datatype {a.datatype} was given but the NEXUS file declares {declared}")
     dtype = a.datatype
+    if not isinstance(nexus, NexusInfo): check_characters(a.aln, names, rows, dtype, getattr(nexus, "gap", None), getattr(nexus, "missing", None))
     if len(loci) < 10:
         sys.exit(f"only {len(loci)} loci defined: this is a phylogenomic test and needs at least 10")
     n, L = len(names), len(rows[0]); alphabet = DNA if dtype == "dna" else PROTEIN
@@ -1192,7 +1301,7 @@ def main():
 
     seq_policy = a.report_sequences if a.report_sequences != "auto" else ("all" if n * L <= REPORT_SEQ_ALL_MAX else "fails")
     rep = dict(focal_sites=focal_sites, thin=thin, present=present, seq_policy=seq_policy if not a.no_report else "none",
-               codes_policy=a.report_codes if not a.no_report else "none", no_report=a.no_report)
+               codes_policy=a.report_codes if not a.no_report else "none", no_report=a.no_report, uncovered_sites=nuncov)
     nmasked = run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, plateaus, rate, masked, K_eff, M_eff, rep)
 
     PROG.start("write", 2)
@@ -1340,6 +1449,20 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     for li, (h, c, nd_, np_) in enumerate(pool.map(locus_phi, range(nloc)) if pool else map(locus_phi, range(nloc))):
         phi_hat[li] = h; phi_n[li] = c; ndist_l[li] = nd_; npt_l[li] = np_
     PROG.finish()
+    if int(ndist_l.sum()) == 0 and int(npt_l.sum()) == 0:
+        # no test can run: say why, in the words of the thresholds, and stop before writing outputs that would mean nothing
+        reasons = collections.Counter(locus_pairs(li) if isinstance(cache.get(li, None), str) or not keep_pairs else cache[li] for li in range(nloc))
+        reasons = collections.Counter(v if isinstance(v, str) else "tested" for v in reasons.elements())
+        thin = rep["thin"]; keep = np.ones(n, bool); keep[thin] = False
+        nk = int(keep.sum()); fin = int(np.isfinite(m[np.ix_(keep, keep)]).sum() // 2); npairs = nk * (nk - 1) // 2; nrated = int(np.isfinite(rate).sum())
+        why = [f"{len(thin)} of {n} taxa excluded (fewer than {MIN_LOCI_PER_TAXON} loci with at least {a.fit_overlap} residues)"]
+        if nrated == 0: why.append(f"no locus has a rate: at no locus are {MIN_FIT_PAIRS} nearest-neighbour pairs resolved beyond their resolution floor (the sequences are too similar, or share too few sites, for their divergence to show), so no pair has a divergence m")
+        elif nk >= 2: why.append(f"{npairs - fin:,} of the {npairs:,} pairs of the remaining taxa overlap in fewer than {MIN_LOCI_FOR_M} loci with a rate and are never compared")
+        for st, k in sorted(reasons.items()):
+            if st == "skipped-no-cells": why.append(f"{k} loci with no sequence that has a comparator (no taxon pair shares enough sites, or the taxa are excluded)")
+            elif st.startswith("skipped-few-resolved-pairs"): why.append(f"{k} loci with fewer than {MIN_FIT_PAIRS} comparator pairs resolved beyond their resolution floor (the sequences are too similar, or too short, to set a locus rate)")
+        sys.exit(f"nothing could be tested: no sequence has a comparator at any locus. {'; '.join(why)}. "
+                 f"Check --datatype, the partitions and the missing data; --fit-overlap {a.fit_overlap} sets the sites a pair must share.")
     okp = phi_n > 0
     phi_bar = wmedian1(phi_hat[okp], phi_n[okp]) if okp.any() else 0.0
     LOG(f"dispersion: dataset-wide phi {phi_bar:.4f} (robust SD of O/E beyond Poisson {math.sqrt(phi_bar):.2f}); "
@@ -1768,6 +1891,14 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     skipped = [(loci[i][0], st) for i, st in enumerate(rep["loc_status"]) if st != "tested"]
     if skipped:
         LOG(f"{len(skipped)} loci not tested: " + "; ".join(f"{nm} ({st})" for nm, st in skipped[:20]) + (f"; and {len(skipped) - 20} more" if len(skipped) > 20 else ""))
+    present_c = rep["focal_sites"] > 0; tested_c = rep["n_comp"] > 0; untested = present_c & ~tested_c
+    thin_t = np.zeros(n, bool); thin_t[rep["thin"]] = True; skipped_l = np.array([st != "tested" for st in rep["loc_status"]])
+    u_thin = int((untested & thin_t[:, None]).sum()); u_loc = int((untested & ~thin_t[:, None] & skipped_l[None, :]).sum()); u_comp = int(untested.sum()) - u_thin - u_loc
+    rep["untested"] = dict(sequences=int(untested.sum()), of_excluded_taxa=u_thin, at_untested_loci=u_loc, without_a_comparator=u_comp)
+    LOG(f"not tested: {len(rep['thin'])} of {n} taxa (excluded: fewer than {MIN_LOCI_PER_TAXON} loci with at least {a.fit_overlap} residues"
+        f"{': ' + ', '.join(names[i] for i in rep['thin'][:10]) + (' ...' if len(rep['thin']) > 10 else '') if len(rep['thin']) else ''}); "
+        f"{int(skipped_l.sum())} of {nloc} loci ({', '.join(f'{loci[i][0]} ({st})' for i, st in enumerate(rep['loc_status']) if st != 'tested')[:300] or 'none'}); "
+        f"{int(untested.sum()):,} of {int(present_c.sum()):,} present sequences ({u_thin:,} of excluded taxa, {u_loc:,} at untested loci, {u_comp:,} with no comparator sharing enough sites)")
     npair = sum(sum(1 for e in v if e['fail']) for v in rep['similar'].values()); ncl = sum(sum(1 for e in v if e['fail'] and e['test'] == 'closest') for v in rep['similar'].values())
     LOG(f"too-similar pairs: {npair:,} ({npair - ncl:,} against a comparator, {ncl:,} against the closest match; {S_tests:,} closest-match tests run)")
     nunc = int(((rep["side"] & 8) > 0).sum())
