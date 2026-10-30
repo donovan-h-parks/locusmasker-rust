@@ -94,7 +94,7 @@ async function loadBundle(bytes) {
   const json = async name => JSON.parse(td.decode(await zip.read(name)));
   const npy = async name => parseNpy(await zip.read(name));
   const man = await json("manifest.json");
-  if (man.format_version > 5) throw new Error(`this report was written in bundle format ${man.format_version}; this viewer reads formats 1 to 5. Please use the viewer that came with the tool version ${man.version}.`);
+  if (man.format_version > 7) throw new Error(`this report was written in bundle format ${man.format_version}; this viewer reads formats 1 to 7. Please use the viewer that came with the tool version ${man.version}.`);
   const taxa = await json("taxa.json"), loci = await json("loci.json");
   const D = { zip, man, format: man.format_version || 1, taxa, loci, n: taxa.names.length, nloc: loci.names.length, K: man.options.K_eff, M: man.options.M_eff, cols: {}, cache: { codes: new Map(), seq: new Map() } };
   const byteCols = ["n_comp", "n_fail", "n_similar", "side", "focal_sites"];
@@ -102,7 +102,7 @@ async function loadBundle(bytes) {
   for (const k of byteCols) D.cols[k] = (await npy(`cells/${k}.npy`)).data;
   D.dense = man.carried.numeric_columns === "dense";
   for (const k of numCols) D.cols[k] = (await npy(`cells/${k}.npy`)).data;
-  for (const k of ["lam", "lam_p", "row_factor", "div_log10p", "sim_log10p", "dir_log10p", "depth_factor"]) if (zip.has(`cells/${k}.npy`)) D.cols[k] = (await npy(`cells/${k}.npy`)).data;   // not in every format; D.num gives null without them
+  for (const k of ["lam", "lam_p", "row_factor", "div_log10p", "sim_log10p", "dir_log10p", "depth_factor", "locus_closest", "locus_closest_log10p"]) if (zip.has(`cells/${k}.npy`)) D.cols[k] = (await npy(`cells/${k}.npy`)).data;   // not in every format; D.num gives null without them
   D.comparators = (await npy("cells/comparators.npy")).data;
   // the closest comparator is the rank-1 comparator, so it is read from the comparators: up to 0.11.0 the tool wrote the
   // taxa's five closest relatives (taxa x 5, as in taxa/closest.npy) over cells/closest.npy
@@ -117,6 +117,13 @@ async function loadBundle(bytes) {
     if (D.dense) { const v = arr[g * D.nloc + li]; return Number.isNaN(v) ? null : v; }
     const r = D.sparse.get(g * D.nloc + li); if (r === undefined) return null; const v = arr[r]; return Number.isNaN(v) ? null : v;
   };
+  if (zip.has("cells/comp_div_log10p.npy")) D.tests = { div: (await npy("cells/comp_div_log10p.npy")).data, sim: (await npy("cells/comp_sim_log10p.npy")).data };   // from format 7: both tests of every comparator, by rank
+  D.compTests = (g, li) => {                                  // comparator -> {div, sim}, log10 p of its two tests against the cell; null when not carried
+    if (!D.tests) return null;
+    let base; if (D.dense) base = (g * D.nloc + li) * D.K; else { const q = D.sparse.get(g * D.nloc + li); if (q === undefined) return null; base = q * D.K; }
+    const out = new Map(); for (let k = 0; k < D.K; k++) { const c = D.comparators[base + k]; if (c >= 0) out.set(c, { div: D.tests.div[base + k], sim: D.tests.sim[base + k] }); }
+    return out;
+  };
   D.comps = (g, li) => {                                      // the cell's comparators in rank order
     let base; if (D.dense) base = (g * D.nloc + li) * D.K; else { const r = D.sparse.get(g * D.nloc + li); if (r === undefined) return []; base = r * D.K; }
     const out = []; for (let r = 0; r < D.K; r++) { const c = D.comparators[base + r]; if (c >= 0) out.push(c); } return out;
@@ -130,6 +137,11 @@ async function loadBundle(bytes) {
     if (D.cache.seq.has(li)) return D.cache.seq.get(li);
     const p = (async () => { if (!zip.has(`seq/${li}.npy`)) return null; const b = await npy(`seq/${li}.npy`), t = await npy(`seq/${li}_taxa.npy`); return { taxa: t.data, blk: b.data, len: b.shape[1], rows: b.shape[0] }; })();
     D.cache.seq.set(li, p); return p;
+  };
+  D.similar = async li => {                                   // the locus's too-similar tests (from format 4; a locus with none has no file), or null before
+    if (!D.cache.similar) D.cache.similar = new Map();
+    if (D.cache.similar.has(li)) return D.cache.similar.get(li);
+    const p = (async () => zip.has(`similar/${li}.json`) ? json(`similar/${li}.json`) : D.format >= 4 ? [] : null)(); D.cache.similar.set(li, p); return p;
   };
   D.trees = async li => {                                     // {cells, expected, observed, moved, tips} or null
     if (!D.cache.trees) D.cache.trees = new Map();
@@ -161,7 +173,8 @@ function deriveStates(D) {
   D.state = st; D.sev = sev; D.both = both;
   // one colour per outcome, no levels (levels would mean different things as K changes; the counts live in the labels)
   const col = { pass: cssVar("--pass"), passCell: cssVar("--pass-cell"), red: cssVar("--red"), blue: cssVar("--blue"), both: cssVar("--yellow"), cell: cssVar("--cell") };
-  col.blueTint = mixHex("#ffffff", col.blue, 0.45);         // the alignment: where the significant match agrees with the focal against its comparators
+  col.blueTint = mixHex("#ffffff", col.blue, 0.45);         // the alignment: where a too-similar sequence agrees with the focal at a red site
+  col.redTint = mixHex("#ffffff", col.red, 0.45);           // the alignment: where a comparator differs from the focal
   D.col = col;
   D.colorOf = code => code === ST.ABSENT ? null : code === ST.UNTESTED ? "hatch" : code < ST.RED ? col.passCell : code < ST.BLUE ? col.red : code < ST.BOTH ? col.blue : col.both;
   D.pointColorOf = code => code >= ST.GREY && code < ST.RED ? col.pass : D.colorOf(code);   // a not-masked point is a shade darker than a not-masked cell
@@ -218,6 +231,7 @@ function similarRole(D, g, li) {
   const sd = D.cols.side[g * D.nloc + li], P = D.taxa.names[pt];
   if (D.format < 4) return { pt, role: sd & 8 ? "recipient" : "undetermined", tag: "partner", text: `${P}${sd & 8 ? " (identified as the recipient)" : " (direction not identified)"}`, note: "the partner of the too-similar pair" };
   if (D.format >= 5) {                                           // format 5: the partner of a too-similar pair, or the closest match that was tested and passed
+    if (sd & 8) return { pt, role: "uncertain", tag: "partner", fired: true, text: `${P}: the two are significantly too similar, and neither fits its own relatives clearly worse than the other (within the donor threshold), so the direction is uncertain and both are masked${sd & 2 ? "" : "; similar masking was off"}`, note: "the other member of a too-similar pair whose direction is uncertain; both masked" };
     if (sd & (2 | 32)) return { pt, role: "copy", tag: "source", fired: true, text: `${P}: this sequence is closer to it than its own relatives are, and fits its relatives worse than ${P} does, so it is the copy${sd & 2 ? ", masked" : "; similar masking was off"}`, note: "the source the focal sequence was copied from" };
     if (sd & 128) return { pt, role: "source", tag: "copy", fired: true, text: `${P} is a copy of this sequence: ${P} is closer to it than its relatives are and fits its own relatives worse; this sequence is the source, not masked for it`, note: "a copy of the focal sequence" };
     return { pt, role: "none", tag: "closest match", fired: false, text: `${P}, its closest match at the locus, is not closer than its own relatives are`, note: "the closest match at the locus; not surprisingly close" };
@@ -226,11 +240,28 @@ function similarRole(D, g, li) {
   if (sd & 128) return { pt, role: "donor", tag: "copy", text: `${P}, its copy: ${P} is the identified recipient; this sequence is the source, not masked for it`, note: "the identified recipient, a copy of the focal sequence" };
   return { pt, role: "undetermined", tag: "partner", text: `${P}, direction not identified: neither sequence is masked for it`, note: "too similar to the focal sequence, direction not identified" };
 }
+// the tests behind a cell's alignment rows and trees: blue, every taxon significantly too similar to it (any test of the pair,
+// either member's; before format 4 the significant partner alone); red, every comparator significantly too divergent from it
+// (from format 7, which carries every comparator's tests: comp); the closest match at the locus with its too-similar test
+// (format 7; before it, the closest match tested outside the set, format 5); stars, *, ** and *** below alpha / N, alpha / 5N
+// and alpha / 50N (the bar, and a fifth and a fiftieth of it)
+function cellTests(D, g, li, sim, sr) {
+  const bar = D.man.test && D.man.test.log10_bar != null ? D.man.test.log10_bar : null;
+  const blue = new Map(), red = new Map(), comp = D.compTests(g, li); let closest = null;
+  if (sim) for (const e of sim) { if (e.fail && (e.taxon === g || e.partner === g)) { const o = e.taxon === g ? e.partner : e.taxon; if (!blue.has(o) || e.log10p < blue.get(o).p) blue.set(o, { p: e.log10p, test: e.test }); } }
+  else if (sr && (sr.fired || sr.role === "recipient")) blue.set(sr.pt, { p: D.num("sim_log10p", g, li), test: null });
+  if (comp && bar !== null) for (const [c, t] of comp) if (t.div < bar && !blue.has(c)) red.set(c, t.div);
+  const lc = D.num("locus_closest", g, li);
+  if (lc !== null && lc >= 0) closest = { taxon: lc, p: D.num("locus_closest_log10p", g, li) };
+  else if (sim) for (const e of sim) if (e.test === "closest" && e.taxon === g) { closest = { taxon: e.partner, p: e.log10p }; break; }
+  const stars = p => p === null || p === undefined || Number.isNaN(p) || bar === null ? "" : p < bar - Math.log10(50) ? "***" : p < bar - Math.log10(5) ? "**" : p < bar ? "*" : "";
+  return { bar, blue, red, comp, closest, stars, pcol: D.format >= 7 && bar !== null };
+}
 // every copied sequence (from format 4): the recipient, the cell identified as the copy of a too-similar pair, its donor
 // (its source: the member that fits its own relatives better) and the locus
 function copiesOf(D) {
   if (D._copies) return D._copies; const out = [];
-  if (D.format >= 4) for (let g = 0; g < D.n; g++) for (let li = 0; li < D.nloc; li++) { if (!(D.cols.side[g * D.nloc + li] & (2 | 32))) continue; const p = D.num("partner", g, li); if (p !== null && p >= 0) out.push({ rec: g, don: p, li }); }
+  if (D.format >= 4) for (let g = 0; g < D.n; g++) for (let li = 0; li < D.nloc; li++) { const sd = D.cols.side[g * D.nloc + li]; if (!(sd & (2 | 32)) || sd & 8) continue; const p = D.num("partner", g, li); if (p !== null && p >= 0) out.push({ rec: g, don: p, li }); }   // a pair of uncertain direction names no donor
   return (D._copies = out);
 }
 // the copies grouped by donor, recipient or pair (mode), most copies first, ties by name
@@ -418,7 +449,7 @@ const Overview = (() => {
     const taxaWith = d3.sum(D.taxCount.masked, v => v > 0), lociWith = d3.sum(D.locCount.masked, v => v > 0);
     t.append(tile(fmtInt(c.masked), `sequences masked · ${pct(c.masked, c.cells)} of ${fmtInt(c.cells)} tested`),
       tile(fmtInt(c.masked_divergent), "too divergent" + (c.ambiguous ? ` · ${c.ambiguous} with fewer comparators` : "")),
-      D.format >= 4 ? tile(fmtInt(c.masked_similar), "copied from another taxon" + (c.masked_both ? ` · ${c.masked_both} also too divergent` : ""), D.format >= 5 ? `masked as copies: of a too-similar pair, the member that fits its own relatives worse is masked, the other is its source${c.similar_pairs != null ? `. ${fmtInt(c.similar_pairs)} too-similar pairs; ${fmtInt(c.similar_tested)} sequences tested against their closest match at the locus` : ""}` : `masked as copies: the identified recipient of a too-similar pair is masked, its source is not${c.similar_pairs != null ? `. ${fmtInt(c.similar_pairs)} significant too-similar pairs, ${fmtInt(c.similar_pairs_with_recipient)} with an identified recipient` : ""}`)
+      D.format >= 4 ? tile(fmtInt(c.masked_similar), "copied from another taxon" + (c.similar_uncertain ? ` · ${fmtInt(c.similar_uncertain)} in a pair of uncertain direction, both masked` : "") + (c.masked_both ? ` · ${c.masked_both} also too divergent` : ""), D.format >= 5 ? `masked as copies: of a too-similar pair, the member that fits its own relatives worse is masked, the other is its source${c.similar_pairs != null ? `. ${fmtInt(c.similar_pairs)} too-similar pairs; ${fmtInt(c.similar_tested)} sequences tested against their closest match at the locus` : ""}` : `masked as copies: the identified recipient of a too-similar pair is masked, its source is not${c.similar_pairs != null ? `. ${fmtInt(c.similar_pairs)} significant too-similar pairs, ${fmtInt(c.similar_pairs_with_recipient)} with an identified recipient` : ""}`)
         : tile(fmtInt(c.masked_similar), "too similar" + (c.masked_both ? ` · ${c.masked_both} both sides` : "")),
       tile(`${fmtInt(taxaWith)} / ${fmtInt(c.taxa)}`, "taxa with a masked sequence" + (c.excluded_taxa ? ` · ${c.excluded_taxa} excluded` : "")),
       tile(`${fmtInt(lociWith)} / ${fmtInt(c.loci)}`, "loci with a masked sequence" + (c.skipped_loci ? ` · ${c.skipped_loci} skipped` : "")));
@@ -669,8 +700,8 @@ function cellHover(g, li, compact) {
     if (D.format >= 5 && ns) row("too-similar pairs", `${ns}${ns >= 255 ? "+" : ""}${ns > 1 ? "; the strongest below" : ""}`);
     else if (v4 && ns) row("too-similar partners", `${ns}${ns >= 255 ? "+" : ""} significant, among every taxon at the locus${ns > 1 ? (sd & (2 | 32) ? "; its source below" : "; the strongest below") : ""}`);
     const sr = similarRole(D, g, li);
-    if (sr && D.format >= 5) { const sp = D.num("sim_log10p", g, li); row(sr.fired ? (sr.role === "copy" ? "copied from" : "copied by") : "closest match", sr.text); if (sp !== null) row("too-similar test", `log10 p = ${fmt2(sp)}${barNote(D)}`);
-      if (sr.fired) { const xp = D.num("excess_m", sr.pt, li), x0 = D.num("excess_m", g, li); if (xp !== null && x0 !== null) row("which is the copy", `the member that fits its own relatives worse, by the test-1 excess: ${fmt2(Math.abs(x0))} m here against ${fmt2(Math.abs(xp))} m for ${D.taxa.names[sr.pt]}`); } }
+    if (sr && D.format >= 5) { const sp = D.num("sim_log10p", g, li); row(sr.fired ? (sr.role === "copy" ? "copied from" : sr.role === "uncertain" ? "too similar to" : "copied by") : "closest match", sr.text); if (sp !== null) row("too-similar test", `log10 p = ${fmt2(sp)}${barNote(D)}`);
+      if (sr.fired) { const xp = D.num("excess_m", sr.pt, li), x0 = D.num("excess_m", g, li), thr = D.man.options.donor_threshold; if (xp !== null && x0 !== null) row("which is the copy", `${sr.role === "uncertain" ? "uncertain" : "the member that fits its own relatives worse"}, by the test-1 excess: ${fmt2(Math.abs(x0))} m here against ${fmt2(Math.abs(xp))} m for ${D.taxa.names[sr.pt]}${thr ? ` (the larger must be more than ${thr} times the smaller to call it)` : ""}`); } }
     else if (sr) { const lam = D.num("lam", g, li), lp = D.num("lam_p", g, li), sp = D.num("sim_log10p", g, li); row("too similar to", sr.text); if (sp !== null) row("too-similar test", `log10 p = ${fmt2(sp)}${barNote(D)}`); if (lam !== null) row("direction LRT", v4 && lp !== null ? `|2 ln LR| = ${fmt1(lam)}, ${dirTxt(D, g, li, lp)} (approximate χ², 1 df${bar10(D) !== null ? `; bar ${bar10(D)}` : ""})` : `|2 ln LR| = ${fmt1(lam)}, p = ${lp < 1e-4 ? lp.toExponential(1) : fmt3(lp)} (χ², 1 df)`); const rf = D.num("row_factor", g, li); if (rf !== null && rf < 1) row("row factor", `${fmt3(rf)} (the pair was tested against ${fmt3(rf)} × its expectation: ${v4 ? "one of the two" : "the sequence"} sits below expectation against its other comparators too)`); const gf = D.num("depth_factor", g, li); if (gf !== null && gf < 1) row("depth factor", `${fmt3(gf)} (pairs this far apart sit at ${fmt3(gf)} × expectation at this locus; the pair was tested against row factor × depth factor × its expectation)`); }
     if (!compact) row("", el("span", { class: "more" }, "click: open the alignment"));
   }
@@ -972,43 +1003,6 @@ function codeRgb(D, c) { const h = codeHex(D, c); return hexToRgb(h || cssVar("-
 function codeLabel(D, c) { if (c === 255) return "no residue in the focal sequence"; if (c === 254) return D.format >= 4 ? "the copy differs from its source here" : "the pair differs here"; if (c >= 128) return D.format >= 5 ? `the partner agrees with the focal here while ${c - 128} comparators differ` : D.format >= 4 ? `the copy shares its source's state while ${c - 128} of its comparators differ` : `the pair shares this state while ${c - 128} other comparators differ`; return `${c} of the comparators present differ${c >= D.M ? " (a majority)" : ""}`; }
 function alignmentPos(D, li, s) { let left = s; for (const [a, b, step] of D.loci.ranges[li]) { const n = Math.floor((b - a) / step) + 1; if (left < n) return a + left * step; left -= n; } return s; }
 
-// ------------------------------------------------------------------ residue colour schemes (Jalview's standard tables: www.jalview.org/help/html/colourSchemes)
-const RESIDUE_SCHEMES = {
-  zappo: { I: "#ffafaf", L: "#ffafaf", V: "#ffafaf", A: "#ffafaf", M: "#ffafaf", F: "#ffc800", W: "#ffc800", Y: "#ffc800", K: "#6464ff", R: "#6464ff", H: "#6464ff", D: "#ff0000", E: "#ff0000", S: "#00ff00", T: "#00ff00", N: "#00ff00", Q: "#00ff00", P: "#ff00ff", G: "#ff00ff", C: "#ffff00" },
-  taylor: { A: "#ccff00", V: "#99ff00", I: "#66ff00", L: "#33ff00", M: "#00ff00", F: "#00ff66", Y: "#00ffcc", W: "#00ccff", H: "#0066ff", R: "#0000ff", K: "#6600ff", N: "#cc00ff", Q: "#ff00cc", E: "#ff0066", D: "#ff0000", S: "#ff3300", T: "#ff6600", G: "#ff9900", P: "#ffcc00", C: "#ffff00" },
-  hydrophobic: { I: "#ff0000", V: "#f60009", L: "#ea0015", F: "#cb0034", C: "#c2003d", M: "#b0004f", A: "#ad0052", G: "#6a0095", X: "#680097", T: "#61009e", S: "#5e00a1", W: "#5b00a4", Y: "#4f00b0", P: "#4600b9", H: "#1500ea", E: "#0c00f3", Z: "#0c00f3", Q: "#0c00f3", D: "#0c00f3", B: "#0c00f3", N: "#0c00f3", K: "#0000ff", R: "#0000ff" },
-  helix: { E: "#ff00ff", M: "#ef10ef", A: "#e718e7", Z: "#c936c9", L: "#ae51ae", K: "#a05fa0", F: "#986798", Q: "#926d92", I: "#8a758a", W: "#8a758a", V: "#857a85", D: "#778877", X: "#758a75", H: "#758a75", R: "#6f906f", B: "#49b649", T: "#47b847", S: "#36c936", C: "#23dc23", Y: "#21de21", G: "#00ff00", N: "#1be41b", P: "#00ff00" },
-  strand: { V: "#ffff00", I: "#ecec13", Y: "#d3d32c", F: "#c2c23d", W: "#c0c03f", L: "#b2b24d", T: "#9d9d62", C: "#9d9d62", Q: "#8c8c73", M: "#82827d", X: "#797986", R: "#6b6b94", N: "#64649b", H: "#60609f", A: "#5858a7", S: "#4949b6", G: "#4949b6", Z: "#4747b8", K: "#4747b8", B: "#4343bc", P: "#2323dc", D: "#2121de", E: "#0c0cf3" },
-  turn: { N: "#ff0000", G: "#ff0000", P: "#f60009", B: "#f30c0c", D: "#e81717", S: "#e81717", C: "#a85757", Y: "#9d6262", K: "#7e8181", X: "#7c8383", Q: "#778888", W: "#738c8c", T: "#738c8c", R: "#708f8f", H: "#708f8f", Z: "#5ba4a4", E: "#3fc0c0", A: "#2cd3d3", F: "#1ee1e1", M: "#1ee1e1", L: "#1ce3e3", V: "#07f8f8", I: "#00ffff" },
-  buried: { C: "#0000ff", I: "#0054ab", V: "#005fa0", L: "#007b84", F: "#008778", M: "#009768", G: "#009d62", A: "#00a35c", W: "#00a857", X: "#00b649", S: "#00d52a", H: "#00d52a", T: "#00db24", P: "#00e619", Y: "#00e619", N: "#00eb14", B: "#00eb14", D: "#00eb14", Q: "#00f10e", Z: "#00f10e", E: "#00f10e", R: "#00fc03", K: "#00ff00" },
-  nucleotide: { A: "#64f73f", C: "#ffb340", G: "#eb413c", T: "#3c88ee", U: "#3c88ee" },
-  purine: { A: "#ff83fa", G: "#ff83fa", R: "#ff83fa", C: "#40e0d0", T: "#40e0d0", U: "#40e0d0", Y: "#40e0d0" },
-};
-const CLUSTAL = { BLUE: "#80a0f0", RED: "#f01505", MAGENTA: "#c048c0", GREEN: "#15c015", PINK: "#f08080", ORANGE: "#f09048", YELLOW: "#c0c000", CYAN: "#15a4a4" };
-// Clustal X colouring: a residue is coloured when its column meets the thresholds (Jalview's description of the Clustal X rules)
-function clustalColour(res, pc) {                           // pc: percentage of each residue among the residues present in the column
-  const sum = s => d3.sum(s, ch => pc[ch] || 0); const any = (s, t) => s.split("").some(ch => (pc[ch] || 0) > t);
-  const hyd = sum("WLVIMAFCYHP") > 60;
-  switch (res) {
-    case "A": case "I": case "L": case "M": case "F": case "W": case "V": return hyd ? CLUSTAL.BLUE : null;
-    case "C": return any("C", 85) ? CLUSTAL.PINK : hyd ? CLUSTAL.BLUE : null;
-    case "K": case "R": return sum("KR") > 60 || any("KRQ", 85) ? CLUSTAL.RED : null;
-    case "E": return sum("KR") > 60 || sum("QE") > 50 || sum("ED") > 50 || any("EQD", 85) ? CLUSTAL.MAGENTA : null;
-    case "D": return sum("KR") > 60 || any("DEN", 85) || sum("ED") > 50 ? CLUSTAL.MAGENTA : null;
-    case "N": return (pc.N || 0) > 50 || any("ND", 85) ? CLUSTAL.GREEN : null;
-    case "Q": return sum("KR") > 60 || sum("QE") > 50 || any("QTKR", 85) ? CLUSTAL.GREEN : null;
-    case "S": case "T": return hyd || sum("TS") > 50 || any("ST", 85) ? CLUSTAL.GREEN : null;
-    case "G": return CLUSTAL.ORANGE;
-    case "P": return CLUSTAL.YELLOW;
-    case "H": case "Y": return hyd || any("WYACPQFHILMV", 85) ? CLUSTAL.CYAN : null;
-    default: return null;
-  }
-}
-const SCHEME_LIST = {
-  aa: [["codes", "plain"], ["clustal", "Clustal X"], ["zappo", "Zappo"], ["taylor", "Taylor"], ["hydrophobic", "hydrophobicity"], ["helix", "helix propensity"], ["strand", "strand propensity"], ["turn", "turn propensity"], ["buried", "buried index"]],
-  dna: [["codes", "plain"], ["nucleotide", "nucleotide"], ["purine", "purine / pyrimidine"]],
-};
-
 // ------------------------------------------------------------------ the two distance trees of one cell as a cophyloplot (drawn from the tool's Newick strings)
 function parseNewick(s) {
   let i = 0; const node = () => { const n = { children: [], length: 0, name: null };
@@ -1030,8 +1024,8 @@ function splitsOf(root) {                                         // the biparti
   const walk = n => { if (!n.children.length) { n.set = new Set([n.name]); return n.set; } n.set = new Set(); for (const c of n.children) for (const x of walk(c)) n.set.add(x); n.split = key(n.set); return n.set; };
   walk(root); return root;
 }
-const TREE_COL = { focal: "#d9822b", outside: "#c2185b" };       // the focal sequence; a taxon from outside the comparator set (in the trees from format 4, a too-similar partner)
-function drawCophylo(host, D, entry, k, cell) {
+const TREE_COL = { outside: "#c2185b" };                          // a best match from outside the comparator set, in the ribbons
+function drawCophylo(host, D, entry, k, cell, T) {      // T: cellTests, for the tips' colours
   const { g, li } = cell; const exp = parseNewick(entry.expected[k]), obs = parseNewick(entry.observed[k]);
   const name = x => D.taxa.names[+x]; const partner = D.num("partner", g, li), bm = D.num("best_match", g, li), bmId = D.num("best_match_identity", g, li); const comps = new Set(D.comps(g, li));
   const v4 = D.format >= 4, sr = similarRole(D, g, li), nsim = D.cols.n_similar[g * D.nloc + li];   // from format 4 the trees carry up to five too-similar partners, not the best match
@@ -1061,7 +1055,8 @@ function drawCophylo(host, D, entry, k, cell) {
   assignY(exp, { y: 0 }); assignY(obs, { y: 0 });
   const svg = d3.create("svg").attr("width", W).attr("height", H).attr("class", "tangle");
   const yOf = n => top + n.y * RH + RH / 2;
-  const focalCol = TREE_COL.focal, partnerCol = D.col.blue, inCol = cssVar("--ink"), outCol = TREE_COL.outside;
+  const focalCol = cssVar("--orange"), partnerCol = D.col.blue, inCol = cssVar("--ink"), outCol = cssVar("--faint");
+  const stOf = t => T.blue.has(+t) ? "blue" : T.red.has(+t) ? "red" : null;      // the colour the alignment gives the taxon's name
   const draw = (root, x0, dir, otherSplits, bold) => {           // dir +1 draws left to right, -1 right to left; bold: the tip closest to the focal in this tree
     const gg = svg.append("g"); const walk = n => { for (const c of n.children) { const og = isOg(c); const xa = x0 + dir * sx(n.depth), xb = og ? x0 + dir * OGLEN : x0 + dir * sx(c.depth); c.xdraw = xb;
       const conflict = c.children.length && c.split && c.set.size > 1 && c.set.size < nTip - 1 && !otherSplits.has(c.split);
@@ -1071,11 +1066,11 @@ function drawCophylo(host, D, entry, k, cell) {
         gg.append("line").attr("x1", xm - 2.5).attr("x2", xm + 2.5).attr("y1", y + 4).attr("y2", y - 4).attr("stroke", cssVar("--surface")).attr("stroke-width", 4);
         gg.append("line").attr("x1", xm - 3.5).attr("x2", xm + 0.5).attr("y1", y + 4).attr("y2", y - 4).attr("stroke", cssVar("--muted")).attr("stroke-width", 1.2);
         gg.append("line").attr("x1", xm + 0.5).attr("x2", xm + 4.5).attr("y1", y + 4).attr("y2", y - 4).attr("stroke", cssVar("--muted")).attr("stroke-width", 1.2); }
-      if (!c.children.length) { const isF = +c.name === g, isP = +c.name === partner, inSet = comps.has(+c.name), isBold = c.name === bold;
-        const dot = isF ? focalCol : isP && sigPair ? partnerCol : inSet ? inCol : outCol; const hollow = isP && !sigPair;   // a closest match that is not too close: hollow
+      if (!c.children.length) { const isF = +c.name === g, isP = +c.name === partner, inSet = comps.has(+c.name), isBold = c.name === bold, st = isF ? null : stOf(c.name);
+        const dot = isF ? focalCol : st === "blue" ? partnerCol : st === "red" ? D.col.red : inSet || isP ? inCol : outCol; const hollow = isP && st !== "blue";   // a closest match that is not too close: hollow
         if (og) gg.append("rect").attr("x", xb - 3).attr("y", yOf(c) - 3).attr("width", 6).attr("height", 6).attr("fill", cssVar("--surface")).attr("stroke", cssVar("--muted")).attr("stroke-width", 1.2);
         else gg.append("circle").attr("cx", xb).attr("cy", yOf(c)).attr("r", hollow ? 3.4 : isP ? 4 : 3.2).attr("fill", hollow ? cssVar("--surface") : dot).attr("stroke", dot).attr("stroke-width", hollow ? 1.6 : 1);
-        const lab = gg.append("text").attr("x", xb + dir * 6).attr("y", yOf(c) + 4).attr("text-anchor", dir > 0 ? "start" : "end").attr("font-size", 11.5).attr("font-weight", (isF || isBold) && !og ? 700 : 400).attr("fill", og ? cssVar("--muted") : isF ? focalCol : isP && sigPair ? partnerCol : inSet ? cssVar("--ink") : outCol).attr("font-weight", (isF || isBold || (isP && sigPair)) && !og ? 700 : 400).text(labelOf(c.name));
+        const lab = gg.append("text").attr("x", xb + dir * 6).attr("y", yOf(c) + 4).attr("text-anchor", dir > 0 ? "start" : "end").attr("font-size", 11.5).attr("fill", og ? cssVar("--muted") : isF ? cssVar("--orange-ink") : st === "blue" ? partnerCol : st === "red" ? D.col.red : inSet || isP ? cssVar("--ink") : outCol).attr("font-weight", (isF || isBold || st) && !og ? 700 : 400).text(labelOf(c.name));
         lab.append("title").text(tipTitle(c.name)); }
       walk(c); } }; walk(root); return gg; };
   draw(exp, 8, 1, obsSplits, closName(0)); draw(obs, W - 8, -1, expSplits, closName(1));
@@ -1091,9 +1086,9 @@ function drawCophylo(host, D, entry, k, cell) {
   const q = svg.append("g").attr("transform", `translate(${W - 20},${by})`).style("cursor", "help");
   q.append("circle").attr("r", 8).attr("fill", "none").attr("stroke", cssVar("--muted")).attr("stroke-width", 1.2); q.append("text").attr("y", 4).attr("text-anchor", "middle").attr("font-size", 11).attr("font-weight", 700).attr("fill", cssVar("--muted")).text("?");
   const explain = el("div", { style: "max-width: 380px" },
-    el("div", null, el("b", null, "Two neighbour-joining trees"), (D.format >= 5 ? ` over the focal sequence (orange), its comparators (black dots) and, when it has one, its too-similar partner or its closest match at the locus (crimson dot and label when not a comparator${sr ? `; ${D.taxa.names[sr.pt]} is ${sr.note}` : ""}). Hover a tip for its role.` : v4 ? ` over the focal sequence (orange), its comparators (black dots) and up to five of the taxa it is significantly too similar to, its reported partner first (${nsim ? fmtInt(nsim) : "none"} here; crimson dot and label when not a comparator${sr ? `; ${D.taxa.names[sr.pt]} is ${sr.note}` : ""}). Hover a tip for its role.` : " over the focal sequence (orange), its comparators (black dots), the partner of a too-similar pair (blue label) and, when it is not one of the comparators, the best match (crimson dot and label; the taxon closest to the focal by per-site divergence compared on the same sites" + (bmId !== null ? `, identity ${fmt1(bmId)}%` : "") + ").") + " In each tree the taxon closest to the focal by that tree's own distances is in bold: the closest relative genome-wide on the left, the closest at this locus on the right."),
+    el("div", null, el("b", null, "Two neighbour-joining trees"), (D.format >= 5 ? ` over the focal sequence (orange), its comparators (black; red when significantly too divergent) and, when it has one, its too-similar partner or its closest match at the locus (blue when significantly too similar; a hollow dot when not${sr ? `; ${D.taxa.names[sr.pt]} is ${sr.note}` : ""}); the colours are the alignment's, other taxa are grey. Hover a tip for its role.` : v4 ? ` over the focal sequence (orange), its comparators (black; red when significantly too divergent) and up to five of the taxa it is significantly too similar to (blue), its reported partner first (${nsim ? fmtInt(nsim) : "none"} here${sr ? `; ${D.taxa.names[sr.pt]} is ${sr.note}` : ""}). Hover a tip for its role.` : " over the focal sequence (orange), its comparators (black dots), the partner of a too-similar pair (blue label) and, when it is not one of the comparators, the best match (crimson dot and label; the taxon closest to the focal by per-site divergence compared on the same sites" + (bmId !== null ? `, identity ${fmt1(bmId)}%` : "") + ").") + " In each tree the taxon closest to the focal by that tree's own distances is in bold: the closest relative genome-wide on the left, the closest at this locus on the right."),
     el("div", { style: "margin-top: 4px" }, el("b", null, "Left:"), (D.format >= 3 ? " the distances the test expects for every pair: each pair's genome-wide divergence, F81-corrected with this locus's plateau and scaled by its rate. " : " the distances the test expects for every pair, each pair's genome-wide divergence through this locus's expectation. "), el("b", null, "Right:"), (D.format >= 3 ? " the divergence observed at this locus over shared sites, corrected the same way (capped at 0.98 of the plateau). " + (ogName ? "Both rooted on the same outgroup (hollow square, muted): the taxon at this locus most distant from these taxa genome-wide; its branch is drawn shortened, with a break. One scale over the ingroup, in corrected divergence; negative branches drawn as zero." : "Both midpoint-rooted, one scale in corrected divergence; negative branches drawn as zero.") : " the mismatch fractions observed at this locus over shared sites. Both midpoint-rooted, one scale; negative branches drawn as zero.")),
-    el("div", { style: "margin-top: 4px" }, "Thick branches are splits absent from the other tree; dotted lines join the same taxon on both sides. A black closest taxon on the right means the sequence has moved away from everything; a crimson one means it has moved towards that taxon" + (v4 ? ", one it is significantly too similar to." : ".")),
+    el("div", { style: "margin-top: 4px" }, "Thick branches are splits absent from the other tree; dotted lines join the same taxon on both sides. A black closest taxon on the right means the sequence has moved away from everything; a blue one means it has moved towards a taxon it is significantly too similar to."),
     el("div", { style: "margin-top: 4px", class: "more" }, v4 ? "A long focal branch with its neighbours unchanged is a damaged copy of the right sequence. A focal that moves across to a too-similar partner points to contamination or a paralogue; the direction test says which of the two is the copy. A whole clade pushed away from the rest on one long branch is a paralogue shared by the clade." : "A long focal branch with its neighbours unchanged is a damaged copy of the right sequence. A focal that moves across to its best match points to contamination or a paralogue. A whole clade pushed away from the rest on one long branch is a paralogue shared by the clade. A best match on its own long branch is merely the least different taxon, not a relative."));
   q.on("mouseenter", ev => showHover(explain, ev.clientX, ev.clientY)).on("mouseleave", hideHover);
   return svg.node();
@@ -1101,8 +1096,9 @@ function drawCophylo(host, D, entry, k, cell) {
 
 // ------------------------------------------------------------------ the alignment panel (full width, bottom)
 const Sequence = (() => {
-  let cur = null, pps = null, x0 = 0, scheme = "codes", dots = true, drawFn = null, showTrees = false;
-  const RULER_H = 18, ROW_H = 18, NAME_W = 190;
+  let cur = null, pps = null, x0 = 0, dots = true, drawFn = null, showTrees = false;
+  const RULER_H = 18, ROW_H = 18, RULE_H = 7;                                       // the rule between the similarity rows and the divergence block
+  const colW = { role: 72, name: 150 }; try { Object.assign(colW, JSON.parse(localStorage.getItem("lm.seqcols") || "{}")); } catch (e) { /* no storage */ }
   function open(g, li) {
     cur = { g, li }; pps = null; x0 = 0;
     if (!App.panels.sequence) {
@@ -1115,52 +1111,78 @@ const Sequence = (() => {
   function inkFor(hex) { const L = luminance(hex); return (L + 0.05) / 0.05 >= 1.05 / (L + 0.05) ? "#0b0b0b" : "#ffffff"; }   // the letter colour with the higher contrast
   async function render() {
     if (!cur || !App.panels.sequence) return;
-    const D = App.D; const { g, li } = cur; const P = App.panels.sequence.P; const i = g * D.nloc + li; const dtype = D.man.options.datatype;
+    const D = App.D; const { g, li } = cur; const P = App.panels.sequence.P; const i = g * D.nloc + li;
     P.setCrumb([D.man.dataset || D.man.input.file, el("a", { href: "#", onclick: ev => { ev.preventDefault(); Detail.open("taxon", g); } }, D.taxa.names[g]), el("a", { href: "#", onclick: ev => { ev.preventDefault(); Detail.open("locus", li); } }, D.loci.names[li])]);
     P.body.replaceChildren(el("div", { class: "loading" }, "loading the sequences…"));
-    const [C, S] = await Promise.all([D.codes(li), D.seq(li)]);
+    const [C, S, SIM] = await Promise.all([D.codes(li), D.seq(li), D.similar(li)]);
     if (!cur || cur.g !== g || cur.li !== li) return;
     const comps = D.comps(g, li); const partner = D.num("partner", g, li); const sd = D.cols.side[i]; const sr = similarRole(D, g, li);
-    const sigPair = !!(sr && (sr.fired || (D.format < 5 && sr.role === "recipient")));   // the pair is significant: blue is allowed
-    const rows = [{ g, role: "focal", tip: "the focal sequence" }]; if (sr) { const r = comps.indexOf(partner); rows.push({ g: partner, role: "partner", tip: sr.note + (r >= 0 ? `; comparator ${r + 1}` : "") }); } comps.forEach((c, r) => { if (c !== partner) rows.push({ g: c, role: "comp", tip: `comparator ${r + 1}` }); });
+    const T = cellTests(D, g, li, SIM, sr); let drawNow = null; const redrawNow = () => { if (drawNow) drawNow(); };
+    // the rows, the same shape for every cell: the focal; its closest match at this locus, the candidate of the similarity
+    // test; a rule; its relatives in genome-wide rank order, the divergence test. A taxon in both roles appears twice
+    const Y = T.closest !== null ? T.closest.taxon : null, ord = ["closest", "2nd closest", "3rd closest", "4th closest", "5th closest"];
+    const rows = [{ g, role: "focal", tag: "focal", tip: "the focal sequence" },
+      { g: Y, role: "closest", tag: "closest", tip: Y === null ? (D.format >= 7 ? "no taxon shares enough sites with the focal at this locus" : "this report does not record the closest match of a sequence whose closest-match test did not run (it is carried from report format 7)") : `the focal's closest match at this locus${comps.includes(Y) ? ` (also relative ${comps.indexOf(Y) + 1})` : " (not one of its relatives)"}` }];
+    comps.forEach((c, r) => rows.push({ g: c, role: "comp", tag: `relative ${r + 1}`, tip: `relative ${r + 1}: the ${ord[r] || `${r + 1}th closest`} taxon genome-wide` }));
     const seqRow = gg => { if (!S) return null; for (let k = 0; k < S.taxa.length; k++) if (S.taxa[k] === gg) return S.blk.subarray(k * S.len, (k + 1) * S.len); return null; };
     let codeRow = null; if (C) for (let k = 0; k < C.cells.length; k++) if (C.cells[k] === g) codeRow = C.blk.subarray(k * C.len, (k + 1) * C.len);
-    const len = D.loci.length[li]; for (const r of rows) r.bytes = seqRow(r.g);
+    const len = D.loci.length[li]; for (const r of rows) r.bytes = r.g === null ? null : seqRow(r.g);
     const focal = rows[0].bytes;
-    // the rows below the focal, most to least similar to it at the locus: the share of their shared sites that differ
-    for (const r of rows.slice(1)) { let n = 0, d = 0; if (r.bytes && focal) for (let s = 0; s < len; s++) { const a = focal[s], b = r.bytes[s]; if (isGap(a) || isGap(b)) continue; n++; if (a !== b) d++; } r.shared = n; r.diff = n ? d / n : Infinity; }
-    rows.splice(1, rows.length - 1, ...rows.slice(1).sort((a, b) => a.diff - b.diff));
-    // per site: how many of the comparators present differ from the focal residue (k), and whether the partner agrees with
-    // the focal where at least two comparators differ (the blue of a copy); from the rows when they are carried, else from
-    // the tool's site codes
-    const compSet = new Set(comps);
-    const compRows = rows.filter(r => r.role !== "focal" && compSet.has(r.g) && r.bytes), partRow = rows.find(r => r.role === "partner" && r.bytes);
-    const kRow = new Int16Array(len).fill(-1), nRow = new Uint8Array(len), sharedRow = new Uint8Array(len);
-    if (focal) { for (let s = 0; s < len; s++) { if (isGap(focal[s])) continue; let k = 0, nn = 0; for (const r of compRows) { const b = r.bytes[s]; if (isGap(b)) continue; nn++; if (b !== focal[s]) k++; } kRow[s] = k; nRow[s] = nn; if (partRow && !isGap(partRow.bytes[s]) && partRow.bytes[s] === focal[s] && k >= 2) sharedRow[s] = 1; } }
-    else if (codeRow) { for (let s = 0; s < len; s++) { const cc = codeRow[s]; if (cc === 255 || cc === 254) continue; kRow[s] = cc >= 128 ? cc - 128 : cc; nRow[s] = D.K; if (cc >= 128) sharedRow[s] = 1; } }
-    const kCode = s => kRow[s] < 0 ? 255 : (sharedRow[s] ? 128 + Math.min(kRow[s], 125) : Math.min(kRow[s], 127));
-    // column composition over the displayed rows, for the Clustal X colouring
-    const npres = new Uint8Array(len), colCounts = new Array(len);
-    for (let s = 0; s < len; s++) {
-      const cnt = {}; let tot = 0; for (const r of rows) { if (!r.bytes) continue; const b = r.bytes[s]; if (isGap(b)) continue; const ch = String.fromCharCode(b).toUpperCase(); cnt[ch] = (cnt[ch] || 0) + 1; tot++; }
-      colCounts[s] = cnt; npres[s] = tot;
+    for (const r of rows.slice(1)) { let n = 0, d = 0; if (r.bytes && focal) for (let s = 0; s < len; s++) { const a = focal[s], b = r.bytes[s]; if (isGap(a) || isGap(b)) continue; n++; if (a !== b) d++; } r.shared = n; r.diff = n ? d / n : NaN; }
+    // each row's colour is its own test's: the closest row blue when significantly too similar to the focal, a relative red when
+    // significantly too divergent from it (the trees colour a taxon by whichever test fired: blue, red or black)
+    for (const r of rows) r.st = r.role === "focal" ? "focal" : r.g === null ? null : r.role === "closest" ? (T.blue.has(r.g) ? "blue" : null) : (T.red.has(r.g) ? "red" : null);
+    // per site: n, the relatives present (the closest match is never counted), and d, those that differ from the focal. A red
+    // site has n >= 3 and d >= half of n, rounded up; a blue site is a red site where the closest match agrees with the focal.
+    // From the rows when they are carried, else roughly from the tool's site codes
+    const countRows = rows.filter(r => r.role === "comp" && r.g !== Y && r.bytes), candRow = rows[1].bytes ? rows[1] : null;
+    const nRow = new Uint8Array(len), dRow = new Int16Array(len).fill(-1), siteRed = new Uint8Array(len), siteBlue = new Uint8Array(len);
+    if (focal) for (let s = 0; s < len; s++) {
+      if (isGap(focal[s])) continue; let n = 0, d = 0;
+      for (const r of countRows) { const b = r.bytes[s]; if (isGap(b)) continue; n++; if (b !== focal[s]) d++; }
+      nRow[s] = n; dRow[s] = d; siteRed[s] = n >= 3 && d >= Math.ceil(n / 2) ? 1 : 0;
+      if (siteRed[s] && candRow && candRow.bytes[s] === focal[s]) siteBlue[s] = 1;
     }
-    // header: the verdict in the fewest words; the numbers are in the matrix's hover and the output files
+    else if (codeRow) for (let s = 0; s < len; s++) { const cc = codeRow[s]; if (cc === 255 || cc === 254) continue; const k = cc >= 128 ? cc - 128 : cc; nRow[s] = D.K; dRow[s] = k; siteRed[s] = k >= D.M ? 1 : 0; siteBlue[s] = cc >= 128 && k >= D.M ? 1 : 0; }
+    // header: the verdict in the fewest words, with the stars; the numbers are in the hovers and the output files
     const head = el("div", { class: "seq-head" });
     const Pn = sr ? D.taxa.names[sr.pt] : partner !== null && partner >= 0 ? D.taxa.names[partner] : null;
     const masked = sd & 3, off = !masked && (sd & (16 | 32)), says = [];
-    if (sd & (1 | 16)) says.push("significantly too divergent");
-    const donor = D.format < 4 ? null : sd & (2 | 32) ? Pn : sd & 128 ? D.taxa.names[g] : null;   // the member that fits its own relatives better
-    if (Pn && (D.format < 4 || sd & (2 | 32 | 128))) says.push(`significantly too similar to ${Pn}${donor ? ` (${donor} looks more likely to be the donor)` : ""}`);
+    const divP = D.num("div_log10p", g, li), simP = D.num("sim_log10p", g, li), withStars = (txt, p) => T.stars(p) ? `${txt} ${T.stars(p)}` : txt;
+    const dv = sd & (1 | 16), sm = sd & (2 | 32 | 128);
+    if (dv) says.push(withStars("significantly too divergent", divP));
+    const donorTxt = D.format < 4 ? "" : sd & 8 ? " (donor uncertain: both masked)" : sd & (2 | 32) ? ` (${Pn} looks more likely to be the donor)` : sd & 128 ? ` (${D.taxa.names[g]} looks more likely to be the donor)` : "";
+    if (Pn && (D.format < 4 || sm)) says.push(withStars(`significantly too similar to ${Pn}`, simP) + donorTxt);
     const verdict = D.cols.n_comp[i] === 0 ? `Not tested: ${stateReason(D, g, li) || "no comparators"}` : `${masked ? "Masked" : off ? "Not masked (masking was off)" : "Not masked"}${says.length ? ": " + says.join("; ") : ""}${sd & 4 ? " (fewer comparators than requested)" : ""}`;
-    const parts = [el("span", { class: "state" }, sw(D.colorOf(D.state[i])), verdict)];
-    const schemeSel = el("select", { onchange: e => { scheme = e.target.value; draw(); } }, ...SCHEME_LIST[dtype === "dna" ? "dna" : "aa"].map(([v, t]) => el("option", { value: v, selected: v === scheme ? "" : null }, t)));
-    const dotsBox = el("input", { type: "checkbox", checked: dots ? "" : null, onchange: e => { dots = e.target.checked; draw(); } });
+    // the tests in words, for the hovers: the focal's own two, or a row's against the focal
+    const lp = (what, p) => p === null || p === undefined || Number.isNaN(p) ? `${what}: not tested` : `${what}: log10 p ${fmt2(p)}${T.stars(p) ? " " + T.stars(p) : ""}`, barTxt = T.bar !== null ? ` · bar ${fmt2(T.bar)}` : "";
+    const focalNote = [divP !== null ? lp("too divergent", divP) : null, simP !== null && Pn ? lp(`too similar to ${Pn}`, simP) : null].filter(Boolean).join(" · ");
+    const testNote = r => {
+      if (r.role === "focal") return focalNote ? focalNote + barTxt : "";
+      if (r.g === null) return "";
+      if (r.role === "closest") return lp("too similar to the focal", T.blue.has(r.g) ? T.blue.get(r.g).p : T.closest.p) + barTxt;
+      const t = T.comp && T.comp.get(r.g); if (!t) return T.blue.has(r.g) ? lp("too similar to the focal", T.blue.get(r.g).p) + barTxt : "";
+      return `${lp("too divergent from the focal", t.div)} · ${lp("too similar to the focal", T.blue.has(r.g) ? T.blue.get(r.g).p : t.sim)}${barTxt}`;
+    };
+    const parts = [el("span", { class: "state", title: focalNote ? focalNote + barTxt : null }, sw(D.colorOf(D.state[i])), verdict)];
+    const dotsBox = el("input", { type: "checkbox", checked: dots ? "" : null, onchange: e => { dots = e.target.checked; redrawNow(); } });
     const treesBtn = el("button", { title: "the expected and the observed distances among these sequences as two neighbour-joining trees, face to face", onclick: () => toggleTrees() }, "trees");
-    const ctl = el("span", { class: "seq-ctl" }, el("label", null, "colours ", schemeSel), el("label", null, dotsBox, " dots where a comparator matches the focal residue"),
-      el("button", { onclick: () => { pps = fitPps(); x0 = 0; draw(); } }, "whole locus"), el("button", { onclick: () => { pps = 12; draw(); } }, "letters"), treesBtn);
+    const ctl = el("span", { class: "seq-ctl" }, el("label", null, dotsBox, " dots where a sequence matches the focal residue"),
+      el("button", { onclick: () => { pps = fitPps(); x0 = 0; redrawNow(); } }, "whole locus"), el("button", { onclick: () => { pps = 12; redrawNow(); } }, "letters"), treesBtn);
     head.append(el("div", { class: "seq-line" }, ...parts), ctl);
-    const body = el("div", { class: "seq-body" }); const names = el("div", { class: "seq-names" }); const cwrap = el("div", { class: "seq-canvas-wrap" }); const cv = el("canvas"); cwrap.append(cv); body.append(names, cwrap);
+    // the body: test type · sequence · Taxon name · p<α · the alignment; the two name columns resize by their header's edge
+    const body = el("div", { class: "seq-body" + (T.pcol ? " with-p" : "") }); body.style.setProperty("--wrole", colW.role + "px"); body.style.setProperty("--wname", colW.name + "px");
+    const cols = { gut: el("div", { class: "seq-col seq-gut" }), role: el("div", { class: "seq-col seq-role" }), names: el("div", { class: "seq-col seq-names" }), p: el("div", { class: "seq-col seq-p" }) };
+    const cwrap = el("div", { class: "seq-canvas-wrap" }); const cv = el("canvas"); cwrap.append(cv);
+    body.append(cols.gut, cols.role, cols.names, ...(T.pcol ? [cols.p] : []), cwrap);
+    const handle = key => { const h = el("i", { class: "hdl", title: "drag to resize" }); let drag = null;
+      h.addEventListener("pointerdown", ev => { ev.preventDefault(); h.setPointerCapture(ev.pointerId); drag = { x: ev.clientX, w0: colW[key] }; h.classList.add("on"); });
+      h.addEventListener("pointermove", ev => { if (!drag) return; colW[key] = clamp(drag.w0 + ev.clientX - drag.x, key === "role" ? 44 : 60, key === "role" ? 160 : 400); body.style.setProperty("--w" + key, colW[key] + "px"); redrawNow(); });
+      h.addEventListener("pointerup", () => { drag = null; h.classList.remove("on"); try { localStorage.setItem("lm.seqcols", JSON.stringify(colW)); } catch (e) { /* no storage */ } });
+      return h; };
+    const trk = (col, txt, extra) => cols[col].append(el("div", { class: "trk", style: `height:${RULER_H + 4}px`, ...(extra || {}) }, txt));
+    trk("gut", "test type"); cols.role.append(el("div", { class: "trk", style: `height:${RULER_H + 4}px` }, "sequence", handle("role"))); cols.names.append(el("div", { class: "trk", style: `height:${RULER_H + 4}px` }, "Taxon name", handle("name")));
+    if (T.pcol) trk("p", "p<α", { title: `significant: * below alpha / N (log10 ${fmt2(T.bar)}), ** below alpha / 5N, *** below alpha / 50N` });
     let treesCard = null;
     const toggleTrees = async () => {
       if (treesCard) { treesCard.remove(); treesCard = null; treesBtn.classList.remove("primary"); showTrees = false; return; }
@@ -1169,22 +1191,34 @@ const Sequence = (() => {
       const entry = await D.trees(li); if (!treesCard) return; treesCard.replaceChildren();
       let k = -1; if (entry) for (let q = 0; q < entry.cells.length; q++) if (entry.cells[q] === g) { k = q; break; }
       if (k < 0) { treesCard.append(el("div", { class: "note", style: "padding: 8px" }, "trees were not carried for this cell")); return; }
-      treesCard.append(el("button", { class: "close", title: "close", onclick: toggleTrees }, "✕"), drawCophylo(treesCard, D, entry, k, { g, li }));
+      treesCard.append(el("button", { class: "close", title: "close", onclick: toggleTrees }, "✕"), drawCophylo(treesCard, D, entry, k, { g, li }, T));
     };
     if (showTrees) setTimeout(toggleTrees, 0);
-    names.append(el("div", { class: "trk", style: `height:${RULER_H + 4}px` }, "position"));
-    for (const r of rows) { const sig = r.role === "partner" && sigPair;            // no tags: the significant match's name is blue and bold; the hover says who is who
-      names.append(el("div", { class: "seqnm" + (r.role === "focal" ? " focal" : ""), style: `height:${ROW_H}px`, title: `${D.taxa.names[r.g]}: ${r.tip}${r.role !== "focal" && r.shared ? `; differs from the focal at ${fmt1(100 * r.diff)}% of ${fmtInt(r.shared)} shared sites` : ""}` },
-        el("span", { class: "nm", style: sig ? "color: var(--blue); font-weight: 650" : null }, D.taxa.names[r.g]))); }
-    const key = el("span", { class: "seq-key", title: `the focal row's cells: how many of its ${D.K} comparators differ from it at each site, red from a majority (${D.M}); hover a site for the count` },
-      "focal cells ", ...D.grades.map((h, k) => el("span", { class: "sw", style: `background:${h}`, title: `${k} of ${D.K} comparators differ${k >= D.M ? " (a majority)" : ""}` })), ` 0 to ${D.K} comparators differ`,
-      sigPair ? [" · ", el("span", { class: "sw", style: `background:${D.col.blueTint}` }), ` ${D.taxa.names[partner]} agrees with the focal against them`] : null);
+    // one row per sequence in every column; the focal's p cell is its outcome as a colour (gold: both tests) with the stars of
+    // the decisive divergence p, the closest-match p, or the more significant of the two; a row's stars are its own test's
+    rows.forEach((r, ri) => {
+      if (ri === 2) for (const c of Object.values(cols)) c.append(el("div", { class: "rule", style: `height:${RULE_H}px` }));
+      const note = testNote(r), nm = r.g === null ? (D.format >= 7 ? "none" : "not recorded") : D.taxa.names[r.g];
+      const tip = `${r.g === null ? "" : nm + ": "}${r.tip}${r.role !== "focal" && r.shared ? `; differs from the focal at ${fmt1(100 * r.diff)}% of ${fmtInt(r.shared)} shared sites` : ""}${note ? "\n" + note : ""}`;
+      cols.gut.append(el("div", { class: "seqnm gut", style: `height:${ROW_H}px`, title: ri === 0 ? "the similarity test: is the focal closer to its closest match than its relatives are?" : ri === 2 ? "the divergence test: is the focal further from its relatives than expected?" : null }, ri === 0 ? "similarity" : ri === 2 ? "divergence" : ""));
+      cols.role.append(el("div", { class: "seqnm role", style: `height:${ROW_H}px`, title: tip }, r.tag));
+      cols.names.append(el("div", { class: "seqnm", style: `height:${ROW_H}px`, title: tip }, el("span", { class: "nm" + (r.st ? " st-" + r.st : "") + (r.g === null ? " none" : "") }, nm)));
+      if (!T.pcol) return;
+      let bg = D.col.passCell, txt = "–", ink = cssVar("--muted");
+      if (r.role === "focal") { const fp = dv && sm ? Math.min(divP ?? Infinity, simP ?? Infinity) : dv ? divP : sm ? simP : null; bg = dv && sm ? D.col.both : dv ? D.col.red : sm ? D.col.blue : D.col.passCell; txt = dv || sm ? T.stars(fp) : "–"; if (dv || sm) ink = "#ffffff"; }
+      else if (r.role === "closest") { if (r.g !== null && T.blue.has(r.g)) { bg = D.col.blue; txt = T.stars(T.blue.get(r.g).p); ink = "#ffffff"; } }
+      else if (r.st === "red") { bg = D.col.red; txt = T.stars(T.red.get(r.g)); ink = "#ffffff"; }
+      cols.p.append(el("div", { class: "pcell", style: `height:${ROW_H}px`, title: note || "" }, el("span", { style: `background:${bg}; color:${ink}` }, txt)));
+    });
+    const swc = c => el("span", { class: "sw", style: `background:${c}` });
+    const key = el("span", { class: "seq-key", title: "a red site: of the focal's relatives present there (at least 3; its closest match is never counted), half or more differ from the focal; hover a site for the count" },
+      "focal ", swc(D.col.redTint), " half or more of its relatives differ ", swc(D.col.blueTint), " and its closest match agrees · closest ", swc(D.col.blueTint), " agrees with the focal at such a site · relatives ", swc(D.col.redTint), " differ from the focal");
     const foot = el("div", { class: "seq-foot" }, key, el("span", null, `${fmtInt(len)} sites · pinch or ctrl+wheel: zoom · drag: move · letters from 7 px per site`), el("span", { class: "k", style: "margin-left:auto" }, S ? "" : "sequences were not carried for this locus"));
     P.body.replaceChildren(head, body, foot);
     if (!S && !codeRow) { cwrap.append(el("div", { class: "note", style: "padding: 10px" }, "neither sequences nor site codes were carried for this cell in this report")); return; }
     const dpr = devicePixelRatio || 1;
     const fitPps = () => Math.max(0.05, cwrap.getBoundingClientRect().width / len);
-    const topOf = ri => RULER_H + 4 + ri * ROW_H;
+    const topOf = ri => RULER_H + 4 + ri * ROW_H + (ri >= 2 ? RULE_H : 0);
     const draw = () => {
       const W = Math.max(100, cwrap.getBoundingClientRect().width), H = topOf(rows.length) + 2;
       if (pps === null) { const f = fitPps(); pps = f >= 7 ? Math.min(f, 12) : f; }
@@ -1199,45 +1233,41 @@ const Sequence = (() => {
       for (let s = Math.ceil(s0 / stepSites) * stepSites; s <= s1; s += stepSites) { const x = sx(s) + pps / 2; c.fillRect(x, RULER_H - 4, 1, 4); c.fillText(fmtInt(alignmentPos(D, li, s) + 1), x, 2); }
       c.strokeStyle = cssVar("--grid"); c.beginPath(); c.moveTo(0, RULER_H + 0.5); c.lineTo(W, RULER_H + 0.5); c.stroke();
       // sequence rows
-      const resColour = (ch, s) => {                           // the residue colour scheme, or null
-        if (scheme === "codes" || scheme === "none") return null;
-        if (scheme === "clustal") { const cnt = colCounts[s]; const tot = npres[s] || 1; const pc = {}; for (const k in cnt) pc[k] = 100 * cnt[k] / tot; return clustalColour(ch, pc); }
-        return (RESIDUE_SCHEMES[scheme] || {})[ch] || null;
-      };
-      const cellCol = D.col.cell, faint = cssVar("--faint"), inkRgb = hexToRgb(cssVar("--muted")), plain = scheme === "codes";
-      const gradeOf = k => k >= 0 ? D.grades[Math.min(k, D.K)] : cellCol;
+      const cellCol = D.col.cell, faint = cssVar("--faint"), redT = D.col.redTint, blueT = D.col.blueTint;
       c.font = `${Math.min(13, pps)}px ${cssVar("--mono")}`; c.textBaseline = "middle"; c.textAlign = "center";
+      c.strokeStyle = cssVar("--spine"); c.beginPath(); c.moveTo(0, topOf(2) - RULE_H / 2 - 0.5); c.lineTo(W, topOf(2) - RULE_H / 2 - 0.5); c.stroke();
       rows.forEach((r, ri) => {
-        const y = topOf(ri); const bytes = r.bytes; const isFocal = ri === 0, isPartner = r.role === "partner";
-        if (!bytes) { c.fillStyle = faint; c.font = `11px ${cssVar("--sans")}`; c.textAlign = "left"; c.fillText("row not carried in this report", 4, y + ROW_H / 2); c.textAlign = "center"; c.font = `${Math.min(13, pps)}px ${cssVar("--mono")}`; return; }
+        const y = topOf(ri); const bytes = r.bytes; const isFocal = ri === 0, isCand = ri === 1;
+        if (!bytes) { c.fillStyle = faint; c.font = `11px ${cssVar("--sans")}`; c.textAlign = "left"; c.fillText(r.g === null ? (D.format >= 7 ? "no closest match at this locus" : "closest match not recorded in this report") : "row not carried in this report", 4, y + ROW_H / 2); c.textAlign = "center"; c.font = `${Math.min(13, pps)}px ${cssVar("--mono")}`; return; }
         if (letters) {
-          // the focal cell wears its grade (how many comparators differ from it there); the significant match is blue where it
-          // agrees with the focal against its comparators; every other residue sits on the plain cell
+          // the focal is red at a red site and blue at a blue one; the closest match blue where it agrees with the focal at a red
+          // site; a relative red where it differs from the focal; every other residue sits on the plain cell
           for (let s = s0; s <= s1; s++) {
             const b = bytes[s]; if (isGap(b)) continue; const ch = String.fromCharCode(b).toUpperCase(); const x = sx(s);
-            const same = !isFocal && focal && !isGap(focal[s]) && focal[s] === b;
-            let bg = isFocal ? (plain ? gradeOf(kRow[s]) : cellCol) : isPartner && sigPair && sharedRow[s] ? D.col.blueTint : cellCol;
-            const rc = (isFocal || !same || !dots) ? resColour(ch, s) : null; if (rc) bg = rc;
+            const fp = !isFocal && focal && !isGap(focal[s]), same = fp && focal[s] === b;
+            const bg = isFocal ? (siteBlue[s] ? blueT : siteRed[s] ? redT : cellCol) : isCand ? (same && siteRed[s] ? blueT : cellCol) : fp && !same ? redT : cellCol;
             c.fillStyle = bg; c.fillRect(x, y + 1, pps, ROW_H - 2);
-            if (!isFocal && same && dots) { c.fillStyle = faint; c.fillText("·", x + pps / 2, y + ROW_H / 2); }
+            if (same && dots) { c.fillStyle = faint; c.fillText("·", x + pps / 2, y + ROW_H / 2); }
             else { c.fillStyle = inkFor(bg); c.fillText(ch, x + pps / 2, y + ROW_H / 2); }
           }
         } else {
-          // block zoom: the focal row wears its grades (per pixel the largest k among its sites); every other row shows
-          // presence and, per pixel, the share of its sites that differ from the focal
+          // block zoom, per pixel: the focal blue when any of its sites is blue, else red when any is red; the closest match blue
+          // where it agrees at a red site; a relative as red as the share of its sites that differ from the focal
           for (let x = 0; x < W; x++) {
             const a = Math.floor(x0 + x / pps), b = Math.min(len - 1, Math.max(a, Math.ceil(x0 + (x + 1) / pps) - 1)); if (a > b) break;
-            let pres = 0, diff = 0, kmax = -1, blue = false;
-            for (let s = a; s <= b; s++) { const bb = bytes[s]; if (isGap(bb)) continue; pres++; if (!isFocal && focal && !isGap(focal[s]) && focal[s] !== bb) diff++;
-              if (isFocal && kRow[s] > kmax) kmax = kRow[s]; if (isPartner && sigPair && sharedRow[s]) blue = true; }
+            let pres = 0, diff = 0, red = false, blue = false;
+            for (let s = a; s <= b; s++) { const bb = bytes[s]; if (isGap(bb)) continue; pres++;
+              if (isFocal) { if (siteBlue[s]) blue = true; else if (siteRed[s]) red = true; continue; }
+              if (!focal || isGap(focal[s])) continue;
+              if (focal[s] !== bb) diff++; else if (isCand && siteRed[s]) blue = true; }
             if (!pres) continue;
-            if (isFocal) { c.fillStyle = plain ? gradeOf(kmax) : cellCol; c.fillRect(x, y + 1, 1, ROW_H - 2); }
-            else { c.fillStyle = blue ? D.col.blueTint : cellCol; c.fillRect(x, y + 1, 1, ROW_H - 2); if (diff) { c.fillStyle = `rgba(${inkRgb[0]},${inkRgb[1]},${inkRgb[2]},${0.15 + 0.75 * diff / pres})`; c.fillRect(x, y + 4, 1, ROW_H - 8); } }
+            c.fillStyle = blue ? blueT : red ? redT : cellCol; c.fillRect(x, y + 1, 1, ROW_H - 2);
+            if (!isFocal && !isCand && diff) { c.globalAlpha = 0.3 + 0.7 * diff / pres; c.fillStyle = redT; c.fillRect(x, y + 1, 1, ROW_H - 2); c.globalAlpha = 1; }
           }
         }
       });
     };
-    drawFn = draw; draw();
+    drawFn = draw; drawNow = draw; draw();
     // zoom with a pinch (ctrl+wheel) or two-pointer spread; scroll with the wheel or a drag
     cv.addEventListener("wheel", ev => { ev.preventDefault(); const r = cv.getBoundingClientRect(); const mx = ev.clientX - r.left;
       if (ev.ctrlKey || ev.metaKey) { const f = Math.exp(-ev.deltaY * 0.01); const np = clamp(pps * f, fitPps(), 16); x0 = x0 + mx / pps - mx / np; pps = np; }
@@ -1253,8 +1283,8 @@ const Sequence = (() => {
       if (drag) { x0 = drag.x0 - (ev.clientX - drag.x) / pps; draw(); return; }
       const r = cv.getBoundingClientRect(); const s = Math.floor(x0 + (ev.clientX - r.left) / pps); if (s < 0 || s >= len) { hideHover(); return; }
       const t = el("table"); t.append(el("tr", null, el("td", { class: "k" }, "site"), el("td", null, `${s + 1} of ${fmtInt(len)} · alignment position ${fmtInt(alignmentPos(D, li, s) + 1)}`)));
-      if (kRow[s] >= 0) t.append(el("tr", null, el("td", { class: "k" }, "difference"), el("td", null, `${kRow[s]} of ${nRow[s]} comparators differ from the focal${kRow[s] >= D.M ? " (a majority)" : ""}${sharedRow[s] ? `; ${partRow ? D.taxa.names[partRow.g] : "the partner"} agrees with the focal here` : ""}`)));
-      for (const rr of rows) if (rr.bytes) t.append(el("tr", null, el("td", { class: "k" }, D.taxa.names[rr.g]), el("td", { style: "font-family: var(--mono)" }, String.fromCharCode(rr.bytes[s]))));
+      if (dRow[s] >= 0) t.append(el("tr", null, el("td", { class: "k" }, "difference"), el("td", null, `${dRow[s]} of ${nRow[s]} relatives differ from the focal${siteRed[s] ? " (half or more)" : nRow[s] < 3 ? " (fewer than 3 present)" : ""}${siteBlue[s] ? `; its closest match${candRow ? ` ${D.taxa.names[candRow.g]}` : ""} agrees with it` : ""}`)));
+      for (const rr of rows) if (rr.bytes) t.append(el("tr", null, el("td", { class: "k" }, `${rr.tag} · ${D.taxa.names[rr.g]}`), el("td", { style: "font-family: var(--mono)" }, String.fromCharCode(rr.bytes[s]))));
       showHover(t, ev.clientX, ev.clientY);
     });
     cv.addEventListener("pointerleave", hideHover);
