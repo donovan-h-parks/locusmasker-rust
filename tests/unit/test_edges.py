@@ -24,7 +24,7 @@ class TestUnreadableFiles:
 
     def test_a_latin1_byte_deep_in_a_fasta(self, tmp_path, tmp_out):
         ds = dataset("dna_small"); b = open(ds.aln, "rb").read(); f = tmp_path / "a.fasta"; f.write_bytes(b[:2000] + b"\xe9" + b[2001:])
-        r = run_tool(str(f), tmp_out, "dna", ds.parts); assert r.rc != 0 and "Traceback" not in r.log and "UTF-8" in r.log
+        r = run_tool(str(f), tmp_out, "dna", ds.parts); assert r.rc != 0 and "Traceback" not in r.log and "0xE9" in r.log and "not UTF-8" in r.log and "site 1,972" in r.log
 
     @pytest.mark.parametrize("mutate,expect", [
         (lambda t: t.replace("end;\n", "end;\nbegin assumptions;\noptions deftype=ord;\nend;\n", 1), "block"),

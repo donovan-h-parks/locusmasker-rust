@@ -186,19 +186,27 @@ PASS1_FLOPS_PER_THREAD = 6e7    # pass one adds a thread per this many floating-
 # ------------------------------------------------------------------ input
 def read_fasta(txt):
     """names and sequences, one per header line, in order: a header with nothing under it gives an empty sequence
-    (read_input then rejects it by name); text before the first header is an error, not a nameless sequence"""
-    names, seqs, cur = [], [], None
-    for line in txt.splitlines():
-        if line.startswith(">"):
-            if cur is not None: seqs.append("".join(cur))
-            name = line[1:].split()
-            if not name: sys.exit("FASTA: a header line ('>') has no name")
-            names.append(name[0]); cur = []
-        elif cur is None:
-            if line.strip(): sys.exit(f"FASTA: text before the first header line ('>'): {line.strip()[:40]!r} (a sequence whose header line is missing?)")
-        else:
-            cur.append("".join(line.split()))
-    if cur is not None: seqs.append("".join(cur))
+    (read_input then rejects it by name); text before the first header is an error, not a nameless sequence. txt may
+    be str or bytes (the sequences come back in the same type, the names as str). Works record by record (split at the
+    line-start '>') with whole-string operations, not line by line: a wrapped 1.4 GB file has 18 million lines"""
+    isb = isinstance(txt, (bytes, bytearray)); gt, nl, cr, sp, tab, empty = (b">", b"\n", b"\r", b" ", b"\t", b"") if isb else (">", "\n", "\r", " ", "\t", "")
+    body = txt.lstrip()
+    if not body: return [], []
+    if not body.startswith(gt):
+        first = body.splitlines()[0].strip()[:40]
+        sys.exit(f"FASTA: text before the first header line ('>'): {first.decode('utf-8', 'replace') if isb else first!r} (a sequence whose header line is missing?)")
+    names, seqs = [], []
+    for rec in body[1:].split(nl + gt):
+        header, _, seq = rec.partition(nl)
+        name = header.split()
+        if not name: sys.exit("FASTA: a header line ('>') has no name")
+        nm = name[0]
+        if isb:
+            try: nm = nm.decode("utf-8")
+            except UnicodeDecodeError: sys.exit(f"FASTA: the name {nm[:40]!r} is not UTF-8 text")
+        seq = seq.replace(nl, empty).replace(cr, empty)
+        if seq.count(sp) or seq.count(tab): seq = empty.join(seq.split())
+        names.append(nm); seqs.append(seq)
     return names, seqs
 
 
@@ -502,7 +510,8 @@ def _check_rows(path, names, rows):
         b = np.frombuffer(r, dtype=np.uint8); hi = np.flatnonzero(b >= 128)
         if len(hi):
             ch = bytes(b[hi[0]:hi[0] + 4]).decode("utf-8", "replace")[0]
-            sys.exit(f"non-ASCII character {ch!r} in the sequence of taxon {t} at site {int(hi[0]) + 1:,} of {os.path.basename(path)}: sequences may hold only ASCII letters, '-' and '?'")
+            what = f"non-ASCII character {ch!r}" if ch != "\ufffd" else f"byte 0x{int(b[hi[0]]):02X} (not UTF-8 text)"
+            sys.exit(f"{what} in the sequence of taxon {t} at site {int(hi[0]) + 1:,} of {os.path.basename(path)}: sequences may hold only ASCII letters, '-' and '?'")
     lens = collections.Counter(len(r) for r in rows); L = lens.most_common(1)[0][0]
     bad = [(t, len(r)) for t, r in zip(names, rows) if len(r) != L]
     if bad:
@@ -562,17 +571,19 @@ def read_input(path, partitions):
         elif dt == "protein": declared = "aa"
     else:
         if not partitions: sys.exit("a FASTA or PHYLIP alignment needs --partitions")
-        try:
-            with open(path, encoding="utf-8") as fh: txt = fh.read()
-        except UnicodeDecodeError: sys.exit(f"the alignment {path} is not a UTF-8 text file (compressed? binary?)")
-        if head.startswith(">"):
-            names, seqs = read_fasta(txt); fmt = "fasta"
+        if head.startswith(">"):                                        # FASTA is read as bytes: no decoding and re-encoding of gigabytes
+            with open(path, "rb") as fh: raw = fh.read()
+            names, seqs = read_fasta(raw); fmt = "fasta"; del raw
             empty = [t for t, sq in zip(names, seqs) if not sq]
             if empty: sys.exit(f"FASTA: {len(empty)} record{'s' if len(empty) > 1 else ''} with no sequence under the header in {path}: {', '.join(empty[:5])}{' ...' if len(empty) > 5 else ''}")
+            rows = [bytearray(sq) for sq in seqs]; del seqs
         else:
             if not head[:1].isdigit(): sys.exit(f"cannot tell the format of {path}: a NEXUS file starts with #NEXUS, a FASTA file with '>', a PHYLIP file with its counts")
+            try:
+                with open(path, encoding="utf-8") as fh: txt = fh.read()
+            except UnicodeDecodeError: sys.exit(f"the alignment {path} is not a UTF-8 text file (compressed? binary?)")
             names, seqs = read_phylip(txt); fmt = "phylip"
-        rows = [bytearray(s.encode()) for s in seqs]; del seqs, txt
+            rows = [bytearray(sq.encode()) for sq in seqs]; del seqs, txt
         _check_rows(path, names, rows)
         loci = parse_raxml_partitions(partitions, len(rows[0]))
     _check_rows(path, names, rows)
