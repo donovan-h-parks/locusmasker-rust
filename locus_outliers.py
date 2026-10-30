@@ -1368,6 +1368,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     # once: a locus's comparators are the first K candidates that share enough sites with the taxon at that locus
     big = n >= 1000
     prepool = ThreadPoolExecutor(min(a.threads, nloc)) if a.threads > 1 and big else None
+    if a.threads > 1: LOG(f"comparators: {min(a.threads, nloc) if prepool else 1} thread{'s' if prepool and min(a.threads, nloc) > 1 else ''} ({n:,} taxa; threads pay off from 1,000)")
     order = np.empty((n, n), np.int32)
     def sort_rows(b0):
         b1 = min(b0 + 256, n); order[b0:b1] = np.argsort(mj[b0:b1], axis=1, kind="stable")
@@ -1460,6 +1461,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     # makes threads slower than one
     ntested = sum(1 for t in sel if (t[2] > 0).any())
     pool = ThreadPoolExecutor(min(a.threads, nloc)) if a.threads > 1 and (Npairs / max(ntested, 1) >= TEST_THREAD_PAIRS or big) else None
+    if a.threads > 1: LOG(f"test stage: {min(a.threads, nloc) if pool else 1} thread{'s' if pool and min(a.threads, nloc) > 1 else ''} ({Npairs / max(ntested, 1):,.0f} comparisons per locus on average, {n:,} taxa; threads pay off from {TEST_THREAD_PAIRS:,} per locus or 1,000 taxa)")
     # dispersion pre-pass: the robust spread of observed/expected among each locus's resolved comparator pairs with
     # enough expected mismatches, with the Poisson part removed: Var(O/E) = 1/E + phi. The same pass counts the tests
     # each locus will run (its distinct comparisons and its testable pairs), so the Bonferroni bar is known before any
