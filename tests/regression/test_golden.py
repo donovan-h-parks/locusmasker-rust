@@ -2,7 +2,7 @@
 if the change was deliberate, re-pin with  python tests/data/make_fixtures.py --golden  and say so in the commit."""
 import json, os
 import pytest
-from tests.conftest import DATA, SYNTH, dataset, run_tool, npz_hashes
+from tests.conftest import DATA, SYNTH, SIM, dataset, run_tool, npz_hashes
 
 pytestmark = pytest.mark.regression
 GOLDEN = os.path.join(DATA, "golden")
@@ -18,7 +18,7 @@ def check(run, gold):
     for k, v in sub["test"].items(): assert man["test"][k] == v, k
 
 
-@pytest.mark.parametrize("name", SYNTH)
+@pytest.mark.parametrize("name", SYNTH + SIM)
 def test_standard_run_is_pinned(runs, name):
     check(runs(name), os.path.join(GOLDEN, name))
 

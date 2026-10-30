@@ -27,13 +27,14 @@ except ImportError:
 # ------------------------------------------------------------------ the fixture datasets
 SYNTH = ["dna_small", "aa_small", "dna_clean", "aa_clean", "dna_dense"]
 REAL = ["cannon_aa", "near_dna"]
+SIM = ["aa_random_trees"]        # simulated by AliSim (tests/data/make_random_trees.py); nothing planted, so every mask is a false positive
 
 
 class Dataset:
     def __init__(self, name):
         self.name = name
-        if name in SYNTH:
-            self.dir = os.path.join(DATA, "synth", name); self.truth = json.load(open(os.path.join(self.dir, "truth.json")))
+        if name in SYNTH or name in SIM:
+            self.dir = os.path.join(DATA, "synth" if name in SYNTH else "sim", name); self.truth = json.load(open(os.path.join(self.dir, "truth.json")))
             self.dtype = self.truth["datatype"]; self.aln = os.path.join(self.dir, "alignment.fasta"); self.parts = os.path.join(self.dir, "partitions.txt")
             self.events = self.truth["events"]; self.ntaxa = self.truth["taxa"]; self.nloci = self.truth["loci"]
         else:

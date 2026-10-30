@@ -1,9 +1,9 @@
 """The fixture datasets themselves: the committed files are what the generator writes, and each truth file is consistent
 with its alignment."""
-import filecmp, json, os, tempfile
+import filecmp, json, os, re, tempfile
 import numpy as np
 import pytest
-from tests.conftest import lo, DATA, SYNTH, REAL, dataset
+from tests.conftest import lo, DATA, SYNTH, REAL, SIM, dataset
 from tests.data import make_fixtures as MF
 
 
@@ -15,7 +15,7 @@ class TestGenerator:
             assert filecmp.cmp(tmp_path / name / f, os.path.join(DATA, "synth", name, f), shallow=False), f
 
     def test_every_dataset_is_in_the_registry(self):
-        assert set(SYNTH) == set(MF.DATASETS) and set(REAL) == set(MF.REAL)
+        assert set(SYNTH) == set(MF.DATASETS) and set(REAL) == set(MF.REAL) and set(SIM) == set(MF.SIM)
 
 
 @pytest.mark.parametrize("name", SYNTH)
@@ -45,3 +45,14 @@ class TestTruth:
         ds = dataset(name); P = ds.truth["patristic"]; names = list(P)
         assert names == ds.truth and False or set(names) == set(lo.read_input(ds.aln, ds.parts)[0])
         M = np.array([P[n] for n in names]); assert np.allclose(M, M.T) and (np.diag(M) == 0).all() and (M[~np.eye(len(names), dtype=bool)] > 0).all()
+
+
+@pytest.mark.parametrize("name", SIM)
+class TestSimulated:
+    """the AliSim fixtures: truth.json describes the alignment, plants nothing, and carries every locus's tree over every taxon"""
+    def test_truth_matches_the_alignment_and_names_every_taxon_in_every_tree(self, name):
+        ds = dataset(name); names, rows, loci, *_ = lo.read_input(ds.aln, ds.parts)
+        assert ds.truth["taxa"] == len(names) and ds.truth["loci"] == len(loci) and ds.truth["sites"] == len(rows[0]) and ds.events == []
+        assert [(a, b) for a, b in ds.truth["locus_bounds"]] == [(int(s[0]) + 1, int(s[-1]) + 1) for _, s in loci]
+        trees = ds.truth["trees"]; assert list(trees) == [k for k, _ in loci]
+        for t in trees.values(): assert all(re.search(rf"[(,]{re.escape(n)}:", t) for n in names), t[:80]

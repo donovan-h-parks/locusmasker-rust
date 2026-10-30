@@ -1,9 +1,10 @@
 """Alignments at the edge: so much missing data that nothing can be tested, every sequence identical, almost
 identical, a single contaminant among identical sequences. The tool must behave sensibly and say what it did."""
-import re
+import io, re
 import numpy as np
 import pytest
-from tests.conftest import lo, run_tool
+from Bio import Phylo
+from tests.conftest import lo, run_tool, dataset
 
 pytestmark = pytest.mark.e2e
 DNA = np.frombuffer(b"ACGT", dtype=np.uint8)
@@ -176,3 +177,40 @@ class TestRandom:
                 d = tmp_path / f"{dtype}{seed}"; d.mkdir(); aln, parts = self.random_alignment(d, dtype, seed); r = run_tool(aln, str(d / "out"), dtype, parts); assert r.rc == 0
                 found += [(dtype, seed, x["taxon"], x["locus"], x["reason"], x["similar_role"]) for x in r.masked]
         assert found == [], found
+
+
+class TestRandomTrees:
+    """100 taxa x 100 loci simulated by AliSim under LG+R12, each locus on its own random Yule-Harding tree (tests/data/sim/
+    aa_random_trees, written by tests/data/make_random_trees.py; nothing planted, the loci share no tree). Rob (31 Oct 2026):
+    the point of the test is to find odd loci, and 100 random gene trees are full of them, so the too-similar masks on each
+    locus's own sister pairs are the intended result, not false positives. The exact outputs are pinned in golden/."""
+    @pytest.fixture(scope="class")
+    def run(self, tmp_path_factory):
+        ds = dataset("aa_random_trees"); r = run_tool(ds.aln, str(tmp_path_factory.mktemp("random_trees")), ds.dtype, ds.parts)
+        assert r.rc == 0 and "Traceback" not in r.log, r.log; return r
+
+    def test_every_cell_is_tested_and_nothing_is_too_divergent(self, run):
+        c = run.report.man["counts"]
+        assert c["cells"] == 100 * 100 and c["excluded_taxa"] == 0 and c["skipped_loci"] == 0
+        assert c["masked_divergent"] == 0 and {x["reason"] for x in run.masked} == {"similar"}
+
+    def test_the_masks_are_the_sister_pairs_of_the_locus_trees(self, run):
+        """too-similar masks on nearly every locus, mostly by the closest-match arm (the partner is not a comparator: the
+        comparators are chosen genome-wide, where nothing is related), and each masked taxon's partner is its closest tip on
+        that locus's own tree (96% the closest, 99.9% within the closest three, none beyond the fifth when the fixture was made)"""
+        ds = dataset("aa_random_trees"); masked = run.masked; c = run.report.man["counts"]
+        assert c["masked_similar"] >= 1000 and len({x["locus"] for x in masked}) >= 90
+        assert sum(x["similar_test"] == "closest" for x in masked) > 0.8 * len(masked)
+        ranks = []
+        for locus, newick in ds.truth["trees"].items():
+            cells = [x for x in masked if x["locus"] == locus and x["similar_role"] != "source"]
+            if not cells: continue
+            tree = Phylo.read(io.StringIO(newick), "newick"); paths = {t.name: tree.get_path(t) for t in tree.get_terminals()}
+            pref = {k: np.concatenate([[0.0], np.cumsum([n.branch_length for n in p])]) for k, p in paths.items()}
+            def dist(a, b):
+                pa, pb = paths[a], paths[b]; k = 0
+                while k < min(len(pa), len(pb)) and pa[k] is pb[k]: k += 1
+                return pref[a][-1] + pref[b][-1] - 2 * pref[a][k]
+            for x in cells:
+                d = {o: dist(x["taxon"], o) for o in paths if o != x["taxon"]}; ranks.append(sorted(d, key=d.get).index(x["similar_partner"]) + 1)
+        ranks = np.array(ranks); assert len(ranks) > 1000 and (ranks == 1).mean() >= 0.9 and (ranks <= 5).all(), np.bincount(ranks)[:8]

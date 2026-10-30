@@ -12,8 +12,9 @@ alignments); `regression` tests pin the current outputs on the fixtures; `viewer
 Chromium and read every panel back (skipped when playwright's Chromium is not installed: `python -m playwright install chromium`).
 
 Fixtures live in `tests/data`: synthetic alignments with planted truths (`synth/*`, `truth.json` beside each) in every
-input format, excerpts of two real alignments (`real/*`, CC0), and the golden outputs (`golden/*`). All are written by
-`tests/data/make_fixtures.py` from fixed seeds; `--check` confirms the committed files are what the generator makes,
+input format, excerpts of two real alignments (`real/*`, CC0), an alignment simulated by AliSim with a random gene tree per
+locus and nothing planted (`sim/aa_random_trees`, every mask a false positive; written by `tests/data/make_random_trees.py`,
+which needs IQ-TREE 3), and the golden outputs (`golden/*`). The rest are written by `tests/data/make_fixtures.py` from fixed seeds; `--check` confirms the committed files are what the generator makes,
 `--golden` re-pins the outputs after a deliberate change of the method (say so in the commit).
 
 A test marked `xfail(strict=True)` states behaviour the code does not have yet; its reason starts with BUG, LIMIT or PRECISION.

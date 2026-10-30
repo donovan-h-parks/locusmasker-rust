@@ -2,7 +2,7 @@
 """The test suite's inputs: synthetic alignments with planted truths, excerpts of real alignments, and the golden outputs.
 
     python tests/data/make_fixtures.py            rewrites tests/data/synth/* (and tests/data/real/* when test_data/ is present)
-    python tests/data/make_fixtures.py --golden   also runs the tool on every synthetic dataset and rewrites tests/data/golden/*
+    python tests/data/make_fixtures.py --golden   also runs the tool on every synthetic and simulated dataset and rewrites tests/data/golden/*
     python tests/data/make_fixtures.py --check    regenerates in memory and reports whether the committed files are identical
 
 Every dataset is deterministic (numpy's default_rng with a fixed seed), so the committed files can be regenerated and
@@ -219,6 +219,12 @@ REAL = {
 }
 
 
+# ------------------------------------------------------------------ simulated by AliSim: tests/data/make_random_trees.py writes them (it needs IQ-TREE 3); listed here for the goldens
+SIM = {
+    "aa_random_trees": dict(dtype="aa", note="100 taxa x 100 loci of 300 residues under LG+R12, a random Yule-Harding tree per locus, nothing planted"),
+}
+
+
 def write_real(d, name, spec):
     import locus_outliers as lo
     src = os.path.join(ROOT, spec["src"])
@@ -294,6 +300,7 @@ def main():
     if a.golden:
         for name, spec in DATASETS.items(): write_golden(f"{HERE}/golden/{name}", f"{HERE}/synth/{name}", spec); print(f"golden/{name}")
         write_golden(f"{HERE}/golden/dna_small_t1", f"{HERE}/synth/dna_small", DATASETS["dna_small"], ["--donor-threshold", "1"]); print("golden/dna_small_t1")
+        for name, spec in SIM.items(): write_golden(f"{HERE}/golden/{name}", f"{HERE}/sim/{name}", spec); print(f"golden/{name}")
         for name, spec in REAL.items():
             if os.path.exists(f"{HERE}/real/{name}/alignment.nex"):
                 write_golden_real(f"{HERE}/golden/{name}", f"{HERE}/real/{name}", "dna" if spec["dtype"] == "nucleotide" else "aa"); print(f"golden/{name}")
