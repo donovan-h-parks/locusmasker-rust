@@ -6,7 +6,8 @@
     pytest -n auto --cov              # with coverage of the tool and the plot scripts (.coveragerc: fails under 95%)
 
 Groups (markers in pytest.ini): `unit` tests state what each function should do and use scipy and Biopython as oracles;
-`property` tests (hypothesis) check round trips and the algebra of the tails and medians for any input; `e2e` tests run the
+`property` tests (hypothesis) check round trips and the algebra of the tails and medians for any input (and `tests/unit/test_kernel.py`
+holds the compiled pair stage, numba, to the bits of the numpy one; its compiled half is skipped where numba is not installed); `e2e` tests run the
 tool on the fixture datasets (planted truths, every input format, thread and chunking invariance, broken inputs, degenerate
 alignments); `regression` tests pin the current outputs on the fixtures; `viewer` tests open the HTML report in headless
 Chromium and read every panel back (skipped when playwright's Chromium is not installed: `python -m playwright install chromium`).

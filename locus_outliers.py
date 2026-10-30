@@ -142,6 +142,8 @@ Options
   --threads 1 (0: every CPU this process may use; N: at most N; each stage takes as many as pay off)
   --memory GB (default: half of what is available when the run starts; 0: no budget; a run that
   cannot fit stops before it starts and says what it needs)
+  --no-numba (the pair stage in numpy even when numba is installed: the compiled kernel gives the
+  same numbers, 3-8x faster at scale, so this switch is for checking that)
   (constants in the code: HALF = 0.5 mismatch for the resolution floor and the rate
   pseudocount; dispersion from pairs with >= 10 expected mismatches, shrinkage weight 30)
 """
@@ -175,6 +177,11 @@ TEST_BATCH_MIN = 5_000            # with worker processes the batches shrink to 
 PAIRS_PER_THREAD = 4000           # the pair stage uses a thread per this many pairs: beyond that the threads contend (Shen_2018,
                                   # 59K pairs x 2,408 loci: 16 threads 1.3 s, 32 threads 3.8 s, 96 threads 5.2 s; Ivan_2026, 246K
                                   # pairs: 96 threads 0.9 s)
+NUMBA_PAIR_LOCI_MIN = 2_000_000   # the pair stage runs its compiled kernel (numba, when installed) from this many loci x pairs:
+                                  # below it the half second numba takes to import is more than numpy needs for the stage
+NUMBA_PAIR_SLAB = 1 << 22         # pairs per kernel call (the progress bar moves once per slab)
+PAIR_BLOCK = 256                  # pairs a kernel block gathers at a time (its scratch is 32 bytes per locus x pair)
+USE_NUMBA = True                  # --no-numba clears it: the numpy pair stage whatever the size
 LSET_ELEMENTS = 1 << 20           # a locus's closest matches are found in taxa x taxa slices of about this many elements (rows = this / taxa)
 __version__ = "0.13.1"
 REPORT_FORMAT = 7                 # bundle format version; the viewer refuses a newer one (3: tree branch lengths are F81-corrected; 4: the too-similar test over every pair; 7: every test of every cell, the closest match at the locus, the uncertain-direction pairs)
@@ -795,6 +802,118 @@ def pair_median(vals, W, min_loci, fallback):
     return np.where(nl >= min_loci, v, fallback), nl
 
 
+# ------------------------------------------------------------------ the pair stage's compiled kernel (numba, optional)
+# The site-weighted medians of every pair over its loci, written as plain Python that numba compiles on first use when
+# it is installed and the stage is large enough to earn its import (NUMBA_PAIR_LOCI_MIN). Operation for operation the
+# arithmetic is that of the numpy path (pair_divergences, pair_median, wmedian_stack): float32 divergences, float64 once
+# the rate divides them, the integer site counts as the weights; the two paths give the same bits and the suite holds
+# them to it (tests/unit/test_kernel.py). The median is found by selection, not a sort, and nothing is materialised, so
+# a core does a pair-locus in 35 ns against numpy's 107 and 96 threads stay busy where numpy's chunks fight for memory
+# (Zuntini's pair stages 183 s to about 22 s). prange is range until _pair_kernel rebinds it to numba's.
+prange = range
+_KERNEL = None          # set by _pair_kernel: (the compiled kernel, a thread setter), or False when numba is not installed
+
+
+def _wmed_select_py(v, w, L):
+    """the weighted median of v[:L] under the integer weights w[:L], by selection: the value at the first position of the
+    sorted order whose prefix weight reaches half the total, which is what wmedian_stack returns; exact because prefix
+    sums of integers are the same in any order. v and w are scratch and come back permuted. NaN when nothing weighs."""
+    tot = 0.0
+    for t in range(L): tot += w[t]
+    if tot <= 0: return np.nan
+    half = tot / 2; lo = 0; hi = L - 1; wleft = 0.0            # [lo, hi] still to search; wleft: the weight placed before lo
+    while hi - lo >= 16:
+        mid = (lo + hi) >> 1; a = v[lo]; b = v[mid]; c = v[hi]  # the median of three as the pivot
+        if a > b: a, b = b, a
+        if b > c: b = c
+        if a > b: b = a
+        piv = b; i = lo; j = lo; k = hi; wl = 0.0; we = 0.0    # three-way partition: [lo, i) below, [i, j) equal, (k, hi] above
+        while j <= k:
+            x = v[j]
+            if x < piv:
+                v[i], v[j] = v[j], v[i]; w[i], w[j] = w[j], w[i]; wl += w[i]; i += 1; j += 1
+            elif x > piv:
+                v[j], v[k] = v[k], v[j]; w[j], w[k] = w[k], w[j]; k -= 1
+            else:
+                we += w[j]; j += 1
+        if wleft + wl >= half: hi = i - 1                        # the half-way position is below the pivot
+        elif wleft + wl + we >= half: return piv                 # ... among the values equal to it
+        else: wleft += wl + we; lo = j                           # ... above it
+    for s in range(lo + 1, hi + 1):                              # the last few: an insertion sort, then walk the prefix weights
+        x = v[s]; y = w[s]; t = s - 1
+        while t >= lo and v[t] > x:
+            v[t + 1] = v[t]; w[t + 1] = w[t]; t -= 1
+        v[t + 1] = x; w[t + 1] = y
+    cw = wleft
+    for t in range(lo, hi + 1):
+        cw += w[t]
+        if cw >= half: return v[t]
+    return v[hi]
+
+
+_wmed_select = _wmed_select_py
+
+
+def _pair_medians_py(S, W, c0, c1, rr, ok_r, diag, min_loci, c50, B):
+    """pairs c0..c1 of the per-locus counts S (same residues) and W (shared sites), both (loci, pairs): the site-weighted
+    median over loci of the rate-normalised divergence 100 (1 - S/W) / rr, the same median of the floor c50 / W / rr,
+    and the number of loci voting, each locus weighted by W, zero on the diagonal and at loci without a rate (ok_r);
+    NaN below min_loci. The pairs are gathered B at a time so that a pair's loci are read from one slab of rows."""
+    nloc = S.shape[0]; npair = c1 - c0
+    nblk = (npair + B - 1) // B
+    m = np.full(npair, np.nan); m_fl = np.full(npair, np.nan); nl = np.zeros(npair, np.int64)
+    one = np.float32(1.0); hundred = np.float32(100.0); c50f = np.float32(c50)
+    for b in prange(nblk):
+        p0 = b * B; p1 = min(p0 + B, npair); nb_ = p1 - p0
+        V = np.empty((nb_, nloc)); WV = np.empty((nb_, nloc)); cnt = np.zeros(nb_, np.int64)
+        F = np.empty((nb_, nloc)); WF = np.empty((nb_, nloc)); cntf = np.zeros(nb_, np.int64)
+        for l in range(nloc):
+            if not ok_r[l]: continue
+            r = rr[l]
+            for q in range(nb_):
+                p = c0 + p0 + q
+                if diag[p]: continue
+                wc = np.float32(W[l, p])
+                if wc > 0:
+                    sc = np.float32(S[l, p])
+                    v = np.float64(hundred * (one - sc / wc)) / r
+                    if np.isfinite(v):
+                        V[q, cnt[q]] = v; WV[q, cnt[q]] = np.float64(wc); cnt[q] += 1
+                    vf = np.float64(c50f / wc) / r
+                    if np.isfinite(vf):
+                        F[q, cntf[q]] = vf; WF[q, cntf[q]] = np.float64(wc); cntf[q] += 1
+        for q in range(nb_):
+            nl[p0 + q] = cnt[q]
+            if cnt[q] >= min_loci and cnt[q] > 0: m[p0 + q] = _wmed_select(V[q], WV[q], cnt[q])
+            if cntf[q] >= min_loci and cntf[q] > 0: m_fl[p0 + q] = _wmed_select(F[q], WF[q], cntf[q])
+    return m, m_fl, nl
+
+
+_pair_medians = _pair_medians_py
+
+
+def _pair_kernel(max_threads=1):
+    """the compiled pair kernel and a thread setter, built on first use: (kernel, set_threads), or None when numba is not
+    installed or --no-numba was given. numba is imported here rather than at the top: it costs about half a second, which
+    only a pair stage of NUMBA_PAIR_LOCI_MIN loci x pairs earns back. Its thread pool is capped at max_threads (the
+    run's --threads) and uses the workqueue layer, the one that is safe beside the fork pools of the later stages."""
+    global _KERNEL, _wmed_select, _pair_medians, prange
+    if not USE_NUMBA: return None
+    if _KERNEL is None:
+        os.environ.setdefault("NUMBA_THREADING_LAYER", "workqueue"); os.environ.setdefault("NUMBA_NUM_THREADS", str(max(1, int(max_threads))))
+        try: import numba
+        except ImportError:
+            _KERNEL = False; LOG("pair stage: numba is not installed, so the numpy pair stage runs (conda install numba for the compiled one: the same numbers, 3-8x faster at scale)")
+        else:
+            prange = numba.prange
+            _wmed_select = numba.njit(cache=True)(_wmed_select_py)
+            _pair_medians = numba.njit(parallel=True, cache=True)(_pair_medians_py)
+            def set_threads(t):
+                t = max(1, min(int(t), int(numba.config.NUMBA_NUM_THREADS))); numba.set_num_threads(t); return t
+            _KERNEL = (_pair_medians, set_threads)
+    return _KERNEL or None
+
+
 def _expand(tri, n, iu):
     """an upper-triangle vector (diagonal included, row-major) as the full symmetric n x n matrix"""
     M = np.empty((n, n), tri.dtype); M[iu] = tri; M[iu[1], iu[0]] = tri; return M
@@ -1124,6 +1243,19 @@ def pair_divergences(S, W, n, iu, rr=None, ok_r=None, threads=1, progress=None, 
     # (one per thread) may take a quarter of the memory available now, and no chunk is below 8 MB (the per-chunk
     # Python overhead must stay negligible against the sorts) or above 256 MB (nothing is gained beyond it)
     threads = max(1, min(threads, npair // PAIRS_PER_THREAD))                   # no more threads than the pairs warrant
+    kern = _pair_kernel(threads) if nloc * npair >= NUMBA_PAIR_LOCI_MIN else None
+    if kern is not None:
+        kernel, set_threads = kern; used = set_threads(threads)
+        rr_ = np.ones(nloc) if rr is None else np.asarray(rr, np.float64); ok_ = np.ones(nloc, bool) if ok_r is None else np.asarray(ok_r, bool)
+        is_diag = iu[0] == iu[1]; starts = range(0, npair, NUMBA_PAIR_SLAB)
+        LOG(f"pair stage: compiled kernel (numba), {len(starts)} slab{'s' if len(starts) > 1 else ''} of {min(NUMBA_PAIR_SLAB, npair):,} pairs, {used} thread{'s' if used > 1 else ''}")
+        if progress: progress.start(stage, len(starts))
+        for c0 in starts:
+            c1 = min(c0 + NUMBA_PAIR_SLAB, npair)
+            m[c0:c1], m_fl[c0:c1], nl[c0:c1] = kernel(S, W, c0, c1, rr_, ok_, is_diag, MIN_LOCI_FOR_M, 100.0 * HALF, PAIR_BLOCK)
+            if progress: progress.tick()
+        if progress: progress.finish()
+        return _expand(m, n, iu), _expand(m_fl, n, iu), _expand(nl, n, iu)
     per_chunk = min(PAIR_CHUNK_MAX, max(PAIR_CHUNK_MIN, _mem_room() // (4 * threads)))
     chunk = max(int(per_chunk // (64 * max(nloc, 1))), 1)
     if threads > 1: chunk = max(min(chunk, -(-npair // (4 * threads))), int((32 << 20) // (64 * max(nloc, 1))), 1)   # four chunks per thread, but never below 32 MB
@@ -1358,6 +1490,7 @@ def main():
                     "two members' test-1 excesses, in absolute value, is more than this many times the smaller; otherwise the direction is uncertain and both members are masked (default 2)")
     ap.add_argument("--mask-similar-only", action="store_true"); ap.add_argument("--mask-different-only", action="store_true")
     ap.add_argument("--threads", type=int, default=1, help="at most this many threads or worker processes (0: every CPU this process may use); each stage takes as many as pay off")
+    ap.add_argument("--no-numba", action="store_true", help="the pair stage in numpy even when numba is installed (the compiled kernel gives the same numbers, 3-8x faster at scale; this is for checking that)")
     ap.add_argument("--memory", type=float, help="GB of memory the run may use (default: half of what is available when it starts; 0: no budget); the stages size their threads and chunks to stay within it, and a run that cannot fit stops before it starts")
     ap.add_argument("--progress", choices=("auto", "bar", "none"), default="auto", help="auto: a progress bar on a terminal, progress lines at 2%% steps otherwise")
     ap.add_argument("--report-codes", choices=("fails", "masked", "none"), default="fails", help="site codes in the report: for every cell with a failing comparator (default), masked cells only, or none")
@@ -1378,7 +1511,8 @@ def main():
     if stale: LOG(f"note: {a.out} holds files this run does not write ({', '.join(stale)}): they are from an earlier run")
     ncpu = _cpus(); asked = a.threads; a.threads = ncpu if asked <= 0 else max(1, min(asked, ncpu))
     if asked > ncpu: LOG(f"threads: {asked} asked, {ncpu} CPUs available to this process: using {a.threads}")
-    global MEM_BUDGET
+    global MEM_BUDGET, USE_NUMBA
+    USE_NUMBA = not a.no_numba
     avail = _mem_available(); MEM_BUDGET = None if a.memory is not None and a.memory <= 0 else int(a.memory * (1 << 30)) if a.memory else avail // 2
     if MEM_BUDGET is not None and MEM_BUDGET > avail: LOG(f"WARNING: --memory {a.memory:g} GB is more than the {avail / (1 << 30):.1f} GB available now")
     if K < 3 or K % 2 == 0: sys.exit("--n-comp must be an odd number of at least 3")

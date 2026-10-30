@@ -7,6 +7,7 @@ channels:
 dependencies:
   - python>=3.10
   - numpy>=1.24                # the only dependency of locus_outliers.py
+  - numba>=0.59                # optional: compiles the pair stage (the same numbers, 3-8x faster at scale); numpy runs it otherwise
   - matplotlib>=3.7            # the PDF plots (plot_panels.py, plot_taxon.py, plot_pair.py)
   - biopython>=1.80            # NEXUS files the fast reader does not handle (comments, quoted names)
   # the test suite

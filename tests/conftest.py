@@ -1,6 +1,7 @@
 """Shared fixtures: the tool as a module, the fixture datasets, an in-process runner with a per-session cache, and a
 report loader. The tool is imported through TOOL_MODULE in one place, so a rename is a one-line change here."""
 import csv, fcntl, hashlib, io, json, os, shutil, subprocess, sys, zipfile
+os.environ.setdefault("NUMBA_NUM_THREADS", "8")      # the compiled pair stage may use up to 8 threads in the suite, whichever test builds it first
 import numpy as np
 import pytest
 
@@ -12,7 +13,7 @@ PY = sys.executable
 if ROOT not in sys.path: sys.path.insert(0, ROOT)
 lo = __import__(TOOL_MODULE)
 CONSTANTS = ("DENSE_CELLS_MAX", "BEST_MATCH_ALL_MAX_TAXA", "BEST_MATCH_MIN_SITES", "REPORT_SEQ_ALL_MAX", "PASS1_FLOPS_PER_THREAD", "DISPERSION_PAIRS_PER_WORKER", "COMPARATOR_WORK_PER_WORKER",
-             "TEST_BATCH_COMPARISONS", "TEST_BATCH_MIN", "PAIRS_PER_THREAD", "LSET_ELEMENTS", "LSET_CHUNK", "MIN_LOCI_PER_TAXON", "MIN_LOCI_FOR_M", "MIN_FIT_PAIRS", "PHI_MIN_E", "PHI_N0", "HALF", "_mem_available", "_cpus")
+             "TEST_BATCH_COMPARISONS", "TEST_BATCH_MIN", "PAIRS_PER_THREAD", "LSET_ELEMENTS", "NUMBA_PAIR_LOCI_MIN", "NUMBA_PAIR_SLAB", "PAIR_BLOCK", "LSET_CHUNK", "MIN_LOCI_PER_TAXON", "MIN_LOCI_FOR_M", "MIN_FIT_PAIRS", "PHI_MIN_E", "PHI_N0", "HALF", "_mem_available", "_cpus")
 PRISTINE = {k: getattr(lo, k) for k in CONSTANTS}
 
 try:
@@ -119,7 +120,7 @@ def run_tool(aln, out, dtype, parts=None, extra=(), progress="none"):
     finally:
         sys.argv, sys.stderr = old_argv, old_err; lo.PROG = old_prog; lo.LOG.bar = old_bar; lo.LOG.real = sys.stderr
         if lo.LOG.fh is not None: lo.LOG.close()
-        lo.LOG.fh = old_fh; lo.MEM_BUDGET = None; lo.MEM_RESIDENT_EST = 0
+        lo.LOG.fh = old_fh; lo.MEM_BUDGET = None; lo.MEM_RESIDENT_EST = 0; lo.USE_NUMBA = True
     return Run(out, err.getvalue(), rc)
 
 

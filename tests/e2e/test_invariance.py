@@ -101,3 +101,13 @@ class TestChunking:
                 if nf[g, li] > 0 or side[g, li] & (2 | 128): want.add(g); want.update(R.comps(g, li)); want.add(int(pt[g, li])) if pt[g, li] >= 0 else None
             got = set(R.arr(f"seq/{li}_taxa.npy").tolist()) if R.has(f"seq/{li}.npy") else set()
             assert got == want, li
+
+
+class TestKernel:
+    """the compiled pair stage (numba) gives the outputs of the numpy one, whatever the threads and the slabs"""
+    @pytest.mark.parametrize("name,threads", [("dna_small", 1), ("dna_small", 4), ("aa_random_trees", 2)])
+    def test_the_compiled_pair_stage_gives_the_same_outputs(self, runs, tmp_out, name, threads, monkeypatch):
+        if lo._pair_kernel(threads) is None: pytest.skip("numba is not installed")
+        monkeypatch.setattr(lo, "NUMBA_PAIR_LOCI_MIN", 0); monkeypatch.setattr(lo, "NUMBA_PAIR_SLAB", 1000); monkeypatch.setattr(lo, "PAIRS_PER_THREAD", 1)
+        ds = dataset(name); r = run_tool(ds.aln, tmp_out, ds.dtype, ds.parts, ["--threads", str(threads)]); assert r.rc == 0, r.log
+        assert r.log.count("compiled kernel (numba)") == 2 and outputs(r) == outputs(runs(name))
