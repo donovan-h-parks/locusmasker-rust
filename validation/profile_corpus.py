@@ -9,6 +9,7 @@ other unless --jobs says otherwise (only sensible for single-thread runs).
     python validation/profile_corpus.py --out DIR --cprofile --skip BIG... --jobs 4  # cProfile at one thread
     python validation/profile_corpus.py --out DIR --pyspy PYSPY --threads 96 --datasets BIG...
     python validation/profile_corpus.py --out DIR --report                            # markdown tables from the results
+    python validation/profile_corpus.py --out AFTER --compare BASELINE                # before/after table, and whether the masks agree
 
 Results: DIR/<dataset>/t<T>/ (run.log, result.json, masked.csv), DIR/<dataset>/cprofile/ (profile.prof, cprofile.txt),
 DIR/<dataset>/pyspy_t<T>/ (profile.raw, pyspy.txt), and DIR/results.jsonl, one line per run (later lines override
@@ -177,10 +178,7 @@ def fmt_t(v): return "" if v is None else (f"{v:.1f} s" if v < 100 else f"{v / 6
 
 
 def report(out):
-    rows = {}
-    with open(os.path.join(out, "results.jsonl")) as fh:
-        for line in fh:
-            r = json.loads(line); rows[(r["dataset"], r["kind"], r["threads"])] = r
+    rows = load_results(out)
     names = sorted({k[0] for k in rows}, key=lambda n: rows.get((n, "timing", 1), rows.get((n, "timing", 96), {})).get("bytes", 0))
     caps = sorted({k[2] for k in rows if k[1] == "timing"})
     print("| dataset | taxa | loci | sites | " + " | ".join(f"{t} thr: wall / CPU% / RSS" for t in caps) + " | speedup | threads chosen (pass1 / pairs / comparators / test) |")
@@ -222,12 +220,55 @@ def report(out):
             print(f"**{r['dataset']}, {r['threads']} threads, {r['samples']} samples**: " + "; ".join(f"{x['frame']} {x['pct']}%" for x in r["self"][:8]))
 
 
+def load_results(out):
+    rows = {}
+    with open(os.path.join(out, "results.jsonl")) as fh:
+        for line in fh:
+            r = json.loads(line); rows[(r["dataset"], r["kind"], r["threads"])] = r
+    return rows
+
+
+def compare(after, before):
+    """wall time, CPU and peak memory before and after per dataset and thread cap, and whether masked.csv is the same"""
+    A, B = load_results(after), load_results(before)
+    caps = sorted({k[2] for k in A if k[1] == "timing"} & {k[2] for k in B if k[1] == "timing"})
+    names = sorted({k[0] for k in A if k[1] == "timing"}, key=lambda n: B.get((n, "timing", caps[0]), {}).get("bytes", 0))
+    print("| dataset | taxa x loci | " + " | ".join(f"{t} thr before -> after (speedup) / CPU% / peak GB" for t in caps) + " | masks |")
+    print("|---|---|" + "---|" * len(caps) + "---|")
+    tot = collections.defaultdict(lambda: [0.0, 0.0]); same_all = True
+    for n in names:
+        cells = []; masks = []
+        for t in caps:
+            a, b = A.get((n, "timing", t)), B.get((n, "timing", t))
+            if not a or not b or a["rc"] != 0 or b["rc"] != 0:
+                cells.append("" if (a and b and a["rc"] != 0 and b["rc"] != 0) else "not run" if not a or not b else f"rc {a['rc']} / {b['rc']}"); continue
+            tot[t][0] += b["wall"]; tot[t][1] += a["wall"]
+            cpu = lambda r: 100.0 * (r.get("user", 0) + r.get("sys", 0)) / max(r["wall"], 1e-9)
+            cells.append(f"{fmt_t(b['wall'])} -> {fmt_t(a['wall'])} ({b['wall'] / max(a['wall'], 1e-9):.1f}x) / {cpu(b):.0f}% -> {cpu(a):.0f}% / {b.get('rss_mb', 0) / 1024:.1f} -> {a.get('rss_mb', 0) / 1024:.1f}")
+            fa, fb = (os.path.join(d, n, f"t{t}", "run", "masked.csv") for d in (after, before))
+            if os.path.exists(fa) and os.path.exists(fb):
+                same = open(fa).read() == open(fb).read(); masks.append(same); same_all &= same
+        base = next((B[(n, "timing", t)] for t in caps if (n, "timing", t) in B and B[(n, "timing", t)]["rc"] == 0), None)
+        if base is None: continue
+        print(f"| {n} | {base.get('taxa', '')} x {base.get('loci', '')} | " + " | ".join(cells) + " | " + ("identical" if masks and all(masks) else "DIFFER" if masks else "") + " |")
+    print("| **total** | | " + " | ".join(f"{fmt_t(tot[t][0])} -> {fmt_t(tot[t][1])} ({tot[t][0] / max(tot[t][1], 1e-9):.1f}x)" for t in caps) + f" | {'all identical' if same_all else 'see above'} |")
+    print("\n### Stage times after (seconds, the larger datasets)\n")
+    for t in caps:
+        rows = [(n, A[(n, "timing", t)]) for n in names if (n, "timing", t) in A and A[(n, "timing", t)]["rc"] == 0 and A[(n, "timing", t)].get("wall", 0) >= 5]
+        if not rows: continue
+        print(f"**{t} thread{'s' if t > 1 else ''}**\n\n| dataset | " + " | ".join(STAGES) + " | total |"); print("|---|" + "---|" * (len(STAGES) + 1))
+        for n, r in rows:
+            tm = r.get("timings", {}); print(f"| {n} | " + " | ".join(f"{tm.get(s, 0):.1f}" for s in STAGES) + f" | {tm.get('total', 0):.1f} |")
+        print()
+
+
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--out", required=True); ap.add_argument("--threads", type=int, nargs="*", default=[])
     ap.add_argument("--datasets", nargs="*"); ap.add_argument("--skip", nargs="*", default=[]); ap.add_argument("--jobs", type=int, default=1)
     ap.add_argument("--timeout", type=float, default=4 * 3600); ap.add_argument("--cprofile", action="store_true"); ap.add_argument("--pyspy")
-    ap.add_argument("--keep-outputs", action="store_true"); ap.add_argument("--report", action="store_true"); a = ap.parse_args()
+    ap.add_argument("--keep-outputs", action="store_true"); ap.add_argument("--report", action="store_true"); ap.add_argument("--compare"); a = ap.parse_args()
     if a.report: report(a.out); return
+    if a.compare: compare(a.out, a.compare); return
     os.makedirs(a.out, exist_ok=True); sets = [d for d in corpus(a.datasets) if d["name"] not in a.skip]
     jobs = []
     for ds in sets:
