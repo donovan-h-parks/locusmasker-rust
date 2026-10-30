@@ -1,0 +1,986 @@
+{
+ "name": "dna_blocks",
+ "datatype": "dna",
+ "taxa": 2100,
+ "loci": 14,
+ "sites": 2805,
+ "spec": {
+  "seed": 71,
+  "n": 2100,
+  "nloc": 14,
+  "dtype": "dna",
+  "depth": 0.45,
+  "lens": [
+   120,
+   300
+  ],
+  "pmiss": 0.15,
+  "pabsent": 0.1,
+  "clones": [
+   60,
+   4,
+   3,
+   2,
+   2,
+   3
+  ],
+  "chain": 1,
+  "multicopy": 1,
+  "sliver": 30,
+  "lowloci": 20,
+  "excluded": 25,
+  "thin_identical": 2,
+  "skipped": 1,
+  "ambiguous": 1,
+  "contam": 6,
+  "nearcopy": 6,
+  "farcopy": 3,
+  "event_min_sites": 120,
+  "patristic": false
+ },
+ "locus_bounds": [
+  [
+   1,
+   147
+  ],
+  [
+   148,
+   365
+  ],
+  [
+   366,
+   597
+  ],
+  [
+   598,
+   864
+  ],
+  [
+   865,
+   1117
+  ],
+  [
+   1118,
+   1302
+  ],
+  [
+   1303,
+   1453
+  ],
+  [
+   1454,
+   1688
+  ],
+  [
+   1689,
+   1865
+  ],
+  [
+   1866,
+   2093
+  ],
+  [
+   2094,
+   2265
+  ],
+  [
+   2266,
+   2480
+  ],
+  [
+   2481,
+   2668
+  ],
+  [
+   2669,
+   2805
+  ]
+ ],
+ "events": [
+  {
+   "kind": "excluded",
+   "taxon": "t1294",
+   "loci_present": [
+    "locus2",
+    "locus3",
+    "locus4",
+    "locus8",
+    "locus10",
+    "locus13"
+   ],
+   "identical_to": "t519"
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t115",
+   "loci_present": [
+    "locus2",
+    "locus3",
+    "locus7",
+    "locus9",
+    "locus11",
+    "locus14"
+   ],
+   "identical_to": "t1302"
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t1795",
+   "loci_present": [
+    "locus1",
+    "locus7",
+    "locus8",
+    "locus10",
+    "locus12",
+    "locus14"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t349",
+   "loci_present": [
+    "locus1",
+    "locus6",
+    "locus10",
+    "locus12",
+    "locus13",
+    "locus14"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t61",
+   "loci_present": [
+    "locus1",
+    "locus2",
+    "locus4",
+    "locus7",
+    "locus8",
+    "locus14"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t1831",
+   "loci_present": [
+    "locus1",
+    "locus2",
+    "locus7",
+    "locus9",
+    "locus10",
+    "locus13"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t359",
+   "loci_present": [
+    "locus2",
+    "locus3",
+    "locus4",
+    "locus6",
+    "locus12",
+    "locus13"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t1147",
+   "loci_present": [
+    "locus1",
+    "locus4",
+    "locus8",
+    "locus10",
+    "locus12",
+    "locus13"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t1642",
+   "loci_present": [
+    "locus1",
+    "locus3",
+    "locus4",
+    "locus9",
+    "locus10",
+    "locus11"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t1227",
+   "loci_present": [
+    "locus1",
+    "locus2",
+    "locus7",
+    "locus10",
+    "locus13",
+    "locus14"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t2028",
+   "loci_present": [
+    "locus1",
+    "locus4",
+    "locus6",
+    "locus10",
+    "locus11",
+    "locus13"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t1999",
+   "loci_present": [
+    "locus1",
+    "locus3",
+    "locus6",
+    "locus8",
+    "locus13",
+    "locus14"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t151",
+   "loci_present": [
+    "locus2",
+    "locus5",
+    "locus8",
+    "locus9",
+    "locus10",
+    "locus12"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t231",
+   "loci_present": [
+    "locus1",
+    "locus3",
+    "locus7",
+    "locus8",
+    "locus12",
+    "locus13"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t1886",
+   "loci_present": [
+    "locus1",
+    "locus2",
+    "locus3",
+    "locus4",
+    "locus8",
+    "locus11"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t1191",
+   "loci_present": [
+    "locus4",
+    "locus5",
+    "locus7",
+    "locus8",
+    "locus10",
+    "locus12"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t1901",
+   "loci_present": [
+    "locus2",
+    "locus3",
+    "locus9",
+    "locus12",
+    "locus13",
+    "locus14"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t2035",
+   "loci_present": [
+    "locus1",
+    "locus2",
+    "locus10",
+    "locus11",
+    "locus13",
+    "locus14"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t501",
+   "loci_present": [
+    "locus2",
+    "locus3",
+    "locus5",
+    "locus7",
+    "locus9",
+    "locus12"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t328",
+   "loci_present": [
+    "locus4",
+    "locus5",
+    "locus6",
+    "locus8",
+    "locus9",
+    "locus12"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t1446",
+   "loci_present": [
+    "locus2",
+    "locus3",
+    "locus4",
+    "locus7",
+    "locus12",
+    "locus13"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t1216",
+   "loci_present": [
+    "locus1",
+    "locus4",
+    "locus6",
+    "locus8",
+    "locus9",
+    "locus11"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t2014",
+   "loci_present": [
+    "locus1",
+    "locus3",
+    "locus6",
+    "locus9",
+    "locus10",
+    "locus11"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t526",
+   "loci_present": [
+    "locus1",
+    "locus4",
+    "locus6",
+    "locus10",
+    "locus11",
+    "locus13"
+   ]
+  },
+  {
+   "kind": "excluded",
+   "taxon": "t1408",
+   "loci_present": [
+    "locus1",
+    "locus3",
+    "locus5",
+    "locus7",
+    "locus10",
+    "locus14"
+   ]
+  },
+  {
+   "kind": "skipped",
+   "locus": "locus14",
+   "taxa_present": [
+    "t208",
+    "t672",
+    "t1442"
+   ]
+  },
+  {
+   "kind": "clone",
+   "donor": "t93",
+   "copies": [
+    "t1509",
+    "t204",
+    "t247",
+    "t348",
+    "t1450",
+    "t741",
+    "t1510",
+    "t742",
+    "t956",
+    "t642",
+    "t1135",
+    "t1354",
+    "t1467",
+    "t1788",
+    "t494",
+    "t606",
+    "t1429",
+    "t205",
+    "t303",
+    "t406",
+    "t1417",
+    "t1678",
+    "t1840",
+    "t478",
+    "t1068",
+    "t768",
+    "t697",
+    "t758",
+    "t78",
+    "t1369",
+    "t1399",
+    "t1406",
+    "t472",
+    "t1210",
+    "t597",
+    "t1777",
+    "t1172",
+    "t1692",
+    "t544",
+    "t723",
+    "t944",
+    "t1033",
+    "t1082",
+    "t1664",
+    "t782",
+    "t1391",
+    "t1456",
+    "t641",
+    "t1637",
+    "t1474",
+    "t961",
+    "t1280",
+    "t1481",
+    "t1306",
+    "t1952",
+    "t1903",
+    "t1178",
+    "t930",
+    "t1858"
+   ]
+  },
+  {
+   "kind": "clone",
+   "donor": "t1865",
+   "copies": [
+    "t134",
+    "t945",
+    "t1469"
+   ]
+  },
+  {
+   "kind": "clone",
+   "donor": "t2049",
+   "copies": [
+    "t1574",
+    "t587"
+   ]
+  },
+  {
+   "kind": "clone",
+   "donor": "t890",
+   "copies": [
+    "t1712"
+   ]
+  },
+  {
+   "kind": "clone",
+   "donor": "t822",
+   "copies": [
+    "t577"
+   ]
+  },
+  {
+   "kind": "clone",
+   "donor": "t21",
+   "copies": [
+    "t119",
+    "t858"
+   ]
+  },
+  {
+   "kind": "chain",
+   "taxa": [
+    "t1877",
+    "t263",
+    "t1124"
+   ],
+   "sites": 20
+  },
+  {
+   "kind": "multicopy",
+   "donor": "t1484",
+   "recipients": [
+    "t1673",
+    "t543",
+    "t423"
+   ],
+   "locus": "locus13"
+  },
+  {
+   "kind": "ambiguous",
+   "taxon": "t877",
+   "locus": "locus13",
+   "comparators": [
+    "t878",
+    "t760",
+    "t1387"
+   ]
+  },
+  {
+   "kind": "contam",
+   "taxon": "t1159",
+   "locus": "locus7"
+  },
+  {
+   "kind": "contam",
+   "taxon": "t1094",
+   "locus": "locus9"
+  },
+  {
+   "kind": "contam",
+   "taxon": "t624",
+   "locus": "locus1"
+  },
+  {
+   "kind": "contam",
+   "taxon": "t460",
+   "locus": "locus8"
+  },
+  {
+   "kind": "contam",
+   "taxon": "t2082",
+   "locus": "locus10"
+  },
+  {
+   "kind": "contam",
+   "taxon": "t1277",
+   "locus": "locus4"
+  },
+  {
+   "kind": "nearcopy",
+   "donor": "t670",
+   "recipient": "t484",
+   "locus": "locus3",
+   "patristic": 0.2228125316192024
+  },
+  {
+   "kind": "nearcopy",
+   "donor": "t728",
+   "recipient": "t1527",
+   "locus": "locus4",
+   "patristic": 0.22292958365407597
+  },
+  {
+   "kind": "nearcopy",
+   "donor": "t1609",
+   "recipient": "t916",
+   "locus": "locus7",
+   "patristic": 0.12842673555311634
+  },
+  {
+   "kind": "nearcopy",
+   "donor": "t1719",
+   "recipient": "t279",
+   "locus": "locus5",
+   "patristic": 0.15625880927501837
+  },
+  {
+   "kind": "nearcopy",
+   "donor": "t1261",
+   "recipient": "t1414",
+   "locus": "locus3",
+   "patristic": 0.16921288601568668
+  },
+  {
+   "kind": "nearcopy",
+   "donor": "t1179",
+   "recipient": "t201",
+   "locus": "locus12",
+   "patristic": 0.1823980744152172
+  },
+  {
+   "kind": "farcopy",
+   "donor": "t1043",
+   "recipient": "t1851",
+   "locus": "locus6",
+   "patristic": 1.9844736777439889
+  },
+  {
+   "kind": "farcopy",
+   "donor": "t2038",
+   "recipient": "t222",
+   "locus": "locus7",
+   "patristic": 1.7220518469368638
+  },
+  {
+   "kind": "farcopy",
+   "donor": "t970",
+   "recipient": "t682",
+   "locus": "locus6",
+   "patristic": 1.5908154602230702
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t191",
+   "locus": "locus6",
+   "sites": 15
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t817",
+   "locus": "locus12",
+   "sites": 12
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t1350",
+   "locus": "locus8",
+   "sites": 14
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t1328",
+   "locus": "locus9",
+   "sites": 11
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t1949",
+   "locus": "locus8",
+   "sites": 14
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t1968",
+   "locus": "locus1",
+   "sites": 15
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t1330",
+   "locus": "locus11",
+   "sites": 9
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t1538",
+   "locus": "locus1",
+   "sites": 14
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t583",
+   "locus": "locus3",
+   "sites": 8
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t928",
+   "locus": "locus1",
+   "sites": 15
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t1888",
+   "locus": "locus4",
+   "sites": 12
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t365",
+   "locus": "locus5",
+   "sites": 14
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t23",
+   "locus": "locus8",
+   "sites": 13
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t1989",
+   "locus": "locus7",
+   "sites": 11
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t1879",
+   "locus": "locus8",
+   "sites": 10
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t993",
+   "locus": "locus3",
+   "sites": 8
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t512",
+   "locus": "locus12",
+   "sites": 12
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t518",
+   "locus": "locus3",
+   "sites": 9
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t1928",
+   "locus": "locus3",
+   "sites": 10
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t1601",
+   "locus": "locus7",
+   "sites": 9
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t527",
+   "locus": "locus12",
+   "sites": 14
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t368",
+   "locus": "locus9",
+   "sites": 10
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t661",
+   "locus": "locus5",
+   "sites": 13
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t94",
+   "locus": "locus11",
+   "sites": 11
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t560",
+   "locus": "locus7",
+   "sites": 12
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t1501",
+   "locus": "locus8",
+   "sites": 9
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t1298",
+   "locus": "locus4",
+   "sites": 12
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t135",
+   "locus": "locus11",
+   "sites": 9
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t1309",
+   "locus": "locus8",
+   "sites": 13
+  },
+  {
+   "kind": "sliver",
+   "taxon": "t2009",
+   "locus": "locus10",
+   "sites": 12
+  },
+  {
+   "kind": "lowloci",
+   "taxon": "t979",
+   "loci_absent": [
+    "locus5",
+    "locus12"
+   ]
+  },
+  {
+   "kind": "lowloci",
+   "taxon": "t1357",
+   "loci_absent": [
+    "locus5",
+    "locus10"
+   ]
+  },
+  {
+   "kind": "lowloci",
+   "taxon": "t558",
+   "loci_absent": [
+    "locus6",
+    "locus4"
+   ]
+  },
+  {
+   "kind": "lowloci",
+   "taxon": "t217",
+   "loci_absent": [
+    "locus5",
+    "locus6",
+    "locus10"
+   ]
+  },
+  {
+   "kind": "lowloci",
+   "taxon": "t1749",
+   "loci_absent": [
+    "locus9",
+    "locus1"
+   ]
+  },
+  {
+   "kind": "lowloci",
+   "taxon": "t112",
+   "loci_absent": [
+    "locus3",
+    "locus10",
+    "locus9"
+   ]
+  },
+  {
+   "kind": "lowloci",
+   "taxon": "t415",
+   "loci_absent": [
+    "locus4",
+    "locus11"
+   ]
+  },
+  {
+   "kind": "lowloci",
+   "taxon": "t1539",
+   "loci_absent": [
+    "locus5",
+    "locus11"
+   ]
+  },
+  {
+   "kind": "lowloci",
+   "taxon": "t716",
+   "loci_absent": [
+    "locus6",
+    "locus5",
+    "locus10"
+   ]
+  },
+  {
+   "kind": "lowloci",
+   "taxon": "t471",
+   "loci_absent": [
+    "locus3",
+    "locus5"
+   ]
+  },
+  {
+   "kind": "lowloci",
+   "taxon": "t2039",
+   "loci_absent": [
+    "locus1",
+    "locus9",
+    "locus2"
+   ]
+  },
+  {
+   "kind": "lowloci",
+   "taxon": "t1633",
+   "loci_absent": [
+    "locus9",
+    "locus10"
+   ]
+  },
+  {
+   "kind": "lowloci",
+   "taxon": "t1448",
+   "loci_absent": [
+    "locus1",
+    "locus2",
+    "locus12"
+   ]
+  },
+  {
+   "kind": "lowloci",
+   "taxon": "t1362",
+   "loci_absent": [
+    "locus11",
+    "locus3",
+    "locus10"
+   ]
+  },
+  {
+   "kind": "lowloci",
+   "taxon": "t1834",
+   "loci_absent": [
+    "locus10",
+    "locus7"
+   ]
+  },
+  {
+   "kind": "lowloci",
+   "taxon": "t1959",
+   "loci_absent": [
+    "locus9",
+    "locus11"
+   ]
+  },
+  {
+   "kind": "lowloci",
+   "taxon": "t950",
+   "loci_absent": [
+    "locus8",
+    "locus11"
+   ]
+  },
+  {
+   "kind": "lowloci",
+   "taxon": "t1898",
+   "loci_absent": [
+    "locus2",
+    "locus1",
+    "locus9"
+   ]
+  },
+  {
+   "kind": "lowloci",
+   "taxon": "t942",
+   "loci_absent": [
+    "locus11",
+    "locus8"
+   ]
+  },
+  {
+   "kind": "lowloci",
+   "taxon": "t770",
+   "loci_absent": [
+    "locus7",
+    "locus9",
+    "locus11"
+   ]
+  }
+ ]
+}

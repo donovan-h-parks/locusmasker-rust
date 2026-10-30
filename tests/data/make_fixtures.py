@@ -44,13 +44,23 @@ def random_tree(rng, n, depth):
         while i is not None: p.append(i); i = parent[i]
         return p
     paths = {l: path(l) for l in leaves}
+    # the patristic distance of a pair is the sum of the branches from each leaf up to (not including) their last common
+    # ancestor. The leaves of an internal node's two subtrees meet exactly there, so the matrix is filled one node at a
+    # time; each leaf's partial sums are Python's sum() over the same prefix of its path, so the values are bit for bit
+    # those of the pairwise loop this replaces (which was quadratic in Python and too slow beyond a few hundred taxa)
+    pos = {l: j for j, l in enumerate(leaves)}
+    partial = {l: {v: sum(blen[u] for u in paths[l][:k]) for k, v in enumerate(paths[l])} for l in leaves}
+    children = {}
+    for v, pv in parent.items():
+        if pv is not None: children.setdefault(pv, []).append(v)
+    below = {}
+    for v in sorted(parent, reverse=True):                           # a child always has a larger id than its parent
+        below[v] = [v] if v in pos else [x for c in children[v] for x in below[c]]
     pat = np.zeros((n, n))
-    for a_, la in enumerate(leaves):
-        for b_, lb in enumerate(leaves):
-            if b_ <= a_: continue
-            pa = set(paths[la]); lca = next(v for v in paths[lb] if v in pa)
-            d = sum(blen[v] for v in paths[la][:paths[la].index(lca)]) + sum(blen[v] for v in paths[lb][:paths[lb].index(lca)])
-            pat[a_, b_] = pat[b_, a_] = d
+    for v, ch in children.items():
+        ia = np.array([pos[x] for x in below[ch[0]]]); ib = np.array([pos[x] for x in below[ch[1]]])
+        pa = np.array([partial[x][v] for x in below[ch[0]]]); pb = np.array([partial[x][v] for x in below[ch[1]]])
+        blk = pa[:, None] + pb[None, :]; pat[np.ix_(ia, ib)] = blk; pat[np.ix_(ib, ia)] = blk.T
     cherries = [(a_, b_) for a_, la in enumerate(leaves) for b_, lb in enumerate(leaves) if a_ < b_ and parent[la] == parent[lb]]
     return parent, blen, leaves, pat, cherries
 
@@ -84,47 +94,80 @@ def plant(rng, names, X, bounds, pat, cherries, spec, A):
         for i, t in enumerate(free):
             if cond is None or cond(t): return free.pop(i)
         raise RuntimeError("no taxon left to plant on")
-    def locus(): return int(rng.choice([li for li in range(nloc) if li not in reserved_loci]))
+    def locus(*taxa):                                            # a free locus where every taxon named has residues enough for an event (the present datasets: every locus)
+        need = spec.get("event_min_sites", 20)
+        return int(rng.choice([li for li in range(nloc) if li not in reserved_loci and all((X[t, bounds[li]:bounds[li + 1]] >= 0).sum() >= need for t in taxa)]))
     truth = []
     for li in range(nloc):                                      # fragments: a contiguous stretch dropped per (taxon, locus)
         for t in range(n):
             if rng.random() < spec.get("pmiss", 0.0):
                 a, b = bounds[li], bounds[li + 1]; w = int((b - a) * rng.uniform(0.2, 0.7)); st = a + int(rng.integers(0, b - a - w + 1))
                 X[t, st:st + w] = -1
-    for _ in range(spec.get("excluded", 0)):
+    if spec.get("pabsent", 0.0):                                  # whole-locus absences: at most two per taxon, so no taxon turns thin by accident
+        for t in range(n):
+            k = min(int(rng.binomial(nloc, spec["pabsent"])), 2)
+            for li in rng.choice(nloc, k, replace=False).tolist(): X[t, bounds[li]:bounds[li + 1]] = -1
+    for j in range(spec.get("excluded", 0)):
         t = take(); keep = sorted(rng.choice(nloc, 6, replace=False).tolist())
         for li in range(nloc):
             if li not in keep: X[t, bounds[li]:bounds[li + 1]] = -1
-        truth.append(dict(kind="excluded", taxon=names[t], loci_present=[f"locus{li + 1}" for li in keep]))
+        rec = dict(kind="excluded", taxon=names[t], loci_present=[f"locus{li + 1}" for li in keep])
+        if j < spec.get("thin_identical", 0):                       # a thin taxon identical on every shared site to a tested one: its loci copied from a free donor
+            d = take()
+            for li in keep: X[t, bounds[li]:bounds[li + 1]] = X[d, bounds[li]:bounds[li + 1]]
+            rec["identical_to"] = names[d]
+        truth.append(rec)
     for _ in range(spec.get("skipped", 0)):
         li = nloc - 1; reserved_loci.add(li); keep = sorted(rng.choice(free, 3, replace=False).tolist())
         for t in range(n):
             if t not in keep: X[t, bounds[li]:bounds[li + 1]] = -1
         truth.append(dict(kind="skipped", locus=f"locus{li + 1}", taxa_present=[names[t] for t in keep]))
+    for k in spec.get("clones", []):                               # k copies of one free genome, whole rows, at scattered indices: identical genomes
+        d = take(); copies = [take() for _ in range(k - 1)]
+        for r in copies: X[r] = X[d]
+        truth.append(dict(kind="clone", donor=names[d], copies=[names[r] for r in copies]))
+    for _ in range(spec.get("chain", 0)):                          # A ~ B and B ~ C on their shared sites while A differs from C: B lacks the sites where C differs
+        a_, b_, c_ = take(), take(), take(); sites_ = rng.choice(np.flatnonzero(X[a_] >= 0), 20, replace=False)
+        X[b_] = X[a_]; X[b_, sites_] = -1; X[c_] = X[a_]; X[c_, sites_] = (X[c_, sites_] + rng.integers(1, A, len(sites_))) % A
+        truth.append(dict(kind="chain", taxa=[names[a_], names[b_], names[c_]], sites=int(len(sites_))))
+    for _ in range(spec.get("multicopy", 0)):                      # one donor's sequence over three recipients at one locus: equal counts, a tie for closest
+        d = take(); rs = [take() for _ in range(3)]; li = locus(d, *rs); a, b = bounds[li], bounds[li + 1]
+        for r in rs: X[r, a:b] = X[d, a:b]
+        truth.append(dict(kind="multicopy", donor=names[d], recipients=[names[r] for r in rs], locus=f"locus{li + 1}"))
     for _ in range(spec.get("ambiguous", 0)):
         t = take(); li = nloc - 2; reserved_loci.add(li); a, b = bounds[li], bounds[li + 1]; w0 = a + 10; w1 = w0 + 28
         X[t, a:w0] = -1; X[t, w1:b] = -1
-        others = [c for c in np.argsort(pat[t]) if c != t and c in free][:3]            # only its three closest cover the window
+        others = [c for c in np.argsort(pat[t]) if c != t and c in free and (X[c, a:b] >= 0).sum() >= 20][:3]   # only its three closest cover the window
         for c in range(n):
             if c != t and c not in others: X[c, w0:w1] = -1
         seg = X[t, w0:w1]; seg[:] = rng.integers(0, A, len(seg))
         truth.append(dict(kind="ambiguous", taxon=names[t], locus=f"locus{li + 1}", comparators=[names[c] for c in others]))
     for _ in range(spec.get("contam", 0)):
-        t = take(); li = locus(); a, b = bounds[li], bounds[li + 1]; seg = X[t, a:b]; pres = seg >= 0
+        t = take(); li = locus(t); a, b = bounds[li], bounds[li + 1]; seg = X[t, a:b]; pres = seg >= 0
         seg[pres] = rng.integers(0, A, int(pres.sum())); truth.append(dict(kind="contam", taxon=names[t], locus=f"locus{li + 1}"))
     for _ in range(spec.get("nearcopy", 0)):
         d = take(); order = [c for c in np.argsort(pat[d]) if c in free]; cands = order[2:5]     # the 3rd to 5th closest free taxa: close, but not the sister
         if not cands: raise RuntimeError("no near recipient free")
-        r = cands[int(rng.integers(len(cands)))]; free.remove(r); li = locus(); a, b = bounds[li], bounds[li + 1]
+        r = cands[int(rng.integers(len(cands)))]; free.remove(r); li = locus(d, r); a, b = bounds[li], bounds[li + 1]
         X[r, a:b] = X[d, a:b]; truth.append(dict(kind="nearcopy", donor=names[d], recipient=names[r], locus=f"locus{li + 1}", patristic=float(pat[d, r])))
     for _ in range(spec.get("farcopy", 0)):
-        r = take(); d = max(free, key=lambda c: pat[r, c]); free.remove(d); li = locus(); a, b = bounds[li], bounds[li + 1]
+        r = take(); d = max(free, key=lambda c: pat[r, c]); free.remove(d); li = locus(r, d); a, b = bounds[li], bounds[li + 1]
         X[r, a:b] = X[d, a:b]; truth.append(dict(kind="farcopy", donor=names[d], recipient=names[r], locus=f"locus{li + 1}", patristic=float(pat[d, r])))
     for _ in range(spec.get("sistercopy", 0)):
         pair = next(((a_, b_) for a_, b_ in cherries if a_ in free and b_ in free), None)
         if pair is None: raise RuntimeError("no cherry free")
-        d, r = pair; free.remove(d); free.remove(r); li = locus(); a, b = bounds[li], bounds[li + 1]
+        d, r = pair; free.remove(d); free.remove(r); li = locus(d, r); a, b = bounds[li], bounds[li + 1]
         X[r, a:b] = X[d, a:b]; truth.append(dict(kind="sistercopy", donor=names[d], recipient=names[r], locus=f"locus{li + 1}", patristic=float(pat[d, r])))
+    for _ in range(spec.get("sliver", 0)):                         # a cell cut to 8-15 sites: the taxon needs fewer shared sites than fit-overlap there
+        t = take(); li = locus(t); a, b = bounds[li], bounds[li + 1]; w = int(rng.integers(8, 16)); st = a + int(rng.integers(0, b - a - w))
+        X[t, a:st] = -1; X[t, st + w:b] = -1
+        truth.append(dict(kind="sliver", taxon=names[t], locus=f"locus{li + 1}", sites=w))
+    for _ in range(spec.get("lowloci", 0)):                        # present at 11-12 loci only: many of its pairs share fewer than MIN_LOCI_FOR_M loci
+        have = lambda t: [li for li in range(nloc) if (X[t, bounds[li]:bounds[li + 1]] >= 0).sum() >= 20]
+        t = take(lambda t: len(have(t)) >= nloc - 1); free_loci = [li for li in have(t) if li not in reserved_loci]
+        drop = rng.choice(free_loci, min(int(rng.integers(2, 4)), len(have(t)) - 10), replace=False).tolist()    # it stays at ten loci or more: tested, not thin
+        for li in drop: X[t, bounds[li]:bounds[li + 1]] = -1
+        truth.append(dict(kind="lowloci", taxon=names[t], loci_absent=[f"locus{li + 1}" for li in drop]))
     return truth
 
 
@@ -186,6 +229,12 @@ DATASETS = {
     "dna_clean": dict(seed=37, n=24, nloc=12, dtype="dna", depth=0.3, lens=(140, 300), pmiss=0.05, formats="fasta"),
     "aa_clean": dict(seed=41, n=20, nloc=11, dtype="aa", depth=0.5, lens=(120, 240), pmiss=0.0, formats="fasta"),
     "dna_dense": dict(seed=53, n=40, nloc=16, dtype="dna", depth=0.55, lens=(120, 260), pmiss=0.15, contam=3, nearcopy=3, farcopy=2, sistercopy=1, formats="fasta"),
+    # the multi-block dataset of the large-data work: many taxa, clusters of identical genomes, a non-transitive identity
+    # chain, slivers, whole-locus absences, taxa at few loci, thin taxa identical to tested ones (its patristic matrix is
+    # 2,100 x 2,100 and is not written)
+    "dna_blocks": dict(seed=71, n=2100, nloc=14, dtype="dna", depth=0.45, lens=(120, 300), pmiss=0.15, pabsent=0.10, clones=[60, 4, 3, 2, 2, 3], chain=1,
+                       multicopy=1, sliver=30, lowloci=20, excluded=25, thin_identical=2, skipped=1, ambiguous=1, contam=6, nearcopy=6, farcopy=3,
+                       event_min_sites=120, patristic=False, formats="fasta"),      # no sister copies: at 2,100 taxa the cherries are too close for a copy to show
 }
 
 
@@ -205,8 +254,8 @@ def write_dataset(d, name, spec):
         write_nexus_quirky(f"{d}/alignment_quirky.nex", names, seqs, bounds, spec["dtype"])
         write_phylip(f"{d}/alignment.phy", names, seqs, False); write_phylip(f"{d}/alignment_interleaved.phy", names, seqs, True)
     meta = dict(name=name, datatype=spec["dtype"], taxa=len(names), loci=len(bounds) - 1, sites=int(bounds[-1]), spec={k: v for k, v in spec.items() if k != "formats"},
-                locus_bounds=[[int(a) + 1, int(b)] for a, b in zip(bounds[:-1], bounds[1:])], events=truth,
-                patristic={names[i]: [round(float(v), 4) for v in pat[i]] for i in range(len(names))})
+                locus_bounds=[[int(a) + 1, int(b)] for a, b in zip(bounds[:-1], bounds[1:])], events=truth)
+    if spec.get("patristic", True): meta["patristic"] = {names[i]: [round(float(v), 4) for v in pat[i]] for i in range(len(names))}
     json.dump(meta, open(f"{d}/truth.json", "w"), indent=1)
 
 
@@ -259,16 +308,20 @@ def array_hashes(npz):
     z = zipfile.ZipFile(npz); return {k: hashlib.sha256(z.read(k)).hexdigest() for k in sorted(z.namelist()) if k != "manifest.json"}
 
 
-def write_golden(g, d, spec, extra=()):
-    import tempfile, shutil
-    out = tempfile.mkdtemp(prefix="golden_")
+def write_golden(g, d, spec, extra=(), patch=None):
+    """the tool's outputs on a dataset pinned under tests/data/golden; patch sets module constants for the run"""
+    import tempfile, shutil, locus_outliers as lo
+    out = tempfile.mkdtemp(prefix="golden_"); saved = {k: getattr(lo, k) for k in (patch or {})}
+    for k, v in (patch or {}).items(): setattr(lo, k, v)
     try:
         run_tool(f"{d}/alignment.fasta", f"{d}/partitions.txt", out, spec["dtype"], extra)
         os.makedirs(g, exist_ok=True); shutil.copy(f"{out}/masked.csv", f"{g}/masked.csv")
         json.dump(array_hashes(f"{out}/report.npz"), open(f"{g}/report_hashes.json", "w"), indent=1)
         man = json.load(zipfile.ZipFile(f"{out}/report.npz").open("manifest.json"))
         json.dump(dict(counts=man["counts"], test=man["test"], format_version=man["format_version"], version=man["version"]), open(f"{g}/manifest_subset.json", "w"), indent=1)
-    finally: shutil.rmtree(out)
+    finally:
+        shutil.rmtree(out)
+        for k, v in saved.items(): setattr(lo, k, v)
 
 
 def write_golden_real(g, d, dtype):
@@ -300,6 +353,8 @@ def main():
     if a.golden:
         for name, spec in DATASETS.items(): write_golden(f"{HERE}/golden/{name}", f"{HERE}/synth/{name}", spec); print(f"golden/{name}")
         write_golden(f"{HERE}/golden/dna_small_t1", f"{HERE}/synth/dna_small", DATASETS["dna_small"], ["--donor-threshold", "1"]); print("golden/dna_small_t1")
+        write_golden(f"{HERE}/golden/dna_blocks_gtdb", f"{HERE}/synth/dna_blocks", DATASETS["dna_blocks"], ["--report-codes", "masked", "--report-sequences", "masked"],
+                     patch=dict(DENSE_CELLS_MAX=10)); print("golden/dna_blocks_gtdb")                        # the options a GTDB-size run uses: sparse numeric columns, masked-only codes and sequences
         for name, spec in SIM.items(): write_golden(f"{HERE}/golden/{name}", f"{HERE}/sim/{name}", spec); print(f"golden/{name}")
         for name, spec in REAL.items():
             if os.path.exists(f"{HERE}/real/{name}/alignment.nex"):

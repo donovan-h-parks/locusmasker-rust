@@ -2,7 +2,7 @@
 if the change was deliberate, re-pin with  python tests/data/make_fixtures.py --golden  and say so in the commit."""
 import json, os
 import pytest
-from tests.conftest import DATA, SYNTH, SIM, dataset, run_tool, npz_hashes
+from tests.conftest import lo, DATA, SYNTH, SIM, dataset, run_tool, npz_hashes
 
 pytestmark = pytest.mark.regression
 GOLDEN = os.path.join(DATA, "golden")
@@ -26,6 +26,14 @@ def test_standard_run_is_pinned(runs, name):
 def test_donor_threshold_one_is_pinned(tmp_out):
     ds = dataset("dna_small"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--donor-threshold", "1"]); assert r.rc == 0
     check(r, os.path.join(GOLDEN, "dna_small_t1"))
+
+
+def test_gtdb_like_options_are_pinned(tmp_out, monkeypatch):
+    """the options a GTDB-size run uses on the multi-block dataset: sparse numeric columns (DENSE_CELLS_MAX below its cells),
+    masked-only codes and sequences, best matches for failing cells only (2,100 taxa is above BEST_MATCH_ALL_MAX_TAXA)"""
+    monkeypatch.setattr(lo, "DENSE_CELLS_MAX", 10)
+    ds = dataset("dna_blocks"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--report-codes", "masked", "--report-sequences", "masked"]); assert r.rc == 0, r.log
+    check(r, os.path.join(GOLDEN, "dna_blocks_gtdb"))
 
 
 @pytest.mark.real

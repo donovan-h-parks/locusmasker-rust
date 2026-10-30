@@ -26,7 +26,7 @@ except ImportError:
 
 
 # ------------------------------------------------------------------ the fixture datasets
-SYNTH = ["dna_small", "aa_small", "dna_clean", "aa_clean", "dna_dense"]
+SYNTH = ["dna_small", "aa_small", "dna_clean", "aa_clean", "dna_dense", "dna_blocks"]
 REAL = ["cannon_aa", "near_dna"]
 SIM = ["aa_random_trees"]        # simulated by AliSim (tests/data/make_random_trees.py); nothing planted, so every mask is a false positive
 

@@ -42,7 +42,9 @@ class TestTruth:
                 assert bytes(np.frombuffer(rows[d], dtype=np.uint8)[s]) == bytes(np.frombuffer(rows[r], dtype=np.uint8)[s]), e
 
     def test_patristic_matrix_is_a_metric_on_the_names(self, name):
-        ds = dataset(name); P = ds.truth["patristic"]; names = list(P)
+        ds = dataset(name)
+        if "patristic" not in ds.truth: pytest.skip("the patristic matrix is not written for this dataset (2,100 x 2,100)")
+        P = ds.truth["patristic"]; names = list(P)
         assert names == ds.truth and False or set(names) == set(lo.read_input(ds.aln, ds.parts)[0])
         M = np.array([P[n] for n in names]); assert np.allclose(M, M.T) and (np.diag(M) == 0).all() and (M[~np.eye(len(names), dtype=bool)] > 0).all()
 

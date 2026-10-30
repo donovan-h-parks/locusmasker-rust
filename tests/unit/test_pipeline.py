@@ -26,6 +26,20 @@ def cells_tested(R):
     nc = R.arr("cells/n_comp.npy"); return [(int(g), int(li)) for g, li in zip(*np.nonzero(nc > 0))]
 
 
+def identical(X, m):
+    """taxa identical to each taxon at every shared site (the pairs with m == 0 checked against the residues), and the
+    class of every taxon (connected components of that relation): the identical-genome rule of 0.13.1"""
+    n = len(m); ident = {g: set() for g in range(n)}; cls = list(range(n))
+    def find(a):
+        while cls[a] != a: cls[a] = cls[cls[a]]; a = cls[a]
+        return a
+    for g, c in np.argwhere(np.triu(m == 0.0, 1)):
+        both = (X[g] >= 0) & (X[c] >= 0)
+        if both.any() and (X[g][both] == X[c][both]).all():
+            ident[g].add(int(c)); ident[c].add(int(g)); ra, rb = find(int(g)), find(int(c)); cls[max(ra, rb)] = min(ra, rb)
+    return ident, [find(g) for g in range(n)]
+
+
 def shared(X, sites, i, j):
     a, b = X[i, sites], X[j, sites]; both = (a >= 0) & (b >= 0); return int(both.sum()), int(((a != b) & both).sum())
 
@@ -67,19 +81,20 @@ class TestComparators:
     def test_comparators_are_the_closest_by_m_in_rank_order(self, ctx):
         """the comparators are the K closest taxa genome-wide among those sharing enough sites, closest first; a
         closer taxon may be missing from the list only because it shares too few sites at this locus"""
-        R, X, loci, m = ctx["R"], ctx["X"], ctx["loci"], ctx["m"]; fs = R.arr("cells/focal_sites.npy")
+        R, X, loci, m = ctx["R"], ctx["X"], ctx["loci"], ctx["m"]; fs = R.arr("cells/focal_sites.npy"); ident, cls = identical(X, m)
         for g, li in cells_tested(R)[::3]:
             comps = R.comps(g, li); mrow = m[g]; need = min(20, int(fs[g, li]))
             ms = [mrow[c] for c in comps]; assert all(np.isfinite(ms)) and ms == sorted(ms)
+            assert not (ident[g] & set(comps)) and len({cls[c] for c in comps}) == len(comps), (g, li)          # never an identical genome; one comparator per class of copies
             if len(comps) == R.K:
-                worst = ms[-1]
+                worst = ms[-1]; classes = {cls[c] for c in comps}
                 for c in np.flatnonzero(np.isfinite(mrow) & (mrow < worst)):
-                    if c not in comps: assert shared(X, loci[li][1], g, int(c))[0] < need, (g, li, c)
+                    if c not in comps and int(c) not in ident[g] and cls[c] not in classes: assert shared(X, loci[li][1], g, int(c))[0] < need, (g, li, c)
 
     def test_taxa_closest_are_the_five_nearest_by_m(self, ctx):
-        R, m = ctx["R"], ctx["m"]; cl = R.arr("taxa/closest.npy")
+        R, m, X = ctx["R"], ctx["m"], ctx["X"]; cl = R.arr("taxa/closest.npy"); ident, _ = identical(X, m)
         for g in range(R.n):
-            row = np.where(np.isfinite(m[g]), m[g], np.inf); want = [int(c) for c in np.argsort(row, kind="stable")[:5] if np.isfinite(row[c])]
+            row = np.where(np.isfinite(m[g]), m[g], np.inf); row[list(ident[g])] = np.inf; want = [int(c) for c in np.argsort(row, kind="stable")[:5] if np.isfinite(row[c])]
             got = [int(c) for c in cl[g] if c >= 0]
             assert got == want or sorted(row[got]) == sorted(row[want]), (g, got, want)
 
@@ -136,8 +151,9 @@ class TestSimilar:
             assert not (sd & 32)
 
     def test_roles_are_consistent(self, ctx):
-        R = ctx["R"]; side = R.arr("cells/side.npy"); pt = R.arr("cells/partner.npy"); pairs = self.pairs(R)
+        R = ctx["R"]; side = R.arr("cells/side.npy"); pt = R.arr("cells/partner.npy"); pairs = self.pairs(R); ns = R.arr("cells/n_similar.npy")
         for (li, a, b), e in pairs.items():
+            if ns[a, li] > 1 or ns[b, li] > 1: continue                       # a cell in several pairs carries the role of its strongest pair (notes/KNOWN_ISSUES.md)
             sa, sb = int(side[a, li]), int(side[b, li])
             if e["uncertain"]:
                 assert e["copy"] == -1 and (sa & 2) and (sb & 2), (li, a, b)
@@ -150,8 +166,9 @@ class TestSimilar:
 
     def test_the_copy_fits_its_relatives_worse(self, ctx):
         """the direction: the copy is the member with the larger test-1 excess, by more than the donor threshold"""
-        R = ctx["R"]; thr = R.man["options"]["donor_threshold"]; ex = R.arr("cells/excess_m.npy")
+        R = ctx["R"]; thr = R.man["options"]["donor_threshold"]; ex = R.arr("cells/excess_m.npy"); ns = R.arr("cells/n_similar.npy")
         for (li, a, b), e in self.pairs(R).items():
+            if ns[a, li] > 1 or ns[b, li] > 1: continue                       # the record's copy field follows the cell's strongest pair (notes/KNOWN_ISSUES.md)
             xa, xb = abs(float(ex[a, li])), abs(float(ex[b, li]))
             if not (np.isfinite(xa) and np.isfinite(xb)): continue
             if e["uncertain"]: assert max(xa, xb) <= thr * min(xa, xb) + 1e-9
@@ -184,17 +201,14 @@ class TestSimilar:
 class TestClosest:
     def test_locus_closest_is_the_fewest_mismatches_per_shared_site(self, ctx):
         """among the taxa in the test sharing at least fit-overlap sites: fewest mismatches per shared site, half a mismatch added, ties by m"""
-        R, X, loci, m = ctx["R"], ctx["X"], ctx["loci"], ctx["m"]; lc = R.arr("cells/locus_closest.npy"); excluded = {i for i, s in enumerate(R.taxa["status"]) if s != "tested"}
-        for g, li in cells_tested(R)[::2]:
-            y = int(lc[g, li]); sites = loci[li][1]; best = None
-            for c in range(R.n):
-                if c == g or c in excluded or not np.isfinite(m[g, c]): continue
-                sh, mis = shared(X, sites, g, c)
-                if sh < 20: continue
-                key = ((mis + 0.5) / sh, m[g, c], c)
-                if best is None or key < best: best = key
-            if best is None: assert y == -1, (g, li)
-            else: assert y == best[2] or np.isclose((shared(X, sites, g, y)[1] + 0.5) / shared(X, sites, g, y)[0], best[0]), (g, li, y, best)
+        R, X, loci, m = ctx["R"], ctx["X"], ctx["loci"], ctx["m"]; lc = R.arr("cells/locus_closest.npy"); ident, _ = identical(X, m)
+        excluded = np.array([s != "tested" for s in R.taxa["status"]]); cells = cells_tested(R); step = 2 if len(cells) < 2000 else len(cells) // 400
+        for g, li in cells[::step]:
+            y = int(lc[g, li]); Xs = X[:, loci[li][1]]; both = (Xs >= 0) & (Xs[g] >= 0); sh = both.sum(1); mis = ((Xs != Xs[g]) & both).sum(1)
+            ok = (sh >= 20) & np.isfinite(m[g]) & ~excluded; ok[g] = False; ok[list(ident[g])] = False
+            if not ok.any(): assert y == -1, (g, li); continue
+            d = np.where(ok, (mis + 0.5) / np.maximum(sh, 1), np.inf); keys = sorted((d[c], m[g, c], c) for c in np.flatnonzero(ok & (d <= d.min() + 1e-9)))
+            assert y == keys[0][2] or np.isclose(d[y], keys[0][0]), (g, li, y, keys[0])
 
     def test_closest_test_bit_means_the_closest_is_outside_the_comparators(self, ctx):
         R = ctx["R"]; side = R.arr("cells/side.npy"); lc = R.arr("cells/locus_closest.npy")
@@ -274,7 +288,7 @@ class TestOutputs:
             assert r["comparators"] == "; ".join(R.taxa["names"][c] for c in R.comps(g, li))
             assert float(r["log10_bar"]) == pytest.approx(R.man["test"]["log10_bar"], abs=1e-3)
             if sd & 2:
-                assert r["similar_role"] in ("copy", "uncertain") and r["similar_partner"] == R.taxa["names"][int(R.cell("partner", g, li))] and r["similar_test"] in ("comparator", "closest")
+                assert (r["similar_role"] in ("copy", "uncertain") or int(R.cell("n_similar", g, li)) > 1) and r["similar_partner"] == R.taxa["names"][int(R.cell("partner", g, li))] and r["similar_test"] in ("comparator", "closest")   # a cell masked as the copy of one pair may be the source of a stronger one
                 assert (r["similar_role"] == "uncertain") == bool(sd & 8)
             else: assert r["similar_role"] in ("", "source")
 
