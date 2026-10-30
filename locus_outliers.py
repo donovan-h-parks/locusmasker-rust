@@ -162,6 +162,8 @@ PHI_N0 = 30.0           # shrinkage weight: a locus's dispersion is pulled towar
 MIN_LOCI_FOR_M = 5      # pairs overlapping in fewer loci have no m and are never compared
 MIN_LOCI_PER_TAXON = 10 # a taxon needs this many loci with >= fit-overlap residues to take part
 MIN_FIT_PAIRS = 8       # a locus needs this many fit pairs to be tested (or to get a rate)
+PASS1_LOCI_PER_WORKER = 64             # pass one with small loci: a worker process per this many loci
+PASS1_RETURN_MAX = 512 << 20           # ... when the pair counts the workers send back are at most this many bytes
 PAIR_CHUNK_MIN = 32 << 20              # the pair stage's chunks of pairs hold between these many bytes of temporaries
 PAIR_CHUNK_MAX = 256 << 20
 DISPERSION_PAIRS_PER_WORKER = 200_000  # the dispersion pre-pass takes a worker process per this many comparisons (Ivan_2026, 4.2 M
@@ -1229,13 +1231,24 @@ def prepare(a, names, rows, loci, dtype, K_eff, t0):
     kbar = float(np.mean([np.mean([(X[:, st] == i).any(0).mean() for i in range(len(alphabet))]) * len(alphabet) for st in sample]))
     flops = 2.0 * n * n * float(np.mean([len(sites) for _, sites in loci])) * (1.0 + kbar)
     workers = max(1, min(a.threads, nloc, int((_mem_room() // 2) // per_locus), int(round(flops / PASS1_FLOPS_PER_THREAD))))
+    # small loci (the flops rule allows at most two threads) are the interpreter's cost, not the products': worker
+    # processes then do the loci and return their rows, as long as the rows to send back stay small
+    procs = min(a.threads, max(1, nloc // PASS1_LOCI_PER_WORKER)) if workers <= 2 and a.threads > 1 and 2 * nloc * ntri * S.itemsize <= PASS1_RETURN_MAX else 1
+    def counts_chunk(lis):
+        for li in lis: locus_counts(li)
+        return [(li, S[li].copy(), W[li].copy(), plateaus[li]) for li in lis]
     PROG.start("counts", nloc)
-    if workers > 1:
+    if procs > 1:
+        step = -(-nloc // (4 * procs)); chunks = [list(range(b0, min(b0 + step, nloc))) for b0 in range(0, nloc, step)]
+        for res in fork_map(counts_chunk, chunks, procs):
+            for li, srow, wrow, pl in res: S[li] = srow; W[li] = wrow; plateaus[li] = pl; PROG.tick()
+    elif workers > 1:
         with ThreadPoolExecutor(workers) as ex: list(ex.map(locus_counts, range(nloc), chunksize=max(1, nloc // (8 * workers))))
     else:
         for li in range(nloc): locus_counts(li)
     PROG.finish()
-    if workers < a.threads: LOG(f"pass one: {workers} of {a.threads} threads (the loci are small, few, or large in memory)")
+    if procs > 1: LOG(f"pass one: {procs} worker processes (small loci)")
+    elif workers < a.threads: LOG(f"pass one: {workers} of {a.threads} threads (the loci are small, few, or large in memory)")
     focal_sites = np.ascontiguousarray(W[:, diag_pos].T).astype(np.uint32)   # each taxon's residues at each locus, before the exclusion zeroes anything
     present = (W[:, diag_pos] >= a.fit_overlap).sum(0)
     thin = np.flatnonzero(present < MIN_LOCI_PER_TAXON)
