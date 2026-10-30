@@ -118,7 +118,7 @@ def run_tool(aln, out, dtype, parts=None, extra=(), progress="none"):
     finally:
         sys.argv, sys.stderr = old_argv, old_err; lo.PROG = old_prog; lo.LOG.bar = old_bar; lo.LOG.real = sys.stderr
         if lo.LOG.fh is not None: lo.LOG.close()
-        lo.LOG.fh = old_fh; lo.MEM_BUDGET = None
+        lo.LOG.fh = old_fh; lo.MEM_BUDGET = None; lo.MEM_RESIDENT_EST = 0
     return Run(out, err.getvalue(), rc)
 
 

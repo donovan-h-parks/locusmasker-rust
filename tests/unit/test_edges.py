@@ -80,6 +80,8 @@ class TestMemoryRoom:
         rss = lo._rss(); assert rss > 0
         monkeypatch.setattr(lo, "MEM_BUDGET", rss + (100 << 20)); assert abs(lo._mem_room() - (100 << 20)) < (16 << 20)
         monkeypatch.setattr(lo, "MEM_BUDGET", 1 << 20); assert lo._mem_room() == (1 << 20) // 16                  # never below a sixteenth of the budget
+        monkeypatch.setattr(lo, "MEM_BUDGET", rss + (300 << 20)); monkeypatch.setattr(lo, "MEM_RESIDENT_EST", rss + (200 << 20))
+        assert abs(lo._mem_room() - (100 << 20)) < (16 << 20)                                                    # the estimate counts before the arrays are filled
 
     def test_rss_falls_back_to_the_peak_without_proc(self, monkeypatch):
         real_open = open

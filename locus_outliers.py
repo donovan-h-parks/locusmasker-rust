@@ -818,6 +818,8 @@ def _mem_available():
 
 
 MEM_BUDGET = None                 # bytes the run may use (--memory; main sets it, half of what is available by default); None: no budget
+MEM_RESIDENT_EST = 0              # what the run will hold resident once its arrays are filled (main's estimate): the room is measured
+                                  # against the larger of this and the resident set now, since empty arrays are not resident yet
 
 
 def _rss():
@@ -835,7 +837,7 @@ def _mem_room():
     """bytes a stage may take for its threads and chunks: the budget less what is resident now (never below a sixteenth
     of the budget, so a stage can always run small), or what the machine has available when there is no budget"""
     if MEM_BUDGET is None: return _mem_available()
-    return max(MEM_BUDGET - _rss(), MEM_BUDGET // 16)
+    return max(MEM_BUDGET - max(_rss(), MEM_RESIDENT_EST), MEM_BUDGET // 16)
 
 
 def fmem(b):
@@ -1405,7 +1407,8 @@ def main():
     M_eff = (K_eff + 1) // 2                                          # fails that make a majority
     if K_eff < K: LOG(f"n-comp shrunk to {K_eff} ({n} taxa)")
     LOG(f"{n} taxa, {L} sites, {len(loci)} loci, {dtype}, {fmt}")
-    need, mx, msw, mnn = memory_estimate(n, L, loci)
+    global MEM_RESIDENT_EST
+    need, mx, msw, mnn = memory_estimate(n, L, loci); MEM_RESIDENT_EST = need
     parts = f"{fmem(msw)} of pair counts for {n:,} taxa x {len(loci):,} loci, {fmem(mnn)} of taxa x taxa matrices, {fmem(mx)} of residue codes"
     if MEM_BUDGET is None: LOG(f"memory: about {fmem(need)} resident ({parts}); no budget (--memory 0)")
     else:
