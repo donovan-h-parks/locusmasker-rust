@@ -45,7 +45,6 @@ class TestReadFasta:
         with pytest.raises(SystemExit):
             lo.read_fasta(">   \nACGT\n")
 
-    @pytest.mark.xfail(strict=True, reason="BUG: a header with an empty sequence is dropped and every later sequence shifts onto the wrong name")
     def test_names_and_sequences_always_pair_up(self):
         """a record with an empty sequence (a header followed by another header) must not shift every later sequence
         onto the wrong name: it is kept as an empty sequence, which read_input then rejects for its length"""
@@ -53,14 +52,10 @@ class TestReadFasta:
         assert len(names) == len(seqs) == 3
         assert dict(zip(names, seqs)) == {"a": "", "b": "ACGT", "c": "AAAA"}
 
-    @pytest.mark.xfail(strict=True, reason="BUG: text before the first header becomes a nameless sequence that misaligns names and sequences")
-    def test_text_before_the_first_header_is_rejected_or_ignored(self):
+    def test_text_before_the_first_header_is_an_error(self):
         """sequence text with no header is not a record: it must not become a nameless sequence that misaligns the rest"""
-        try:
-            names, seqs = lo.read_fasta("ACGT\n>a\nACGT\n>b\nAAAA\n")
-        except SystemExit:
-            return
-        assert len(names) == len(seqs) and dict(zip(names, seqs)) == {"a": "ACGT", "b": "AAAA"}
+        with pytest.raises(SystemExit, match="before the first header"): lo.read_fasta("ACGT\n>a\nACGT\n>b\nAAAA\n")
+        names, seqs = lo.read_fasta("\n\n>a\nACGT\n"); assert names == ["a"] and seqs == ["ACGT"]       # blank lines are fine
 
 
 # ------------------------------------------------------------------ PHYLIP
@@ -78,11 +73,24 @@ class TestReadPhylip:
         names, seqs = lo.read_phylip(txt)
         assert names == ["a", "b"] and seqs == ["ACGTACGTAC", "CCCCCGGGGG"]
 
-    @pytest.mark.xfail(strict=True, reason="BUG: interleaved PHYLIP with the names repeated in every block is not parsed (the names are glued into the sequences)")
     def test_interleaved_with_names_repeated(self):
         txt = "2 10\na ACGTA\nb CCCCC\n\na CGTAC\nb GGGGG\n"
         names, seqs = lo.read_phylip(txt)
         assert names == ["a", "b"] and seqs == ["ACGTACGTAC", "CCCCCGGGGG"]
+
+    def test_interleaved_with_names_repeated_and_spaced_chunks(self):
+        txt = "2 20\na ACGTA CGTAC\nb CCCCC GGGGG\n\na ACGTA CGTAC\nb CCCCC GGGGG\n"
+        names, seqs = lo.read_phylip(txt); assert names == ["a", "b"] and seqs == ["ACGTACGTACACGTACGTAC", "CCCCCGGGGGCCCCCGGGGG"]
+
+    def test_a_sequence_continued_on_the_next_lines(self):
+        names, seqs = lo.read_phylip("2 10\na ACGTA\nCGTAC\nb CCCCC\nGGGGG\n"); assert names == ["a", "b"] and seqs == ["ACGTACGTAC", "CCCCCGGGGG"]
+
+    def test_header_may_carry_extra_tokens(self):
+        names, seqs = lo.read_phylip("2 4 I\na ACGT\nb AAAA\n"); assert names == ["a", "b"] and seqs == ["ACGT", "AAAA"]
+
+    def test_a_bad_header_is_a_message(self):
+        with pytest.raises(SystemExit, match="first line"): lo.read_phylip("two 4\na ACGT\nb AAAA\n")
+        with pytest.raises(SystemExit, match="empty"): lo.read_phylip("\n\n")
 
     def test_header_whitespace_is_free(self):
         names, seqs = lo.read_phylip("  2\t 4 \na ACGT\nb AAAA\n")

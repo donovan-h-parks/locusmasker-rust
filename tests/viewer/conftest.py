@@ -40,7 +40,7 @@ def open_report(page, path, hash="", timeout=60000):
 def inline_viewer(b64, out):
     """report.html exactly as the tool writes it, around a given base64 bundle"""
     html = open(os.path.join(VIEWER, "viewer.html"), encoding="utf-8").read()
-    html = html.replace("@@BUNDLE@@", b64).replace("@@SIDECAR@@", "")
+    html = html.replace("@@BUNDLE@@", b64)
     html = re.sub(r'<script src="([^"]+)"></script>', lambda m: "<script>\n" + open(os.path.join(VIEWER, m.group(1)), encoding="utf-8").read() + "\n</script>", html)
     html = re.sub(r'<link rel="stylesheet" href="([^"]+)">', lambda m: "<style>\n" + open(os.path.join(VIEWER, m.group(1)), encoding="utf-8").read() + "\n</style>", html)
     def icon(m):

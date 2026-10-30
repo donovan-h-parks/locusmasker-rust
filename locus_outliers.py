@@ -29,15 +29,27 @@ Method:
             on the too-divergent side its expectation is evaluated at m_res rather than m (the
             too-similar side uses m: a pair cannot be more similar than its loci allow). For
             a pair with abundant sequence the floor is negligible and nothing changes.
+  identical a genome identical to the focal at every site the two share is never one of its
+            comparators, never its closest match and never a rate voter, and no two comparators
+            are identical to each other (0.13.1): copies of a sequence carry its errors and
+            would vouch for each other, and five copies of one genome are one comparison, not
+            five. A genome identical at
+            most loci but different at some is a comparator like any other, tested at the
+            pair's floor, which is where such differences stand out most.
   rates     a locus rate is the median, over a set of taxon pairs, one equal vote per pair,
             of c(d + half a mismatch) / c(m), where d is the pair's mismatch fraction at the
             locus, c(p) = -P ln(1 - p/P) the multiple-hit correction with P the locus's
             random-identity plateau (from its residue frequencies), and m the pair's
             divergence (or its floor); rates are rescaled so the median locus has rate 1.
             Rates are estimated twice. Before m exists, each taxon's --n-comp nearest
-            neighbours by the raw site-weighted median of locus divergences vote; these
-            provisional rates normalise the loci when m is computed. In the test, each
-            taxon's --n-comp closest comparators by m vote; that rate gives the expectation.
+            RESOLVED neighbours by the raw site-weighted median of locus divergences vote
+            (0.13.1: unresolved and identical relatives are skipped, so a dataset of
+            near-identical sequences still gets its rates from the pairs that differ); these provisional rates
+            normalise the loci when m is computed. In the test, each taxon's --n-comp closest
+            comparators by m vote, resolved pairs only; that rate gives the expectation. Where
+            a locus's comparator pairs cannot set a rate (fewer than 8 resolved: a clade of
+            identical sequences) the provisional rate stands in, so the contaminant among
+            identical relatives is still tested, at the pair's floor.
             Nearest-neighbour pairs are used because test 1 compares close relatives, and a
             median over all pairs is a median over the deep branches of the tree, where a
             locus's rate can differ several-fold from its rate near the tips. Test 2 uses the
@@ -122,8 +134,8 @@ Outputs (in --out; <stem> is the alignment file's name without extension)
                        factor), row_factor (similar_comparator rows), log10p (exact), fail (0 or 1).
                        Large (every comparison at every locus); tabs or line breaks in names are
                        written as spaces.
-  report.html          the interactive report (report.npz holds its data; report_data.js sits beside
-                       it when the data are too large to go inside the page). --no-report skips it.
+  report.html          the interactive report, one file with its data inside (report.npz holds the
+                       same data for scripts). --no-report skips it.
 Options
   --datatype dna|aa (required)  --n-comp 5 (odd >= 3)  --fit-overlap 20
   --alpha 0.05  --mask-similar-only  --mask-different-only  --threads 1  --all-tests  --no-report
@@ -147,13 +159,12 @@ MIN_LOCI_FOR_M = 5      # pairs overlapping in fewer loci have no m and are neve
 MIN_LOCI_PER_TAXON = 10 # a taxon needs this many loci with >= fit-overlap residues to take part
 MIN_FIT_PAIRS = 8       # a locus needs this many fit pairs to be tested (or to get a rate)
 TEST_THREAD_PAIRS = 4000  # --threads applies to the test stage only when a locus has this many comparisons on average
-__version__ = "0.13.0"
+__version__ = "0.13.1"
 REPORT_FORMAT = 7                 # bundle format version; the viewer refuses a newer one (3: tree branch lengths are F81-corrected; 4: the too-similar test over every pair; 7: every test of every cell, the closest match at the locus, the uncertain-direction pairs)
 DENSE_CELLS_MAX = 8_000_000       # per-cell numeric report columns are dense (taxa x loci) up to this many cells, sparse beyond
 BEST_MATCH_ALL_MAX_TAXA = 2000    # best matches for every tested cell up to this many taxa; beyond, only for cells with a fail
 BEST_MATCH_MIN_SITES = 30         # a best match needs this many sites shared with the focal (as plot_panels.best_matches)
 REPORT_SEQ_ALL_MAX = 32 << 20     # --report-sequences auto carries the whole alignment up to this many bytes, else the cells' rows
-REPORT_INLINE_MAX = 64 << 20      # base64 characters that still go inside report.html; above it the data goes to report_data.js
 CODE_SIMILAR, CODE_TICK, CODE_ABSENT = 128, 254, 255
 PASS1_FLOPS_PER_THREAD = 2e7    # pass one adds a thread per this many floating-point operations per locus: below it the
                                 # interpreter lock around the small matrix products costs more than the thread gains
@@ -163,37 +174,53 @@ PASS1_FLOPS_PER_THREAD = 2e7    # pass one adds a thread per this many floating-
 
 # ------------------------------------------------------------------ input
 def read_fasta(txt):
-    names, seqs, cur = [], [], []
+    """names and sequences, one per header line, in order: a header with nothing under it gives an empty sequence
+    (read_input then rejects it by name); text before the first header is an error, not a nameless sequence"""
+    names, seqs, cur = [], [], None
     for line in txt.splitlines():
         if line.startswith(">"):
-            if cur: seqs.append("".join(cur))
+            if cur is not None: seqs.append("".join(cur))
             name = line[1:].split()
             if not name: sys.exit("FASTA: a header line ('>') has no name")
             names.append(name[0]); cur = []
+        elif cur is None:
+            if line.strip(): sys.exit(f"FASTA: text before the first header line ('>'): {line.strip()[:40]!r} (a sequence whose header line is missing?)")
         else:
             cur.append("".join(line.split()))
-    if cur: seqs.append("".join(cur))
+    if cur is not None: seqs.append("".join(cur))
     return names, seqs
 
 
 def read_phylip(txt):
+    """relaxed PHYLIP: after the counts line, 'name sequence' lines (a sequence may continue on the following lines),
+    or interleaved blocks with the names in the first block only or repeated in every block"""
     lines = [l for l in txt.splitlines() if l.strip()]
-    n, L = map(int, lines[0].split()); names, seqs = [], []
-    for line in lines[1:]:
-        p = line.split(None, 1)
-        if len(p) == 2 and len(names) < n: names.append(p[0]); seqs.append(p[1].replace(" ", ""))
-        elif names: seqs[-1] += line.replace(" ", "")     # interleaved continuation
-    if any(len(s) != L for s in seqs):                      # interleaved with names only in the first block
-        blocks = [l for l in lines[1:]]; names, seqs = [], []
-        for i, line in enumerate(blocks):
+    hdr = lines[0].split() if lines else []
+    if len(hdr) < 2 or not hdr[0].isdigit() or not hdr[1].isdigit():
+        sys.exit("PHYLIP: the file is empty" if not lines else
+                 f"cannot parse PHYLIP: the first line must give the number of sequences and the number of sites, not {lines[0].strip()[:40]!r}")
+    n, L = int(hdr[0]), int(hdr[1]); body = lines[1:]; squash = lambda x: "".join(x.split())
+    def sequential():
+        names, seqs = [], []
+        for line in body:
             p = line.split(None, 1)
-            if i < n: names.append(p[0]); seqs.append(p[1].replace(" ", "") if len(p) == 2 else "")
-            else: seqs[i % n] += line.replace(" ", "")
-    if len(names) == n and any(len(s) != L for s in seqs):
-        t = next(t for t, s in zip(names, seqs) if len(s) != L); l = len(next(s for s in seqs if len(s) != L))
+            if len(p) == 2 and len(names) < n: names.append(p[0]); seqs.append(squash(p[1]))
+            elif names: seqs[-1] += squash(line)                 # a sequence continued on the next line
+        return names, seqs
+    def interleaved():
+        names, seqs = [], []
+        for i, line in enumerate(body):
+            p = line.split(None, 1)
+            if i < n: names.append(p[0]); seqs.append(squash(p[1]) if len(p) == 2 else "")
+            else: seqs[i % n] += squash(p[1] if len(p) == 2 and p[0] == names[i % n] else line)   # the names may be repeated in every block
+        return names, seqs
+    names, seqs = sequential()
+    if len(names) != n or any(len(sq) != L for sq in seqs): names, seqs = interleaved()
+    if len(names) == n and any(len(sq) != L for sq in seqs):
+        t = next(t for t, sq in zip(names, seqs) if len(sq) != L); l = len(next(sq for sq in seqs if len(sq) != L))
         sys.exit(f"PHYLIP: the header says {L:,} sites but {t} has {l:,}: the sequences are not aligned (every sequence must have {L:,} characters), "
                  "or the file is laid out in a form the reader does not handle (relaxed one-line and interleaved layouts are supported; try FASTA plus a partition file)")
-    if len(names) != n or any(len(s) != L for s in seqs):
+    if len(names) != n or any(len(sq) != L for sq in seqs):
         sys.exit(f"cannot parse PHYLIP: the header says {n} sequences of {L:,} sites, {len(names)} were found; relaxed one-line or interleaved layouts are supported; "
                  "try FASTA plus a RAxML-style partition file")
     return names, seqs
@@ -529,7 +556,8 @@ def read_input(path, partitions):
         except UnicodeDecodeError: sys.exit(f"the alignment {path} is not a UTF-8 text file (compressed? binary?)")
         if head.startswith(">"):
             names, seqs = read_fasta(txt); fmt = "fasta"
-            if len(names) != len(seqs): sys.exit(f"FASTA: {len(names)} header lines but {len(seqs)} sequences in {path}: a header with no sequence under it?")
+            empty = [t for t, sq in zip(names, seqs) if not sq]
+            if empty: sys.exit(f"FASTA: {len(empty)} record{'s' if len(empty) > 1 else ''} with no sequence under the header in {path}: {', '.join(empty[:5])}{' ...' if len(empty) > 5 else ''}")
         else:
             if not head[:1].isdigit(): sys.exit(f"cannot tell the format of {path}: a NEXUS file starts with #NEXUS, a FASTA file with '>', a PHYLIP file with its counts")
             names, seqs = read_phylip(txt); fmt = "phylip"
@@ -927,7 +955,7 @@ def cell_trees(D_exp, D_obs, labels, og=None):
 
 def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
     """report.npz, a ZIP of .npy members and JSON that np.load opens like an .npz, and report.html, the viewer with
-    the bundle inline as base64 (or beside it in report_data.js when it is too large for one file)"""
+    the bundle inline as base64: one file whatever its size"""
     n, nloc = len(names), len(loci)
     dense = rep["dense"]
     buf = io.BytesIO()
@@ -997,20 +1025,13 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
         LOG(f"report.html not written: the viewer template is not beside the script ({tpl}); report.npz holds the data"); return
     html = open(tpl, encoding="utf-8").read()
     def inline_script(mt):
-        if mt.group(1) == "report_data.js": return mt.group(0)                    # the sidecar tag just inserted stays a reference
         src = os.path.join(tpl_dir, mt.group(1)); return "<script>\n" + open(src, encoding="utf-8").read() + "\n</script>"
     def inline_style(mt):
         src = os.path.join(tpl_dir, mt.group(1)); return "<style>\n" + open(src, encoding="utf-8").read() + "\n</style>"
     def inline_icon(mt):                                           # the logo and favicons, as data: URIs
         src = os.path.join(tpl_dir, mt.group(2)); kind = "image/svg+xml" if src.endswith(".svg") else "image/png"
         return f'{mt.group(1)}="data:{kind};base64,' + base64.b64encode(open(src, "rb").read()).decode("ascii") + '"'
-    b64 = base64.b64encode(data).decode("ascii")
-    if len(b64) <= REPORT_INLINE_MAX:                              # the markers first, so nothing inlined afterwards can carry them
-        html = html.replace("@@BUNDLE@@", b64).replace("@@SIDECAR@@", "")
-    else:
-        with open(f"{a.out}/report_data.js", "w") as fh: fh.write('window.LM_BUNDLE_B64 = "' + b64 + '";\n')
-        html = html.replace("@@BUNDLE@@", "").replace("@@SIDECAR@@", '<script src="report_data.js"></script>')
-        LOG(f"report.html: the data ({len(b64) >> 20} MB as text) is beside the page in report_data.js; keep the two files together")
+    html = html.replace("@@BUNDLE@@", base64.b64encode(data).decode("ascii"))   # the marker first, so nothing inlined afterwards can carry it
     html = re.sub(r'<script src="([^"]+)"></script>', inline_script, html)
     html = re.sub(r'<link rel="stylesheet" href="([^"]+)">', inline_style, html)
     html = re.sub(r'(href|src)="(icons/[^"]+)"', inline_icon, html)
@@ -1159,7 +1180,15 @@ def prepare(a, names, rows, loci, dtype, K_eff, t0):
     with np.errstate(invalid="ignore", divide="ignore"):
         ani = np.where(tot_shared > 0, 100.0 * tot_same / tot_shared, np.nan)
     np.fill_diagonal(ani, np.nan)
+    ident = (tot_shared > 0) & (tot_same == tot_shared); np.fill_diagonal(ident, False)   # genomes identical at every shared site: six copies of a bad sequence must not vouch for each other
     del tot_same, tot_shared
+    cls = np.arange(n)                                                 # identical genomes form a class (its lowest index); one class, one comparator
+    while True:
+        new = np.minimum(cls, np.where(ident, cls[None, :], n).min(1))
+        if np.array_equal(new, cls): break
+        cls = new
+    has_dup = bool(ident.any())
+    if has_dup: LOG(f"{int((cls != np.arange(n)).sum())} genomes are identical to another at every shared site: an identical genome is never a comparator, and no two comparators are identical to each other")
     # deterministic tie-break for comparator ranking: pooled divergence, then taxon order
     tie = np.nan_to_num(100.0 - ani, nan=100.0) * 1e-9 + np.arange(n)[None, :] * 1e-12
     del ani
@@ -1173,7 +1202,7 @@ def prepare(a, names, rows, loci, dtype, K_eff, t0):
     # c(d + half a mismatch) / c(m0), m0 the provisional pair divergence (raw site-weighted median).
     m0, m0_fl, _ = pair_divergences(S, W, n, iu, threads=a.threads, progress=PROG, stage="pairs0")   # the floor: the imputed half mismatch per locus, as a percentage
     m0_hi = np.maximum(m0, m0_fl); res0 = m0 > m0_fl
-    dist = np.where(np.isfinite(m0), m0, np.inf); np.fill_diagonal(dist, np.inf)   # neighbours by the provisional pair divergence (a median over loci, not swayed by one long fast locus)
+    dist = np.where(np.isfinite(m0) & res0 & ~ident & (cls == np.arange(n))[None, :], m0, np.inf); np.fill_diagonal(dist, np.inf)   # neighbours by the provisional pair divergence (a median over loci, not swayed by one long fast locus); an unresolved pair casts no vote, an identical genome is no neighbour, one genome stands for its copies
     Kn = min(K_eff, n - 1)
     nb = np.argsort(dist, axis=1, kind="stable")[:, :Kn]      # stable: a tie goes to the lower index on every platform (numpy's default sort is unstable and its tie order differs with the CPU's SIMD level)
     gi0 = np.repeat(np.arange(n), Kn); ci0 = nb.ravel()
@@ -1216,10 +1245,10 @@ def prepare(a, names, rows, loci, dtype, K_eff, t0):
           + (f"; note: no locus has a rate (no nearest-neighbour pairs resolved beyond their resolution floor), so no pair has a divergence" if ok_r.sum() == 0 else
              f"; note: {fb:.0%} of taxon pairs overlap in <{MIN_LOCI_FOR_M} loci with a rate and are never compared" if fb > 0.05 else ""))
 
-    mj = np.where(np.isfinite(m), m, np.inf) + tie                    # the comparator ranking key: m with the tie-break
+    mj = np.where(np.isfinite(m) & ~ident, m, np.inf) + tie           # the comparator ranking key: m with the tie-break; an identical genome is never a comparator (Rob, 30 Oct 2026)
     del tie
     return argparse.Namespace(X=X, S=S, W=W, iu=iu, diag_pos=diag_pos, tri_idx=tri_idx, m=m, m_hi=m_hi, m_xs=m_xs, mj=mj,
-                              plateaus=plateaus, rate=rate, focal_sites=focal_sites, thin=thin, present=present)
+                              plateaus=plateaus, rate=rate, focal_sites=focal_sites, thin=thin, present=present, cls=cls, has_dup=has_dup)
 
 
 def divergence_matrix(aln, partitions=None, datatype="dna", fit_overlap=20, n_comp=5, threads=1):
@@ -1258,8 +1287,8 @@ def main():
     global PROG
     os.makedirs(a.out, exist_ok=True); t0 = time.time()
     stale = [f for f in ("tests.tsv.gz",) if not a.all_tests and os.path.exists(os.path.join(a.out, f))] + \
-            [f for f in ("report.html", "report.npz", "report_data.js") if a.no_report and os.path.exists(os.path.join(a.out, f))] + \
-            [f for f in ("cells.tsv", "pairs.npy", "similar.tsv", "per_locus.tsv", "run.log") if os.path.exists(os.path.join(a.out, f))]
+            [f for f in ("report.html", "report.npz") if a.no_report and os.path.exists(os.path.join(a.out, f))] + \
+            [f for f in ("cells.tsv", "pairs.npy", "similar.tsv", "per_locus.tsv", "run.log", "report_data.js") if os.path.exists(os.path.join(a.out, f))]
     PROG = Progress(a.progress, t0); LOG.bar = PROG.mode == "bar"
     LOG(f"LocusMasker {__version__} ({_git_commit()}) on {time.strftime('%Y-%m-%d %H:%M:%S')}; python {platform.python_version()}, numpy {np.__version__}, {platform.platform()}")
     LOG("command: " + " ".join(sys.argv))
@@ -1296,6 +1325,7 @@ def main():
     P = prepare(a, names, rows, loci, dtype, K_eff, t0)
     X, S, W, iu, diag_pos, tri_idx = P.X, P.S, P.W, P.iu, P.diag_pos, P.tri_idx
     m, m_hi, m_xs, mj, plateaus, rate = P.m, P.m_hi, P.m_xs, P.mj, P.plateaus, P.rate
+    run_z.cls, run_z.has_dup = P.cls, P.has_dup
     focal_sites, thin, present = P.focal_sites, P.thin, P.present
     masked = rows                                                      # blanked in place; X is its own copy
 
@@ -1354,6 +1384,17 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         Wl = W[li]; nres = Wl[diag_pos].astype(int); need = np.minimum(a.fit_overlap, nres)
         top = np.full((n, K_eff), -1, np.int64); cnt = np.zeros(n, np.int64)
         rows = np.flatnonzero(nres > 0); start = 0; width = 4 * K_eff
+        if getattr(run_z, "has_dup", False):                               # identical genomes in the data: one comparator per class of copies, so the walk is per taxon
+            cls = run_z.cls
+            for g in rows.tolist():
+                seen = set(); k = 0; tg = tri_idx[g]
+                for cnd in order[g].tolist():
+                    if not np.isfinite(mj[g, cnd]): break
+                    if Wl[tg[cnd]] < need[g] or cls[cnd] in seen: continue
+                    seen.add(cls[cnd]); top[g, k] = cnd; k += 1
+                    if k == K_eff: break
+                cnt[g] = k
+            rows = rows[:0]
         while len(rows) and start < n:
             stop = min(start + width, n)
             cand = order[rows, start:stop]
@@ -1375,7 +1416,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         for b0 in range(0, len(rows), LSET_CHUNK):
             rr = rows[b0:b0 + LSET_CHUNK]; t_ = tri_idx[rr]
             ov = Wl[t_].astype(np.float64); sm = Sl[t_].astype(np.float64); mjr = mj[rr]
-            okc = (ov >= a.fit_overlap) & np.isfinite(m[rr])                     # m is NaN on the diagonal and for excluded taxa
+            okc = (ov >= a.fit_overlap) & np.isfinite(mjr)                       # mj is non-finite on the diagonal, for excluded taxa and for identical genomes
             with np.errstate(invalid="ignore", divide="ignore"):
                 d = np.where(okc, (ov - sm + HALF) / np.maximum(ov, 1.0), np.inf)
             dmin = d.min(1); has = np.isfinite(dmin)
@@ -1405,11 +1446,12 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         ident = 100.0 * same / o; dob = 100.0 - ident
         mp = m[gi, ci]; mph = m_hi[gi, ci]; mpx = m_xs[gi, ci]
         fit = (o >= a.fit_overlap) & (mpx > 0)
-        if fit.sum() < MIN_FIT_PAIRS: return f"skipped-few-resolved-pairs({int(fit.sum())})"
+        if fit.sum() < MIN_FIT_PAIRS and not np.isfinite(rate[li]): return f"skipped-few-resolved-pairs({int(fit.sum())})"
         P_ = plateaus[li]
         corr = lambda p: -P_ * np.log(1.0 - np.minimum(np.asarray(p, float), 0.98 * P_) / P_)
         pc = 100.0 * HALF / o
-        rate_c = max(float(np.median((corr(dob + pc) / corr(mph))[fit])), 1e-3)
+        if fit.sum() >= MIN_FIT_PAIRS: rate_c = max(float(np.median((corr(dob + pc) / corr(mph))[fit])), 1e-3)
+        else: rate_c = max(float(rate[li]), 1e-3)            # the comparator pairs cannot set a rate (identical relatives): the provisional rate, from the nearest resolved pairs
         def expect(mv):
             mvc = np.maximum(np.asarray(mv, float), 1e-4)
             return np.maximum(P_ * (1.0 - np.exp(-rate_c * corr(mvc) / P_)), 1e-4)
@@ -1883,7 +1925,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         for k, dt, _ in NUMCOLS: rep[k] = np.concatenate(rep[k]).astype(dt) if rep[k] else np.zeros(0, dt)
         rep["comparators"] = np.concatenate(rep["comparators"]) if rep["comparators"] else np.zeros((0, K_eff), np.int32)
         for k in ("comp_div_log10p", "comp_sim_log10p"): rep[k] = np.concatenate(rep[k]) if rep[k] else np.zeros((0, K_eff), np.float32)
-    cl = order[:, :min(5, n)].astype(np.int32); cl[~np.isfinite(m[np.arange(n)[:, None], cl])] = -1
+    cl = order[:, :min(5, n)].astype(np.int32); cl[~np.isfinite(mj[np.arange(n)[:, None], cl])] = -1   # the closest non-identical relatives
     rep.update(taxa_closest=cl, rate=rate, plateaus=plateaus, kq=kq, logbar=logbar, phi_bar=phi_bar,
                tests=dict(divergent=D_tests, similar_comparator=D_tests, similar_closest=S_tests, total=N_tests, locus_sets=nfork))
     with open(f"{a.out}/masked.csv", "w", newline="") as fh:
@@ -1898,7 +1940,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     LOG(f"not tested: {len(rep['thin'])} of {n} taxa (excluded: fewer than {MIN_LOCI_PER_TAXON} loci with at least {a.fit_overlap} residues"
         f"{': ' + ', '.join(names[i] for i in rep['thin'][:10]) + (' ...' if len(rep['thin']) > 10 else '') if len(rep['thin']) else ''}); "
         f"{int(skipped_l.sum())} of {nloc} loci ({', '.join(f'{loci[i][0]} ({st})' for i, st in enumerate(rep['loc_status']) if st != 'tested')[:300] or 'none'}); "
-        f"{int(untested.sum()):,} of {int(present_c.sum()):,} present sequences ({u_thin:,} of excluded taxa, {u_loc:,} at untested loci, {u_comp:,} with no comparator sharing enough sites)")
+        f"{int(untested.sum()):,} of {int(present_c.sum()):,} present sequences ({u_thin:,} of excluded taxa, {u_loc:,} at untested loci, {u_comp:,} with no comparator: no resolved relative sharing enough sites)")
     npair = sum(sum(1 for e in v if e['fail']) for v in rep['similar'].values()); ncl = sum(sum(1 for e in v if e['fail'] and e['test'] == 'closest') for v in rep['similar'].values())
     LOG(f"too-similar pairs: {npair:,} ({npair - ncl:,} against a comparator, {ncl:,} against the closest match; {S_tests:,} closest-match tests run)")
     nunc = int(((rep["side"] & 8) > 0).sum())

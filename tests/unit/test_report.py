@@ -46,12 +46,10 @@ class TestHtml:
         html = open(runs("dna_small").file("report.html"), encoding="utf-8").read()
         assert "LocusMasker report viewer" in html and "<style>" in html and "d3" in html and "<title>LocusMasker report</title>" in html
 
-    @pytest.mark.xfail(strict=True, reason="BUG: above REPORT_INLINE_MAX the data goes to a sidecar report_data.js and report.html alone is empty (Rob: the report is always one file)")
-    def test_the_data_always_goes_inside_the_page(self, tmp_out, monkeypatch):
-        """the report is one file whatever its size (Rob, 29 Oct 2026); the sidecar must never be used"""
-        monkeypatch.setattr(lo, "REPORT_INLINE_MAX", 1000)
-        ds = dataset("dna_clean"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts)
-        html = open(r.file("report.html"), encoding="utf-8").read()
+    def test_the_data_always_goes_inside_the_page(self, runs):
+        """the report is one file whatever its size (Rob, 29 Oct 2026): no size cap, no sidecar"""
+        assert not hasattr(lo, "REPORT_INLINE_MAX")
+        r = runs("dna_clean"); html = open(r.file("report.html"), encoding="utf-8").read()
         assert base64.b64encode(open(r.file("report.npz"), "rb").read()).decode("ascii") in html and not r.exists("report_data.js")
 
     def test_the_page_size_is_the_data_plus_a_small_viewer(self, runs):

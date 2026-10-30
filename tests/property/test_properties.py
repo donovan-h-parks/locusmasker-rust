@@ -87,7 +87,7 @@ class TestTails:
         o = np.array(os_, float); nn = np.full(len(o), float(n)); EE = np.full(len(o), E)
         up = lo.bb_tails(o, nn, EE, phi, True); lo_ = lo.bb_tails(o, nn, EE, phi, False)
         assert np.all(up <= 0) and np.all(lo_ <= 0) and np.all(up >= lo._LOG_FLOOR) and np.all(lo_ >= lo._LOG_FLOOR)
-        assert np.all(np.diff(up) <= 1e-9) and np.all(np.diff(lo_) >= -1e-9)
+        assert np.all(np.diff(up) <= 1e-8) and np.all(np.diff(lo_) >= -1e-8)      # 1e-8: the gamma terms of a Beta with a + b near 1e9 carry about 1e-9 of rounding
 
     @given(st.integers(1, 2000), st.floats(1e-4, 0.9999), st.integers(0, 2000))
     def test_binomial_tails_add_to_one(self, n, d, o):

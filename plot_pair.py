@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""One taxon pair, every locus: observed against expected divergence, outliers highlighted.
+"""One taxon pair, every locus where the two were tested against each other: observed against expected divergence,
+the loci where the pair failed a test highlighted.
 
     python plot_pair.py DIR TAXON_A TAXON_B [--out FILE] [--label N]
 
-Reads tests.tsv.gz, which locus_outliers.py writes only with --all-tests: every test of the run, so
-the pair's too-similar test at every locus where the two share >= --fit-overlap sites, and its
-too-divergent test where one is among the other's comparators. Also masked.csv, and report.npz
-for the pair's m. Left: one point per locus, x = the divergence the locus expects for this pair
-(its rate at the pair's m; the too-similar test holds the pair to this times the row factor, at
-most 1), y = what it shows; the diagonal is the expectation. Right: the same ratios as a
-histogram. Colours are the pair's own verdict at each locus: red = too divergent, blue = too
-similar, grey = within expectation; the subtitle says which of the two is the copy where a too-
-similar pair's direction was identified. A dark ring marks loci where TAXON_A's cell was masked
-(too divergent against its comparators, or the copy in a too-similar pair). The --label N most
-extreme loci are named."""
+Reads tests.tsv.gz, which locus_outliers.py writes only with --all-tests: every test of the run. A pair is tested
+at a locus when one is among the other's comparators there (the too-divergent test and the too-similar comparator
+test, in both directions) or one is the other's closest match at the locus outside its comparators (the too-similar
+closest-match test). Also masked.csv (which of the two is the copy where a too-similar pair's direction was called,
+and TAXON_A's masked cells) and report.npz for the pair's m. Left: one point per locus, x = the divergence the test
+expected for the pair (the comparator tests: the locus rate at the pair's m, before the row factor; the closest-match
+test: what the pair's relatives show), y = what it shows; the diagonal is the expectation. Right: the same ratios as
+a histogram. Colours are the pair's verdict at each locus: red = too divergent, blue = too similar, grey = within
+expectation; the subtitle says which of the two is the copy where a too-similar pair's direction was called. A dark
+ring marks loci where TAXON_A's cell was masked. The --label N most extreme loci are named."""
 import argparse, csv, gzip, json, math, os, zipfile, numpy as np, matplotlib
 matplotlib.use("Agg"); import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
@@ -30,44 +30,55 @@ if Z is not None:                                                    # name a ta
     names = json.loads(Z.read("taxa.json"))["names"]
     for x in (a.a, a.b):
         if x not in names: raise SystemExit(f"{x} is not a taxon of the run in {a.dir}")
-# every test of the pair, by locus: one row per test (divergent, similar, direction); the file is read as bytes and a line
-# is split only when it holds the two names side by side, so a large file streams quickly
+# every test of the pair, by locus and test (divergent, similar_comparator, similar_closest; one row per direction
+# tested); the file is read as bytes and a line is split only when it holds the two names side by side, so a large
+# file streams quickly
+COLS = ("test", "locus", "taxon", "comparator", "overlap", "mismatches", "expected", "row_factor", "log10p", "fail")
 rows = {}; keys = {(a.a, a.b), (a.b, a.a)}; pats = tuple(f"\t{x}\t{y}\t".encode() for x, y in keys)
 with gzip.open(tp, "rb") as fh:
     head = fh.readline().decode().rstrip("\n").split("\t"); c = {k: i for i, k in enumerate(head)}
+    missing = [k for k in COLS if k not in c]
+    if missing: raise SystemExit(f"{tp} has no column {', '.join(missing)}: it was written by another version of locus_outliers.py (its columns: {', '.join(head)})")
     for line in fh:
         if pats[0] in line or pats[1] in line:
             f = line.decode().rstrip("\n").split("\t")
-            if (f[c["taxon_a"]], f[c["taxon_b"]]) in keys: rows.setdefault(f[c["locus"]], {})[f[c["test"]]] = f
-if not rows: raise SystemExit(f"{a.a} and {a.b} were never tested against each other: they share fewer than --fit-overlap sites at every locus, "
-                              f"or one of them is not in the test (excluded, or not a taxon of the run)")
-masked = {}
+            if (f[c["taxon"]], f[c["comparator"]]) in keys: rows.setdefault(f[c["locus"]], {}).setdefault(f[c["test"]], []).append(f)
+if not rows: raise SystemExit(f"{a.a} and {a.b} were never tested against each other: at no locus is one among the other's comparators or its closest match "
+                              f"(they share fewer than --fit-overlap sites, or are not close relatives), or one of them is not in the test (excluded, or not a taxon of the run)")
+masked = {}; copy = {}                                                 # TAXON_A's masked cells by locus; the copy of the pair where a direction was called
 if os.path.exists(f"{a.dir}/masked.csv"):
     for r in csv.DictReader(open(f"{a.dir}/masked.csv")):
         if r["taxon"] == a.a: masked[r["locus"]] = r["reason"]
+        if r["taxon"] in (a.a, a.b) and r.get("similar_partner") in (a.a, a.b) and r.get("similar_role") in ("copy", "uncertain"):
+            copy[r["locus"]] = r["taxon"] if r["similar_role"] == "copy" else "?"
 loci = sorted(rows); R = [rows[l] for l in loci]
-num = lambda d, k: float((d.get("similar") or d["divergent"])[c[k]])   # the too-similar row where there is one: it exists wherever the pair is testable
+def test_row(d):
+    """the row whose expectation the point shows: the too-similar comparator test (at m, before the row factor), else the
+    too-divergent test, else the closest-match test"""
+    return (d.get("similar_comparator") or d.get("divergent") or d["similar_closest"])[0]
+num = lambda d, k: float(test_row(d)[c[k]])
 o = np.array([num(d, "overlap") for d in R]); obs = 100.0 * np.array([num(d, "mismatches") for d in R]) / o
-exp = 100.0 * np.array([num(d, "expected") for d in R]) / o            # expected mismatches at the pair's m (before the row factor)
-hi = np.array(["divergent" in d and d["divergent"][c["fail"]] == "1" for d in R]); lo = np.array(["similar" in d and d["similar"][c["fail"]] == "1" for d in R])
-copy = np.array([d["direction"][c["recipient"]] if "direction" in d else "" for d in R], dtype=object)   # the identified copy of a too-similar pair
+exp = 100.0 * np.array([num(d, "expected") for d in R]) / o
+failed = lambda d, k: any(f[c["fail"]] == "1" for f in d.get(k, []))
+hi = np.array([failed(d, "divergent") for d in R]); lo = np.array([failed(d, "similar_comparator") or failed(d, "similar_closest") for d in R])
+copy_of = np.array([copy.get(l, "") for l in loci], dtype=object)
 ring = np.array([l in masked for l in loci])
 def pair_m(kind):
     """the pair's genome-wide divergence: the test's expected divergence at each locus taken back through the locus's
-    expectation curve, P (1 - exp(-rate c(m) / P)), c(p) = -P ln(1 - p / P); the median over loci. The too-similar test
-    uses m, the too-divergent test max(m, m_res), the pair's resolution floor."""
+    expectation curve, P (1 - exp(-rate c(m) / P)), c(p) = -P ln(1 - p / P); the median over loci. The too-similar
+    comparator test uses m, the too-divergent test max(m, m_res), the pair's resolution floor."""
     if Z is None: return None
     LJ = json.loads(Z.read("loci.json")); at = {n: i for i, n in enumerate(LJ["names"])}; v = []
     for l, d in zip(loci, R):
         if kind not in d or LJ["test_rate"][at[l]] is None: continue
-        P_, r_ = float(LJ["plateau"][at[l]]), float(LJ["test_rate"][at[l]]); p_ = 100.0 * float(d[kind][c["expected"]]) / float(d[kind][c["overlap"]])
+        f = d[kind][0]; P_, r_ = float(LJ["plateau"][at[l]]), float(LJ["test_rate"][at[l]]); p_ = 100.0 * float(f[c["expected"]]) / float(f[c["overlap"]])
         v.append(P_ * (1.0 - math.exp(P_ * math.log(1.0 - min(p_, 0.98 * P_) / P_) / (r_ * P_))))
     return float(np.median(v)) if v else None
-m, m_hi = pair_m("similar"), pair_m("divergent")
+m, m_hi = pair_m("similar_comparator"), pair_m("divergent")
 mtxt = ("" if m is None and m_hi is None else f"pair divergence m = {m if m is not None else m_hi:.2f}%"
         + (f" (the too-divergent test at its floor, {m_hi:.2f}%)" if m is not None and m_hi is not None and m_hi > 1.005 * m else "") + " · ")
-ncopy = [int(((copy == x) & lo).sum()) for x in (a.a, a.b)]; nund = int(lo.sum()) - sum(ncopy)
-dirtxt = ", ".join([f"{x} the copy at {k}" for x, k in zip((a.a, a.b), ncopy) if k] + ([f"no direction at {nund}"] if nund else []))
+ncopy = [int(((copy_of == x) & lo).sum()) for x in (a.a, a.b)]; nunc = int(((copy_of == "?") & lo).sum())
+dirtxt = ", ".join([f"{x} the copy at {k}" for x, k in zip((a.a, a.b), ncopy) if k] + ([f"direction uncertain at {nunc}"] if nunc else []))
 eps = 0.5 / o * 100                                          # half a mismatch: keeps zero divergences on a log axis
 y = np.maximum(obs, eps); x = np.maximum(exp, eps); ratio = np.log2(y / x)
 inf = (obs * o / 100 >= 1) | (exp * o / 100 >= 1)              # loci where at least one side expects or shows a difference
@@ -77,6 +88,7 @@ GREY, RED, BLUE, MODEL, FLOOR = "#9a9893", "#e34948", "#3987e5", "#3b3a37", "#a5
 col = np.where(hi, RED, np.where(lo, BLUE, GREY))
 fig, (ax, hx) = plt.subplots(1, 2, figsize=(10.5, 4.6), dpi=150, gridspec_kw=dict(width_ratios=(3, 2)))
 order = [i for i in np.argsort(hi | lo) if inf[i]]              # outliers drawn last; uninformative loci not drawn
+if not inf.any(): raise SystemExit(f"{a.a} and {a.b} show no difference and expect none at any of the {len(loci)} loci where they were tested: nothing to plot")
 ax.scatter(x[order], y[order], s=14, c=col[order], alpha=0.85, linewidths=0, zorder=3)
 if (ring & inf).any(): ax.scatter(x[ring & inf], y[ring & inf], s=40, facecolors="none", edgecolors=INK, linewidths=0.8, zorder=4)
 lim = (min(x[inf].min(), y[inf].min()) / 1.5, max(x[inf].max(), y[inf].max()) * 1.5)
@@ -91,7 +103,7 @@ for k, i in enumerate([i for i in np.argsort(-np.abs(ratio)) if (hi[i] or lo[i])
     ax.annotate(short(loci[i]), (x[i], y[i]), xytext=(6, -10 - 9 * k), textcoords="offset points",
                 fontsize=6, color=INK, arrowprops=dict(arrowstyle="-", color=FLOOR, lw=0.5))
 ax.set_xlabel("expected locus divergence for this pair (%)", fontsize=8, color=MUTED); ax.set_ylabel("observed locus divergence (%)", fontsize=8, color=MUTED)
-sub = (f"{len(loci)} loci ({int((~inf).sum())} with no difference expected or seen) · {mtxt}",
+sub = (f"{len(loci)} loci where the pair was tested ({int((~inf).sum())} with no difference expected or seen) · {mtxt}",
        f"{hi.sum()} too divergent, {lo.sum()} too similar" + (f" ({dirtxt})" if dirtxt else "") + f" · {ring.sum()} of {a.a}'s cells masked")
 TITLE = dict(fontsize=10, color=INK, loc="left", fontweight="bold")
 ax.set_title(f"{a.a} vs {a.b}", pad=16, **TITLE)
@@ -118,7 +130,7 @@ for axx in (ax, hx):
 ax.tick_params(which="minor", labelsize=7, labelcolor=MUTED)
 fig.tight_layout(rect=(0, 0.05, 1, 1))
 rr = fig.canvas.get_renderer()
-if subt.get_window_extent(rr).x1 > hx.get_window_extent(rr).x0 - 8:      # it would run into the histogram's title (left-aligned on its axes): two lines
+if subt.get_window_extent(rr).x1 > hx.get_window_extent(rr).x0 - 30:     # it would run into the histogram's title (left-aligned on its axes): two lines
     subt.set_text(sub[0].rstrip(" ·") + "\n" + sub[1]); ax.set_title(f"{a.a} vs {a.b}", pad=25, **TITLE); fig.tight_layout(rect=(0, 0.05, 1, 1))
 out = a.out or f"{a.dir}/pair_{a.a}_vs_{a.b}.png"
 fig.savefig(out, bbox_inches="tight"); print("wrote", out)

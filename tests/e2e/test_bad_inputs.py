@@ -45,7 +45,6 @@ class TestBrokenAlignments:
         ds, names, seqs = fasta_rows(); names[5] = names[2]; f = tmp_path / "a.fasta"; write_fasta(f, names, seqs)
         failed(run_tool(str(f), tmp_out, "dna", ds.parts), "duplicate", names[2])
 
-    @pytest.mark.xfail(strict=True, reason="BUG: a record with an empty sequence shifts every later sequence onto the wrong name and the run proceeds")
     def test_a_record_with_no_sequence(self, tmp_path, tmp_out):
         ds, names, seqs = fasta_rows(); f = tmp_path / "a.fasta"
         with open(f, "w") as fh:

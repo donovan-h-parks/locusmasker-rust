@@ -142,8 +142,22 @@ class TestOtherScripts:
     def test_plot_taxon_unknown_taxon(self, runs, tmp_path):
         r = script("plot_taxon.py", [runs("dna_small").out, "nobody", "--out", str(tmp_path / "t.png")], str(tmp_path)); assert r.returncode != 0
 
-    @pytest.mark.xfail(strict=True, reason="BUG: plot_pair.py reads the tests.tsv.gz columns of 0.10 (taxon_a, taxon_b); the file has had taxon and comparator since 0.11")
-    def test_plot_pair_needs_all_tests(self, tmp_path):
-        ds = dataset("dna_small"); run = run_tool(ds.aln, str(tmp_path / "o"), "dna", ds.parts, ["--all-tests"]); row = run.masked[0]
-        r = script("plot_pair.py", [run.out, row["taxon"], row["comparators"].split("; ")[0], "--out", str(tmp_path / "p.png")], str(tmp_path)); assert r.returncode == 0, r.stderr
+    def test_plot_pair(self, tmp_path):
+        ds = dataset("dna_small"); run = run_tool(ds.aln, str(tmp_path / "o"), "dna", ds.parts, ["--all-tests"]); row = run.masked[0]; other = row["comparators"].split("; ")[0]
+        r = script("plot_pair.py", [run.out, row["taxon"], other, "--out", str(tmp_path / "p.png")], str(tmp_path)); assert r.returncode == 0, r.stderr
         assert (tmp_path / "p.png").exists()
+        r = script("plot_pair.py", [run.out, row["taxon"], row["taxon"]], str(tmp_path)); assert r.returncode != 0 and "two different" in r.stderr
+        r = script("plot_pair.py", [run.out, row["taxon"], "nobody"], str(tmp_path)); assert r.returncode != 0 and "not a taxon" in r.stderr
+        excluded = next(e["taxon"] for e in ds.events if e["kind"] == "excluded")
+        r = script("plot_pair.py", [run.out, row["taxon"], excluded], str(tmp_path)); assert r.returncode != 0 and "never tested" in r.stderr
+
+    def test_plot_pair_on_a_too_similar_pair(self, tmp_path):
+        ds = dataset("dna_small"); run = run_tool(ds.aln, str(tmp_path / "o"), "dna", ds.parts, ["--all-tests"])
+        row = next(x for x in run.masked if x["similar_partner"])
+        r = script("plot_pair.py", [run.out, row["taxon"], row["similar_partner"], "--out", str(tmp_path / "p.png")], str(tmp_path)); assert r.returncode == 0, r.stderr
+        assert (tmp_path / "p.png").exists()
+
+    def test_plot_pair_needs_the_tests_file(self, runs, tmp_path):
+        run = runs("dna_small"); row = run.masked[0]
+        r = script("plot_pair.py", [run.out, row["taxon"], row["comparators"].split("; ")[0], "--out", str(tmp_path / "p.png")], str(tmp_path))
+        assert r.returncode != 0 and "--all-tests" in r.stderr

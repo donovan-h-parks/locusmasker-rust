@@ -1,5 +1,5 @@
 /* LocusMasker report viewer. One classic script: reads the bundle (a ZIP of .npy members and JSON) from the page,
-   a sidecar global, a dropped file, or the website's worker, and draws everything. Nothing here computes a result:
+   a dropped file, or the website's worker, and draws everything. Nothing here computes a result:
    every number comes from the bundle the tool wrote. */
 (() => {
 "use strict";
@@ -291,14 +291,14 @@ function testSummary(T) {
 const App = { D: null, panels: {}, hover: null, sel: { rows: new Set(), cols: new Set(), cells: new Set() }, order: { taxa: null, loci: null, taxaMode: "input", lociMode: "input" }, hidePass: false, view: "summary" };
 
 function boot() {
-  const tag = document.getElementById("lm-bundle"); let b64 = (tag && tag.textContent.trim()) || (window.LM_BUNDLE_B64 || "").trim();
+  const tag = document.getElementById("lm-bundle"); let b64 = tag ? tag.textContent.trim() : "";
   if (b64 && b64 !== "@@" + "BUNDLE@@") { start(b64ToBytes(b64)).catch(showError); return; }   // the marker the tool replaces, split so this file never carries it
   if (window.LM_BUNDLE_BYTES) { start(window.LM_BUNDLE_BYTES).catch(showError); return; }
-  showPicker("This page carries no data. Open a report.npz, a report.html or its report_data.js here:");
+  showPicker("This page carries no data. Open a report.npz or a report.html here:");
 }
 function showError(e) { console.error(e); $("#app").replaceChildren(el("div", { class: "error" }, "The report could not be read.\n\n" + (e && e.stack || e))); }
 function showPicker(msg) {
-  const inp = el("input", { type: "file", accept: ".npz,.html,.js,.zip" });
+  const inp = el("input", { type: "file", accept: ".npz,.html,.zip" });
   const drop = el("div", { class: "drop" }, "drop a file here, or ", inp);
   const box = el("div", { class: "picker" }, el("h1", null, "LocusMasker report"), el("p", null, msg), drop);
   $("#app").replaceChildren(box);
@@ -306,7 +306,7 @@ function showPicker(msg) {
     const buf = new Uint8Array(await f.arrayBuffer());
     if (f.name.endsWith(".npz") || f.name.endsWith(".zip")) return start(buf).catch(showError);
     const text = new TextDecoder().decode(buf);
-    const m = /id="lm-bundle"[^>]*>([^<]*)</.exec(text) || /LM_BUNDLE_B64\s*=\s*"([^"]+)"/.exec(text);
+    const m = /id="lm-bundle"[^>]*>([^<]*)</.exec(text);
     if (m && m[1].trim()) return start(b64ToBytes(m[1])).catch(showError);
     showError(new Error("no bundle found in " + f.name));
   };
