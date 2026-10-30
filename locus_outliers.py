@@ -92,7 +92,7 @@ Method:
             sequence tested. Bonferroni over the whole run. There is no effect-size floor: the
             locus's dispersion sets how far from expectation a long locus has to be.
   decide    a sequence is MASKED when it fails test 1, or when it is the copy of a too-similar
-            pair, or both. --mask-similar-only / --mask-different-only restrict masking to one
+            pair (or a member of one whose direction is uncertain), or both. --mask-similar-only / --mask-different-only restrict masking to one
             test. Masking blanks the sequence's whole stretch of the locus.
 
 Outputs (in --out; <stem> is the alignment file's name without extension)
@@ -106,7 +106,9 @@ Outputs (in --out; <stem> is the alignment file's name without extension)
                        divergent_log10p, the p-value of the comparison that decides the majority.
                        Test 2: similar_test (comparator or closest: the arm whose test fired lowest, or
                        the closest-match test the sequence got when none fired), similar_partner (the
-                       other member of the pair, or the closest match) and similar_role (copy or source;
+                       other member of the pair, or the closest match) and similar_role (copy, source or
+                       uncertain: the direction is called when the larger of the two members' test-1
+                       excesses is more than --donor-threshold times the smaller, else both are masked;
                        empty when no pair fired), the pair's observed and expected divergence (%; the
                        expectation before the row factor), similar_row_factor (comparator arm),
                        similar_log10p, similar_relatives (closest-match arm: the comparators whose rate
@@ -145,8 +147,8 @@ MIN_LOCI_FOR_M = 5      # pairs overlapping in fewer loci have no m and are neve
 MIN_LOCI_PER_TAXON = 10 # a taxon needs this many loci with >= fit-overlap residues to take part
 MIN_FIT_PAIRS = 8       # a locus needs this many fit pairs to be tested (or to get a rate)
 TEST_THREAD_PAIRS = 4000  # --threads applies to the test stage only when a locus has this many comparisons on average
-__version__ = "0.12.0"
-REPORT_FORMAT = 5                 # bundle format version; the viewer refuses a newer one (3: tree branch lengths are F81-corrected; 4: the too-similar test over every pair)
+__version__ = "0.13.0"
+REPORT_FORMAT = 7                 # bundle format version; the viewer refuses a newer one (3: tree branch lengths are F81-corrected; 4: the too-similar test over every pair; 7: every test of every cell, the closest match at the locus, the uncertain-direction pairs)
 DENSE_CELLS_MAX = 8_000_000       # per-cell numeric report columns are dense (taxa x loci) up to this many cells, sparse beyond
 BEST_MATCH_ALL_MAX_TAXA = 2000    # best matches for every tested cell up to this many taxa; beyond, only for cells with a fail
 BEST_MATCH_MIN_SITES = 30         # a best match needs this many sites shared with the focal (as plot_panels.best_matches)
@@ -843,14 +845,10 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
         def put_json(name, obj): zf.writestr(name, json.dumps(obj, indent=1))
         for k in ("n_comp", "n_fail", "n_similar", "side", "focal_sites"): put(f"cells/{k}.npy", rep[k])
         numcols = ("med_identity", "med_expected", "excess_m", "closest", "closest_overlap", "closest_identity", "closest_expected",
-                   "best_match", "best_match_identity", "partner", "div_log10p", "sim_log10p")
-        if dense:
-            for k in numcols: put(f"cells/{k}.npy", rep[k])
-            put("cells/comparators.npy", rep["comparators"])
-        else:
-            put("cells/sparse_locus.npy", rep["sparse_locus"]); put("cells/sparse_taxon.npy", rep["sparse_taxon"])
-            for k in numcols: put(f"cells/{k}.npy", rep[k])
-            put("cells/comparators.npy", rep["comparators"])
+                   "best_match", "best_match_identity", "partner", "div_log10p", "sim_log10p", "locus_closest", "locus_closest_log10p")
+        if not dense: put("cells/sparse_locus.npy", rep["sparse_locus"]); put("cells/sparse_taxon.npy", rep["sparse_taxon"])
+        for k in numcols: put(f"cells/{k}.npy", rep[k])
+        for k in ("comparators", "comp_div_log10p", "comp_sim_log10p"): put(f"cells/{k}.npy", rep[k])
         for li, (cells_, blk) in rep["codes"].items():
             put(f"codes/{li}.npy", blk); put(f"codes/{li}_cells.npy", cells_)
         for li, tr in rep["trees"].items(): put_json(f"trees/{li}.json", tr)
@@ -864,7 +862,7 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
                       masked=int(((side & 3) > 0).sum()), masked_divergent=int((side & 1 > 0).sum()), masked_similar=int((side & 2 > 0).sum()),
                       masked_both=int(((side & 3) == 3).sum()), ambiguous=int((side & 4 > 0).sum()),
                       similar_tested=int((side & 64 > 0).sum()), similar_pairs=int(sum(sum(1 for e in v if e["fail"]) for v in rep["similar"].values())),
-                      similar_sources=int((side & 128 > 0).sum()),
+                      similar_sources=int((side & 128 > 0).sum()), similar_uncertain=int((side & 8 > 0).sum()),
                       near_miss={str(j): int(((n_fail == j) & tested & ((side & 1) == 0)).sum()) for j in range(1, M_eff)},
                       excluded_taxa=int(len(rep["thin"])), skipped_loci=int(sum(1 for st in rep["loc_status"] if st != "tested")))
         thin = set(int(t) for t in rep["thin"])
@@ -881,7 +879,7 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
             format_version=REPORT_FORMAT, tool="LocusMasker", version=__version__, commit=_git_commit(),
             python=platform.python_version(), numpy=np.__version__, platform=("pyodide" if sys.platform == "emscripten" else "native"),
             system=platform.platform(), date=time.strftime("%Y-%m-%d %H:%M:%S"), command=" ".join(sys.argv),
-            options=dict(datatype=dtype, n_comp=K, K_eff=K_eff, M_eff=M_eff, fit_overlap=a.fit_overlap, alpha=a.alpha,
+            options=dict(datatype=dtype, n_comp=K, K_eff=K_eff, M_eff=M_eff, fit_overlap=a.fit_overlap, alpha=a.alpha, donor_threshold=a.donor_threshold,
                          mask_similar_only=a.mask_similar_only, mask_different_only=a.mask_different_only, threads=a.threads, all_tests=a.all_tests,
                          report_codes=a.report_codes, report_sequences=rep["seq_policy"]),
             input=dict(file=os.path.basename(a.aln), bytes=os.path.getsize(a.aln), sha256=_sha256(a.aln), format=fmt,
@@ -894,9 +892,10 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
                                      phi_dataset=round(float(rep["phi_bar"]), 6), half=HALF),
             carried=dict(numeric_columns="dense" if dense else "sparse", codes=a.report_codes, sequences=rep["seq_policy"], trees="masked",
                          tree_partners="the pair's partner", similar="every too-similar test and every source, per locus (similar/<locus>.json)",
+                         tests="every cell's comparators and both of each comparator's tests (cells/comp_div_log10p, cells/comp_sim_log10p, log10 p by comparator rank), the closest match at the locus and its too-similar test (cells/locus_closest, cells/locus_closest_log10p)",
                          best_match_cells="all" if n <= BEST_MATCH_ALL_MAX_TAXA else "fails"),
             code_map=dict(mismatch_count_max=K_eff, similar_base=CODE_SIMILAR, tick=CODE_TICK, absent=CODE_ABSENT),
-            side_bits=dict(masked_divergent=1, masked_similar=2, ambiguous=4, flagged_not_masked=16, similar_not_masked=32, similar_tested=64, similar_source=128),
+            side_bits=dict(masked_divergent=1, masked_similar=2, ambiguous=4, similar_uncertain=8, flagged_not_masked=16, similar_not_masked=32, similar_tested=64, similar_source=128),
             timings=dict(PROG.durations, total=round(time.time() - t0, 2))))
     data = buf.getvalue()
     with open(f"{a.out}/report.npz", "wb") as fh: fh.write(data)
@@ -1143,6 +1142,8 @@ def main():
     ap.add_argument("--datatype", required=True, choices=("dna", "aa"))
     ap.add_argument("--n-comp", type=int, default=5); ap.add_argument("--fit-overlap", type=int, default=20)
     ap.add_argument("--alpha", type=float, default=0.05)
+    ap.add_argument("--donor-threshold", type=float, default=2.0, help="the direction of a too-similar pair is called (the copy masked, its source not) when the larger of the "
+                    "two members' test-1 excesses, in absolute value, is more than this many times the smaller; otherwise the direction is uncertain and both members are masked (default 2)")
     ap.add_argument("--mask-similar-only", action="store_true"); ap.add_argument("--mask-different-only", action="store_true")
     ap.add_argument("--threads", type=int, default=1, help="worker threads (0: every CPU available); each stage uses as many as pay off, never more than the CPUs")
     ap.add_argument("--progress", choices=("auto", "bar", "lines", "none"), default="auto",
@@ -1359,10 +1360,11 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     NUMCOLS = (("med_identity", np.float32, np.nan), ("med_expected", np.float32, np.nan), ("excess_m", np.float32, np.nan),
                ("closest", np.int32, -1), ("closest_overlap", np.uint32, 0), ("closest_identity", np.float32, np.nan), ("closest_expected", np.float32, np.nan),
                ("best_match", np.int32, -1), ("best_match_identity", np.float32, np.nan), ("partner", np.int32, -1),
-               ("div_log10p", np.float32, np.nan), ("sim_log10p", np.float32, np.nan))
+               ("div_log10p", np.float32, np.nan), ("sim_log10p", np.float32, np.nan), ("locus_closest", np.int32, -1), ("locus_closest_log10p", np.float32, np.nan))
     for k in ("n_comp", "n_fail", "n_similar", "side"): rep[k] = np.zeros((n, nloc), np.uint8)
     for k, dt, fill in NUMCOLS: rep[k] = np.full((n, nloc), fill, dt) if dense else []
     rep["comparators"] = np.full((n, nloc, K_eff), -1, np.int32) if dense else []
+    for k in ("comp_div_log10p", "comp_sim_log10p"): rep[k] = np.full((n, nloc, K_eff), np.nan, np.float32) if dense else []
     rep["dense"] = dense; sparse_loc, sparse_tax = [], []
     rep["codes"] = {}; rep["seqs"] = {}; rep["trees"] = {}; rep["similar"] = {}; rep["loc_status"] = ["tested"] * nloc
     rep["phi"] = np.full(nloc, np.nan); rep["test_rate"] = np.full(nloc, np.nan); rep["pair_tests"] = npt_l
@@ -1503,14 +1505,20 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
             xg = abs(exm[qg]) if qg is not None and np.isfinite(exm[qg]) else -np.inf
             xy = abs(exm[qy]) if qy is not None and np.isfinite(exm[qy]) else -np.inf
             cp, sr = (g, y) if xg >= xy else (y, g)
+            # the direction is uncertain, and both members are masked, when the larger excess is not more than --donor-threshold
+            # times the smaller (a member outside the test, with no excess, cannot be masked: the other is the copy)
+            uncertain = bool(np.isfinite(xg) and np.isfinite(xy) and max(xg, xy) <= a.donor_threshold * min(xg, xy)); rec["uncertain"] = uncertain
             for member, other, is_copy in ((cp, sr, True), (sr, cp, False)):
                 qm = cpos.get(member)
                 if qm is None: continue
                 npair[qm] += 1
-                if is_copy: copy_q[qm] = True
-                else: src_q[qm] = True
-                if qm not in pair_of or rec["lnp"] < pair_of[qm][0]["lnp"]: pair_of[qm] = (rec, other, is_copy)
-        for qm, (rec, other, is_copy) in pair_of.items(): partner_[qm] = other; role_[qm] = "copy" if is_copy else "source"
+                role = "uncertain" if uncertain else "copy" if is_copy else "source"
+                if role == "source": src_q[qm] = True
+                else: copy_q[qm] = True
+                if qm not in pair_of or rec["lnp"] < pair_of[qm][0]["lnp"]: pair_of[qm] = (rec, other, role)
+        for qm, (rec, other, role) in pair_of.items(): partner_[qm] = other; role_[qm] = role
+        unc_q = np.zeros(ncell, bool)
+        for qm, role in role_.items(): unc_q[qm] = role == "uncertain"
         for q in np.flatnonzero(tested2 & (partner_ < 0)).tolist(): partner_[q] = Y[q]
         sflag = copy_q
 
@@ -1524,11 +1532,27 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         need = np.where(kc >= K_eff, M_eff, kc // 2 + 1)
         LP = cell_matrix(lp_hi); LP.sort(axis=1)
         div_lp = np.where(fail_q, LP[ar, np.maximum(need, 1) - 1], np.nan)
+        # every comparator's two tests for every cell: log10 p of the too-divergent upper tail and of the too-similar lower
+        # tail, by comparator rank as in the report's comparators (NaN: no such comparator). A comparison at or below
+        # expectation keeps the upper tail's convention of 0 (p = 1) unless the cell failed, where every tail is exact
+        def slot_matrix(v):
+            Pm = np.full((ncell, K_eff), np.nan, np.float32); Pm[row, rk] = v / LN10; return Pm
+        comp_div_ = slot_matrix(np.where(np.isnan(lp_hi), 0.0, lp_hi)); comp_sim_ = slot_matrix(lp_in)
+        # the closest match at the locus for every cell (-1: no taxon shares enough sites) and its too-similar test: the
+        # comparator arm when it is one of the comparators, the closest-match arm when it is not, NaN when not tested
+        lclos_ = closest[idx].astype(np.int32); lclos_p = np.full(ncell, np.nan, np.float32)
+        for q in range(ncell):
+            y = int(lclos_[q])
+            if y < 0: continue
+            if tested2[q] and int(Y[q]) == y: lclos_p[q] = lp_lo[q] / LN10
+            else:
+                r_ = np.flatnonzero(top[int(idx[q])] == y)
+                if len(r_): lclos_p[q] = comp_sim_[q, int(r_[0])]
 
         def sim_cols(q):
             """the too-similar columns of a cell: its pair's numbers from the test that fired, else its own closest-match test"""
             if q in pair_of:
-                rec, other, is_copy = pair_of[q]
+                rec, other, _ = pair_of[q]
             elif tested2[q]: rec, other = dict(arm="closest", o=o2[q], mis=mis2[q], E=float(E2[q]), f=1.0, lnp=float(lp_lo[q]), rel=rel2[q]), int(Y[q])
             else: return ["", "", "", "", "", "", "", "", ""]
             qo = cpos.get(other); px = fnum(exm[qo], 3) if qo is not None else ""
@@ -1548,7 +1572,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         side_ = np.zeros(ncell, np.uint8)
         side_ |= np.where(dflag, 1 if mask_hi else 16, 0).astype(np.uint8); side_ |= (amb.astype(np.uint8) << 2)
         side_ |= np.where(sflag, 2 if mask_lo else 32, 0).astype(np.uint8); side_ |= np.where(tested2, 64, 0).astype(np.uint8)
-        side_ |= np.where(src_q, 128, 0).astype(np.uint8)
+        side_ |= np.where(src_q, 128, 0).astype(np.uint8); side_ |= np.where(unc_q, 8, 0).astype(np.uint8)
         simlp_ = np.full(ncell, np.nan, np.float32)
         for q in range(ncell):
             if q in pair_of: simlp_[q] = pair_of[q][0]["lnp"] / LN10
@@ -1653,7 +1677,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
                 seq_out = (rows_s.astype(np.int32), np.stack([views[g][sites] for g in rows_s.tolist()]))
         sim_json = ([dict(test=rec["arm"], taxon=g, partner=y, overlap=int(rec["o"]), mismatches=int(rec["mis"]), expected=round(rec["E"], 3),
                           row_factor=round(rec["f"], 4), relatives=rec["rel"], log10p=round(rec["lnp"] / LN10, 3), fail=True,
-                          copy=int(g if role_.get(cpos.get(g)) == "copy" else y),
+                          copy=(-1 if rec.get("uncertain") else int(g if role_.get(cpos.get(g)) == "copy" else y)), uncertain=bool(rec.get("uncertain", False)),
                           excess_m=[(round(float(exm[cpos[x]]), 4) if x in cpos and np.isfinite(exm[cpos[x]]) else None) for x in (g, y)])
                      for (g, y), rec in pairs.items()]
                     + [dict(test="closest", taxon=int(idx[q]), partner=int(Y[q]), overlap=int(o2[q]), mismatches=int(mis2[q]), expected=round(float(E2[q]), 3),
@@ -1664,7 +1688,8 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
                       med_identity=med_i, med_expected=med_e, excess_m=exm, closest=ci[starts].astype(np.int32), closest_overlap=o[starts].astype(np.uint32),
                       closest_identity=ident[starts], closest_expected=100.0 - dhat[starts], best_match=best_, best_match_identity=bident_,
                       partner=partner_, div_log10p=div_lp / LN10, sim_log10p=simlp_,
-                      comparators=top[idx].astype(np.int32), fail_q=fail_q, codes=codes_out, seq=seq_out, trees=trees_out, similar=sim_json)
+                      comparators=top[idx].astype(np.int32), fail_q=fail_q, codes=codes_out, seq=seq_out, trees=trees_out, similar=sim_json,
+                      locus_closest=lclos_, locus_closest_log10p=lclos_p, comp_div_log10p=comp_div_, comp_sim_log10p=comp_sim_)
 
         # ---- every test of the locus, for --all-tests: one row per comparison, the focal sequence first
         tests_block = ""
@@ -1703,10 +1728,12 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         if dense:
             for k, _, _ in NUMCOLS: rep[k][idx_, li] = r[k]
             rep["comparators"][idx_, li] = r["comparators"]
+            for k in ("comp_div_log10p", "comp_sim_log10p"): rep[k][idx_, li] = r[k]
         else:
             sel_ = r["fail_q"]; sparse_loc.append(np.full(int(sel_.sum()), li, np.int32)); sparse_tax.append(idx_[sel_].astype(np.int32))
             for k, _, _ in NUMCOLS: rep[k].append(np.asarray(r[k])[sel_])
             rep["comparators"].append(r["comparators"][sel_])
+            for k in ("comp_div_log10p", "comp_sim_log10p"): rep[k].append(r[k][sel_])
         if r["codes"] is not None: rep["codes"][li] = r["codes"]
         if r["seq"] is not None: rep["seqs"][li] = r["seq"]
         if r["trees"] is not None: rep["trees"][li] = r["trees"]
@@ -1732,6 +1759,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         rep["sparse_taxon"] = np.concatenate(sparse_tax) if sparse_tax else np.zeros(0, np.int32)
         for k, dt, _ in NUMCOLS: rep[k] = np.concatenate(rep[k]).astype(dt) if rep[k] else np.zeros(0, dt)
         rep["comparators"] = np.concatenate(rep["comparators"]) if rep["comparators"] else np.zeros((0, K_eff), np.int32)
+        for k in ("comp_div_log10p", "comp_sim_log10p"): rep[k] = np.concatenate(rep[k]) if rep[k] else np.zeros((0, K_eff), np.float32)
     cl = order[:, :min(5, n)].astype(np.int32); cl[~np.isfinite(m[np.arange(n)[:, None], cl])] = -1
     rep.update(taxa_closest=cl, rate=rate, plateaus=plateaus, kq=kq, logbar=logbar, phi_bar=phi_bar,
                tests=dict(divergent=D_tests, similar_comparator=D_tests, similar_closest=S_tests, total=N_tests, locus_sets=nfork))
@@ -1742,8 +1770,9 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         LOG(f"{len(skipped)} loci not tested: " + "; ".join(f"{nm} ({st})" for nm, st in skipped[:20]) + (f"; and {len(skipped) - 20} more" if len(skipped) > 20 else ""))
     npair = sum(sum(1 for e in v if e['fail']) for v in rep['similar'].values()); ncl = sum(sum(1 for e in v if e['fail'] and e['test'] == 'closest') for v in rep['similar'].values())
     LOG(f"too-similar pairs: {npair:,} ({npair - ncl:,} against a comparator, {ncl:,} against the closest match; {S_tests:,} closest-match tests run)")
-    LOG(f"masked {len(mrows)} sequences: {tally['divergent']} too divergent, {tally['similar']} too similar (copied from another taxon), "
-        f"{tally['both']} both")
+    nunc = int(((rep["side"] & 8) > 0).sum())
+    LOG(f"masked {len(mrows)} sequences: {tally['divergent']} too divergent, {tally['similar']} too similar (copied from another taxon"
+        f"{f'; {nunc} of a pair whose direction is uncertain, both members masked' if nunc else ''}), {tally['both']} both")
     return len(mrows)
 
 
