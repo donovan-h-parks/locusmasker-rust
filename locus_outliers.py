@@ -1478,6 +1478,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     else:
         for b0 in range(0, n, 256): sort_rows(b0)
 
+    mj_fin = np.isfinite(mj)                                                  # a byte per pair: the closest-match search reads it per locus instead of mj
     def choose_comparators(li):
         """for every taxon at this locus: its first K_eff candidates (in order of m) that have the overlap the taxon
         needs here, walking the sorted candidates in windows that grow until every taxon has K or runs out"""
@@ -1516,15 +1517,22 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         lset = max(LSET_CHUNK, LSET_ELEMENTS // max(n, 1))
         for b0 in range(0, len(rows), lset):
             rr = rows[b0:b0 + lset]; t_ = tri_idx[rr]
-            ov = Wl[t_].astype(np.float64); sm = Sl[t_].astype(np.float64); mjr = mj[rr]
-            okc = (ov >= a.fit_overlap) & np.isfinite(mjr)                       # mj is non-finite on the diagonal, for excluded taxa and for identical genomes
+            ov = Wl[t_]; sm = Sl[t_]                                                 # the counts as stored; one byte per pair for "has an m"
+            okc = (ov >= a.fit_overlap) & mj_fin[rr]                                 # mj is non-finite on the diagonal, for excluded taxa and for identical genomes
             with np.errstate(invalid="ignore", divide="ignore"):
-                d = np.where(okc, (ov - sm + HALF) / np.maximum(ov, 1.0), np.inf)
+                d = np.where(okc, (ov.astype(np.float64) - sm + HALF) / np.maximum(ov, 1.0), np.inf)
             dmin = d.min(1); has = np.isfinite(dmin)
             tops = np.zeros((len(rr), n), bool); r_, c_ = np.nonzero(top[rr] >= 0); tops[r_, top[rr][r_, c_]] = True
             inset = ((d <= dmin[:, None]) & tops).any(1)
-            key = np.where(okc, d + 1e-9 * np.where(np.isfinite(mjr), mjr, 0.0) / 100.0, np.inf)   # ties by m, well below the count resolution
-            closest[rr] = np.where(has, key.argmin(1), -1)
+            # the closest match: the minimum of d + 1e-9 m / 100 (ties by m, well below the count resolution); only the
+            # candidates within 1e-9 of the minimum can win, so only their entries of mj are read
+            band = d <= dmin[:, None] + 1e-9
+            closest[rr] = np.where(has, band.argmax(1), -1)
+            multi = has & (band.sum(1) > 1)
+            if multi.any():
+                ri, cj = np.nonzero(band[multi]); sub = rr[multi]; vals = d[multi][ri, cj] + 1e-9 * mj[sub[ri], cj] / 100.0
+                order_ = np.lexsort((cj, vals, ri)); firsts = order_[np.unique(ri[order_], return_index=True)[1]]
+                closest[sub] = cj[firsts]
             fork[rr] = has & ~inset
         return top, top >= 0, cnt, nres, closest, fork
 
