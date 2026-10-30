@@ -76,7 +76,7 @@ class TestPairStagePool:
 
 class TestMemoryRoom:
     def test_room_is_the_budget_less_what_is_resident(self, monkeypatch):
-        monkeypatch.setattr(lo, "MEM_BUDGET", None); assert lo._mem_room() == lo._mem_available()
+        monkeypatch.setattr(lo, "MEM_BUDGET", None); assert abs(lo._mem_room() - lo._mem_available()) < 0.01 * lo._mem_available()   # the machine's figure moves between the calls
         rss = lo._rss(); assert rss > 0
         monkeypatch.setattr(lo, "MEM_BUDGET", rss + (100 << 20)); assert abs(lo._mem_room() - (100 << 20)) < (16 << 20)
         monkeypatch.setattr(lo, "MEM_BUDGET", 1 << 20); assert lo._mem_room() == (1 << 20) // 16                  # never below a sixteenth of the budget

@@ -162,7 +162,11 @@ PHI_N0 = 30.0           # shrinkage weight: a locus's dispersion is pulled towar
 MIN_LOCI_FOR_M = 5      # pairs overlapping in fewer loci have no m and are never compared
 MIN_LOCI_PER_TAXON = 10 # a taxon needs this many loci with >= fit-overlap residues to take part
 MIN_FIT_PAIRS = 8       # a locus needs this many fit pairs to be tested (or to get a rate)
-TEST_THREAD_PAIRS = 4000  # the dispersion pre-pass uses threads only when a locus has this many comparisons on average
+PAIR_CHUNK_MIN = 32 << 20              # the pair stage's chunks of pairs hold between these many bytes of temporaries
+PAIR_CHUNK_MAX = 256 << 20
+DISPERSION_PAIRS_PER_WORKER = 200_000  # the dispersion pre-pass takes a worker process per this many comparisons (Ivan_2026, 4.2 M
+                                       # comparisons in a 10 GB process: 1 worker 0.8 s, 8 workers 0.7 s, 42 workers 1.8 s: forks cost)
+COMPARATOR_WORK_PER_WORKER = 1e7       # the comparator stage takes a worker process per this many taxa^2 x loci
 TEST_BATCH_COMPARISONS = 50_000   # the test computes the exact tails of this many comparisons at a time (loci batched), so small
                                   # loci do not pay numpy's per-call overhead hundreds of times each; about 250 MB of temporaries per batch
 TEST_BATCH_MIN = 5_000            # with worker processes the batches shrink to keep every worker busy, but never below this
@@ -1116,7 +1120,7 @@ def pair_divergences(S, W, n, iu, rr=None, ok_r=None, threads=1, progress=None, 
     # (one per thread) may take a quarter of the memory available now, and no chunk is below 8 MB (the per-chunk
     # Python overhead must stay negligible against the sorts) or above 256 MB (nothing is gained beyond it)
     threads = max(1, min(threads, npair // PAIRS_PER_THREAD))                   # no more threads than the pairs warrant
-    per_chunk = min(256 << 20, max(32 << 20, _mem_room() // (4 * threads)))
+    per_chunk = min(PAIR_CHUNK_MAX, max(PAIR_CHUNK_MIN, _mem_room() // (4 * threads)))
     chunk = max(int(per_chunk // (64 * max(nloc, 1))), 1)
     if threads > 1: chunk = max(min(chunk, -(-npair // (4 * threads))), int((32 << 20) // (64 * max(nloc, 1))), 1)   # four chunks per thread, but never below 32 MB
     chunk = min(chunk, npair)
@@ -1422,10 +1426,24 @@ def main():
 # ------------------------------------------------------------------ the counting test
 LSET_CHUNK = 256        # the fewest taxa per slice when a locus's closest matches are found (LSET_ELEMENTS sets the rest)
 LN10 = math.log(10.0)
-_TEST_BATCH = None
-def _test_batch(lis):
-    """a batch of loci in a worker process: the test's per-locus function, inherited at the fork"""
-    return _TEST_BATCH(lis)
+_FORK_FN = None
+def _fork_call(x): return _FORK_FN(x)
+def fork_map(fn, items, workers, chunksize=1):
+    """fn over items in forked worker processes, the results in order, one at a time as they arrive (a generator: the
+    workers run on while a result is consumed). The workers inherit fn and everything it closes over at the fork, so
+    nothing is pickled on the way in; only the results come back. A plain map when fork is not available (Windows),
+    with one worker, or for a single item. Threads cannot do this job: the per-locus work is Python around numpy
+    calls of modest size, and threads only queue on the interpreter lock (Chen_2015: 15 s alone, 32 s with 8 threads)"""
+    global _FORK_FN
+    items = list(items); workers = min(workers, len(items))
+    if workers <= 1 or "fork" not in multiprocessing.get_all_start_methods():
+        for x in items: yield fn(x)
+        return
+    _FORK_FN = fn
+    try:
+        with multiprocessing.get_context("fork").Pool(workers) as mp:
+            for r in mp.imap(_fork_call, items, chunksize=chunksize): yield r
+    finally: _FORK_FN = None
 
 
 MASKED_COLUMNS = ["locus", "taxon", "reason", "residues_masked",
@@ -1450,12 +1468,13 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     # each taxon's candidates in order of pair divergence (the tie-break makes every row a strict order), computed
     # once: a locus's comparators are the first K candidates that share enough sites with the taxon at that locus
     big = n >= 1000
-    prepool = ThreadPoolExecutor(min(a.threads, nloc)) if a.threads > 1 and big else None
-    if a.threads > 1: LOG(f"comparators: {min(a.threads, nloc) if prepool else 1} thread{'s' if prepool and min(a.threads, nloc) > 1 else ''} ({n:,} taxa; threads pay off from 1,000)")
+    cmp_workers = max(1, min(a.threads, nloc, int(float(n) * n * nloc // COMPARATOR_WORK_PER_WORKER))) if a.threads > 1 else 1
+    if a.threads > 1: LOG(f"comparators: {cmp_workers} worker process{'es' if cmp_workers > 1 else ''} ({n:,} taxa x {nloc:,} loci)")
     order = np.empty((n, n), np.int32)
     def sort_rows(b0):
         b1 = min(b0 + 256, n); order[b0:b1] = np.argsort(mj[b0:b1], axis=1, kind="stable")
-    if prepool: list(prepool.map(sort_rows, range(0, n, 256)))
+    if big and a.threads > 1:                                              # argsort releases the interpreter lock on rows this long
+        with ThreadPoolExecutor(min(a.threads, -(-n // 256))) as ex: list(ex.map(sort_rows, range(0, n, 256)))
     else:
         for b0 in range(0, n, 256): sort_rows(b0)
 
@@ -1507,12 +1526,11 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
             key = np.where(okc, d + 1e-9 * np.where(np.isfinite(mjr), mjr, 0.0) / 100.0, np.inf)   # ties by m, well below the count resolution
             closest[rr] = np.where(has, key.argmin(1), -1)
             fork[rr] = has & ~inset
-        PROG.tick()
         return top, top >= 0, cnt, nres, closest, fork
 
     PROG.start("comparators", nloc)
-    sel = list(prepool.map(choose_comparators, range(nloc))) if prepool else [choose_comparators(li) for li in range(nloc)]
-    if prepool: prepool.shutdown()
+    sel = []
+    for r in fork_map(choose_comparators, range(nloc), cmp_workers): sel.append(r); PROG.tick()
     PROG.finish()
     Npairs = 0                                                        # comparisons over all loci: sizes the thread decision only
     for sel_ in sel: Npairs += int(sel_[1][sel_[2] > 0].sum())
@@ -1544,18 +1562,12 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     # a thousand taxa and more): with small loci the per-call interpreter-lock traffic of many small numpy operations
     # makes threads slower than one
     ntested = sum(1 for t in sel if (t[2] > 0).any())
-    pool = ThreadPoolExecutor(min(a.threads, nloc)) if a.threads > 1 and (Npairs / max(ntested, 1) >= TEST_THREAD_PAIRS or big) else None
     # dispersion pre-pass: the robust spread of observed/expected among each locus's resolved comparator pairs with
     # enough expected mismatches, with the Poisson part removed: Var(O/E) = 1/E + phi. The same pass counts the tests
     # each locus will run (its distinct comparisons and its testable pairs), so the Bonferroni bar is known before any
-    # test runs. The comparator arrays are kept for the test when they fit in a quarter of the memory available (about
-    # 120 bytes per comparison).
-    nrows_all = sum(int(t[2].sum()) for t in sel)
-    keep_pairs = nrows_all * 120 < _mem_room() // 2
-    cache = {}
+    # test runs.
     def locus_phi(li):
-        L = locus_pairs(li); PROG.tick()
-        if keep_pairs: cache[li] = L
+        L = locus_pairs(li)
         if isinstance(L, str): return np.nan, 0.0, 0, 0
         gmin = np.minimum(L["gi"], L["ci"]).astype(np.int64); gmax = np.maximum(L["gi"], L["ci"]).astype(np.int64)
         ndist = len(np.unique(gmin * n + gmax))
@@ -1570,12 +1582,13 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         return max(s_ ** 2 - float(np.median(1.0 / E[use])), 0.0), float(use.sum()), ndist, npt
     phi_hat = np.full(nloc, np.nan); phi_n = np.zeros(nloc); ndist_l = np.zeros(nloc, np.int64); npt_l = np.zeros(nloc, np.int64)
     PROG.start("dispersion", nloc)
-    for li, (h, c, nd_, np_) in enumerate(pool.map(locus_phi, range(nloc)) if pool else map(locus_phi, range(nloc))):
-        phi_hat[li] = h; phi_n[li] = c; ndist_l[li] = nd_; npt_l[li] = np_
+    disp_workers = max(1, min(a.threads, nloc, Npairs // DISPERSION_PAIRS_PER_WORKER)) if a.threads > 1 else 1
+    for li, (h, c, nd_, np_) in enumerate(fork_map(locus_phi, range(nloc), disp_workers, chunksize=max(1, nloc // (8 * disp_workers)))):
+        phi_hat[li] = h; phi_n[li] = c; ndist_l[li] = nd_; npt_l[li] = np_; PROG.tick()
     PROG.finish()
     if int(ndist_l.sum()) == 0 and int(npt_l.sum()) == 0:
         # no test can run: say why, in the words of the thresholds, and stop before writing outputs that would mean nothing
-        reasons = collections.Counter(locus_pairs(li) if isinstance(cache.get(li, None), str) or not keep_pairs else cache[li] for li in range(nloc))
+        reasons = collections.Counter(locus_pairs(li) for li in range(nloc))
         reasons = collections.Counter(v if isinstance(v, str) else "tested" for v in reasons.elements())
         thin = rep["thin"]; keep = np.ones(n, bool); keep[thin] = False
         nk = int(keep.sum()); fin = int(np.isfinite(m[np.ix_(keep, keep)]).sum() // 2); npairs = nk * (nk - 1) // 2; nrated = int(np.isfinite(rate).sum())
@@ -1632,8 +1645,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         for exact tails (kind, observed, shared sites, expected) and receives the tails; run_batch drives a batch of
         loci so that one call serves them all"""
         name, sites = loci[li]
-        L = cache.pop(li, None) if keep_pairs else None
-        if L is None: L = locus_pairs(li)
+        L = locus_pairs(li)
         if isinstance(L, str): return dict(skipped=True, log=f"{name}: {L}", status=L)
         idx, gi, ci, rk, o, same, mis, ident, dob, mp, mph, fit, Wl, Sl, ncomp, nres, expect, corr, rate_c = \
             (L[k] for k in ("idx", "gi", "ci", "rk", "o", "same", "mis", "ident", "dob", "mp", "mph", "fit", "Wl", "Sl", "ncomp", "nres", "expect", "corr", "rate_c"))
@@ -1994,7 +2006,6 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     # per kind (upper, lower), the loci answered in turn, their results consumed in locus order. The stage is Python
     # work per locus around those calls, so it runs in worker PROCESSES (forked: they inherit every array without a
     # copy; threads only queue on the interpreter lock here), one batch per task, the batches sized to keep them busy
-    if pool: pool.shutdown(wait=True); pool = None                     # no live threads when the workers fork
     ncmp_l = [int(t[1][t[2] > 0].sum()) for t in sel]
     workers = min(a.threads, nloc) if a.threads > 1 and nloc > 1 and "fork" in multiprocessing.get_all_start_methods() else 1
     target = max(TEST_BATCH_MIN, min(TEST_BATCH_COMPARISONS, sum(ncmp_l) // (4 * workers))) if workers > 1 else TEST_BATCH_COMPARISONS
@@ -2028,15 +2039,8 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
             reqs = nxt
         return [done[li] for li in lis]
     PROG.start("test", nloc, "0 too divergent, 0 copied")
-    if workers > 1:
-        global _TEST_BATCH; _TEST_BATCH = run_batch                       # the forked workers find it in their copy of this module
-        with multiprocessing.get_context("fork").Pool(workers) as mp:
-            for lis, Rs in zip(batches, mp.imap(_test_batch, batches)):   # results in locus order, consumed as they arrive
-                for li, R in zip(lis, Rs): consume(li, R)
-        _TEST_BATCH = None
-    else:
-        for lis in batches:
-            for li, R in zip(lis, run_batch(lis)): consume(li, R)
+    for lis, Rs in zip(batches, fork_map(run_batch, batches, workers)):   # results in locus order, consumed as they arrive
+        for li, R in zip(lis, Rs): consume(li, R)
     PROG.finish()
     if tests_fh is not None: tests_fh.close()
     # the report's remaining pieces: sparse rows stacked, the closest taxa by m, the test's constants

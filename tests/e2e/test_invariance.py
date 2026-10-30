@@ -48,7 +48,8 @@ class TestThreads:
     @pytest.mark.parametrize("threads", ["2", "7"])
     def test_threads_do_not_change_the_outputs(self, runs, tmp_out, name, threads, monkeypatch):
         """with the thread pools forced on even for small loci"""
-        monkeypatch.setattr(lo, "TEST_THREAD_PAIRS", 0); monkeypatch.setattr(lo, "PASS1_FLOPS_PER_THREAD", 1.0)
+        monkeypatch.setattr(lo, "PASS1_FLOPS_PER_THREAD", 1.0); monkeypatch.setattr(lo, "DISPERSION_PAIRS_PER_WORKER", 1)
+        monkeypatch.setattr(lo, "COMPARATOR_WORK_PER_WORKER", 1.0); monkeypatch.setattr(lo, "TEST_BATCH_COMPARISONS", 100); monkeypatch.setattr(lo, "TEST_BATCH_MIN", 100)
         ds = dataset(name); r = run_tool(ds.aln, tmp_out, ds.dtype, ds.parts, ["--threads", threads]); assert r.rc == 0
         assert outputs(r) == outputs(runs(name))
 
