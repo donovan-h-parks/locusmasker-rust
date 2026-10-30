@@ -3,6 +3,7 @@ log. Most runs are in-process (coverage sees them); a few are real processes, th
 import csv, gzip, json, os, re, zipfile
 import numpy as np
 import pytest
+import multiprocessing
 from tests.conftest import lo, dataset, run_tool, run_cli, Report
 
 
@@ -188,3 +189,30 @@ class TestRunRecord:
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts)
         assert r.rc == 0 and [str(x.message) for x in w if "locus_outliers" in (x.filename or "") and not issubclass(x.category, ResourceWarning)] == []
+
+
+class TestMemoryAndWorkers:
+    def test_the_budget_defaults_to_half_of_what_is_available_and_is_logged(self, tmp_out):
+        ds = dataset("dna_small"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts)
+        assert r.rc == 0 and re.search(r"memory: about \d+ MB resident .*budget .* \(half of the memory available now", r.log), r.log
+
+    def test_a_budget_too_small_stops_before_running(self, tmp_out):
+        ds = dataset("dna_small"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--memory", "0.00001"])
+        assert r.rc != 0 and "needs about" in r.log and "more than the budget" in r.log and "--memory" in r.log and not r.exists("masked.csv")
+
+    def test_memory_zero_means_no_budget(self, tmp_out):
+        ds = dataset("dna_small"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--memory", "0"]); assert r.rc == 0 and "no budget" in r.log
+
+    def test_a_budget_above_the_machine_warns(self, tmp_out):
+        ds = dataset("dna_small"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--memory", "1000000"]); assert r.rc == 0 and "WARNING: --memory" in r.log
+
+    def test_the_estimate_counts_the_pair_arrays(self):
+        loci = [("a", np.arange(100)), ("b", np.arange(100, 200))]
+        need, x, sw, nn = lo.memory_estimate(10, 200, loci); assert x == 2000 and sw == 2 * 2 * 55 * 2 and nn == 72 * 100 + 16 * 55 and need == x + sw + nn
+        assert lo.memory_estimate(10, 200, [("a", np.arange(70000))])[2] == 2 * 1 * 55 * 4                 # a locus over 65,535 sites: 4-byte counts
+
+    @pytest.mark.skipif("fork" not in multiprocessing.get_all_start_methods(), reason="the worker processes need fork")
+    def test_the_test_stage_runs_in_worker_processes(self, tmp_out, monkeypatch):
+        monkeypatch.setattr(lo, "TEST_BATCH_COMPARISONS", 100); monkeypatch.setattr(lo, "TEST_BATCH_MIN", 100)
+        ds = dataset("dna_clean"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--threads", "3"])
+        assert r.rc == 0 and re.search(r"test stage: 3 worker processes \(\d+ batches", r.log), r.log

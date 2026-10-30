@@ -143,6 +143,16 @@ class TestBetaBinomialTails:
             assert np.array_equal(mixed[2:], lo.bb_tails(np.array([40.0]), np.array([60.0]), np.array([20.0]), phi, upper))
             assert mixed[2] != lo.bb_tails(np.array([40.0]), np.array([60.0]), np.array([20.0]), 0.0, upper)[0]   # that one is overdispersed
 
+    def test_phi_per_pair_matches_the_scalar_calls(self):
+        """one call with a dispersion per pair (the loci of a batch) is the same arithmetic as a call per locus"""
+        o = np.array([3.0, 40.0, 70.0, 0.0, 12.0, 25.0]); n = np.array([50.0, 60.0, 5000.0, 30.0, 20.0, 40.0]); E = np.array([5.0, 20.0, 50.0, 0.0, 15.0, 25.0])
+        phis = np.array([0.0, 0.3, 1e-7, 0.05, 0.0, 0.2])
+        for upper in (True, False):
+            one = lo.bb_tails(o, n, E, phis, upper)
+            each = np.array([lo.bb_tails(o[i:i + 1], n[i:i + 1], E[i:i + 1], float(phis[i]), upper)[0] for i in range(len(o))])
+            assert np.array_equal(one, each)
+            assert np.array_equal(lo.bb_tails(o, n, E, 0.2, upper), lo.bb_tails(o, n, E, np.full(len(o), 0.2), upper))
+
     def test_single_site_pairs_stay_binomial(self):
         got = lo.bb_tails(np.array([1.0]), np.array([1.0]), np.array([0.3]), 0.2, True)
         assert np.isclose(got[0], math.log(0.3), atol=1e-10)

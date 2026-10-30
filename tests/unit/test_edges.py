@@ -72,3 +72,18 @@ class TestPairStagePool:
         P4 = lo.prepare(argparse.Namespace(fit_overlap=20, threads=4), names, rows, loci, "dna", 5, time.time())
         assert any("chunks of" in m and "threads" in m for m in logs), logs
         for k in ("S", "W", "m", "m_hi", "mj", "rate"): assert np.array_equal(getattr(P1, k), getattr(P4, k), equal_nan=True), k
+
+
+class TestMemoryRoom:
+    def test_room_is_the_budget_less_what_is_resident(self, monkeypatch):
+        monkeypatch.setattr(lo, "MEM_BUDGET", None); assert lo._mem_room() == lo._mem_available()
+        rss = lo._rss(); assert rss > 0
+        monkeypatch.setattr(lo, "MEM_BUDGET", rss + (100 << 20)); assert abs(lo._mem_room() - (100 << 20)) < (16 << 20)
+        monkeypatch.setattr(lo, "MEM_BUDGET", 1 << 20); assert lo._mem_room() == (1 << 20) // 16                  # never below a sixteenth of the budget
+
+    def test_rss_falls_back_to_the_peak_without_proc(self, monkeypatch):
+        real_open = open
+        def no_proc(path, *a, **k):
+            if str(path).startswith("/proc/self/statm"): raise OSError("no proc")
+            return real_open(path, *a, **k)
+        monkeypatch.setattr("builtins.open", no_proc); assert lo._rss() > 0

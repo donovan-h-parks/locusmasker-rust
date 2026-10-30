@@ -138,7 +138,10 @@ Outputs (in --out; <stem> is the alignment file's name without extension)
                        same data for scripts). --no-report skips it.
 Options
   --datatype dna|aa (required)  --n-comp 5 (odd >= 3)  --fit-overlap 20
-  --alpha 0.05  --mask-similar-only  --mask-different-only  --threads 1  --all-tests  --no-report
+  --alpha 0.05  --mask-similar-only  --mask-different-only  --all-tests  --no-report
+  --threads 1 (0: every CPU this process may use; N: at most N; each stage takes as many as pay off)
+  --memory GB (default: half of what is available when the run starts; 0: no budget; a run that
+  cannot fit stops before it starts and says what it needs)
   (constants in the code: HALF = 0.5 mismatch for the resolution floor and the rate
   pseudocount; dispersion from pairs with >= 10 expected mismatches, shrinkage weight 30)
 """
@@ -146,6 +149,7 @@ import argparse, base64, collections, csv, gzip, hashlib, io, json, math, os, pl
 for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):   # BLAS stays single-threaded (its matrices are
     os.environ.setdefault(_v, "1")                                          # small); --threads parallelises over loci and pairs
 import numpy as np
+import multiprocessing
 from concurrent.futures import ThreadPoolExecutor
 from itertools import chain
 
@@ -158,7 +162,14 @@ PHI_N0 = 30.0           # shrinkage weight: a locus's dispersion is pulled towar
 MIN_LOCI_FOR_M = 5      # pairs overlapping in fewer loci have no m and are never compared
 MIN_LOCI_PER_TAXON = 10 # a taxon needs this many loci with >= fit-overlap residues to take part
 MIN_FIT_PAIRS = 8       # a locus needs this many fit pairs to be tested (or to get a rate)
-TEST_THREAD_PAIRS = 4000  # --threads applies to the test stage only when a locus has this many comparisons on average
+TEST_THREAD_PAIRS = 4000  # the dispersion pre-pass uses threads only when a locus has this many comparisons on average
+TEST_BATCH_COMPARISONS = 50_000   # the test computes the exact tails of this many comparisons at a time (loci batched), so small
+                                  # loci do not pay numpy's per-call overhead hundreds of times each; about 250 MB of temporaries per batch
+TEST_BATCH_MIN = 5_000            # with worker processes the batches shrink to keep every worker busy, but never below this
+PAIRS_PER_THREAD = 4000           # the pair stage uses a thread per this many pairs: beyond that the threads contend (Shen_2018,
+                                  # 59K pairs x 2,408 loci: 16 threads 1.3 s, 32 threads 3.8 s, 96 threads 5.2 s; Ivan_2026, 246K
+                                  # pairs: 96 threads 0.9 s)
+LSET_ELEMENTS = 1 << 20           # a locus's closest matches are found in taxa x taxa slices of about this many elements (rows = this / taxa)
 __version__ = "0.13.1"
 REPORT_FORMAT = 7                 # bundle format version; the viewer refuses a newer one (3: tree branch lengths are F81-corrected; 4: the too-similar test over every pair; 7: every test of every cell, the closest match at the locus, the uncertain-direction pairs)
 DENSE_CELLS_MAX = 8_000_000       # per-cell numeric report columns are dense (taxa x loci) up to this many cells, sparse beyond
@@ -166,7 +177,7 @@ BEST_MATCH_ALL_MAX_TAXA = 2000    # best matches for every tested cell up to thi
 BEST_MATCH_MIN_SITES = 30         # a best match needs this many sites shared with the focal (as plot_panels.best_matches)
 REPORT_SEQ_ALL_MAX = 32 << 20     # --report-sequences auto carries the whole alignment up to this many bytes, else the cells' rows
 CODE_SIMILAR, CODE_TICK, CODE_ABSENT = 128, 254, 255
-PASS1_FLOPS_PER_THREAD = 2e7    # pass one adds a thread per this many floating-point operations per locus: below it the
+PASS1_FLOPS_PER_THREAD = 6e7    # pass one adds a thread per this many floating-point operations per locus: below it the
                                 # interpreter lock around the small matrix products costs more than the thread gains
                                 # (measured: 90 taxa x 590 sites, 4e7 flops per locus with the per-letter products, is
                                 # fastest at 1-2 threads and slower at 4 or more)
@@ -632,7 +643,7 @@ def log_fact(upto):
     global _LF
     if len(_LF) <= upto: _LF = np.concatenate([[0.0], np.cumsum(np.log(np.arange(1, upto + 1, dtype=float)))])
     return _LF
-def _block_terms(k0, cnt, n, d, a_, b_, cpair, phi, B):
+def _block_terms(k0, cnt, n, d, a_, b_, cpair, binom, B):
     """log pmf of the mismatch counts k0[i] .. k0[i] + cnt[i] - 1 for each pair i, as a (pairs, B) array with -inf
     beyond cnt. Binomial coefficients from the log-factorial table; the beta-binomial's two gamma terms from one
     log-gamma per pair at the block's first term and the recurrence lgamma(x + 1) = lgamma(x) + log x along the
@@ -642,7 +653,7 @@ def _block_terms(k0, cnt, n, d, a_, b_, cpair, phi, B):
     ksafe = np.where(valid, kk, 0); nk = np.where(valid, nint[:, None] - kk, 0)
     lchoose = lf[nint][:, None] - lf[ksafe] - lf[nk]
     kf = ksafe.astype(float); nf_ = n[:, None]
-    if phi < 1e-8: lp = lchoose + kf * np.log(d)[:, None] + (nf_ - kf) * np.log(1 - d)[:, None]
+    if binom: lp = lchoose + kf * np.log(d)[:, None] + (nf_ - kf) * np.log(1 - d)[:, None]
     else:
         k0f = k0.astype(float)
         base_a = lgamma_v(k0f + a_)                                            # lgamma(k0 + a), then + log(k0 + a + t)
@@ -675,18 +686,25 @@ def bb_tails(o, n, E, phi, upper):
     precision instead of as 1 - P(the other side). A zero expectation gives log 1 for the lower tail and the floor
     for an upper tail above zero. Where the overdispersion is negligible (Beta concentration a + b above 1e9) the
     binomial limit is used: there the beta-binomial's large gamma differences would cancel in float64 and leave
-    nats of rounding error. Results are floored at log(1e-300) and capped at log(1)."""
+    nats of rounding error. Results are floored at log(1e-300) and capped at log(1). phi may be one value or one per
+    pair, so the pairs of many loci can be computed in one call."""
     o = np.asarray(o, float); n = np.asarray(n, float); E = np.asarray(E, float); m = len(o)
     if m == 0: return np.empty(0)
+    phi = np.broadcast_to(np.asarray(phi, float), (m,))
     zero = E <= 1e-12
     if zero.any():
         out = np.empty(m)
         out[zero] = np.where(o[zero] <= 0, 0.0, _LOG_FLOOR) if upper else 0.0
-        if (~zero).any(): out[~zero] = bb_tails(o[~zero], n[~zero], E[~zero], phi, upper)
+        if (~zero).any(): out[~zero] = bb_tails(o[~zero], n[~zero], E[~zero], phi[~zero], upper)
         return out
     E = np.minimum(E, n * (1 - 1e-9)); d = E / n
-    a_ = b_ = cpair = None
-    if phi >= 1e-8:
+    bbm = phi >= 1e-8
+    if bbm.any() and not bbm.all():                                   # binomial and beta-binomial pairs in one call: each its own way
+        out = np.empty(m)
+        out[~bbm] = bb_tails(o[~bbm], n[~bbm], E[~bbm], 0.0, upper); out[bbm] = bb_tails(o[bbm], n[bbm], E[bbm], phi[bbm], upper)
+        return out
+    a_ = b_ = cpair = None; binom = not bbm.any()
+    if not binom:
         with np.errstate(divide="ignore", invalid="ignore"):
             rho = np.where(n >= 2, np.minimum((d + phi * n * d) / ((1 - d) * np.maximum(n - 1, 1)), 1 - 1e-6), 0.5)
         a_ = d * (1 / rho - 1); b_ = (1 - d) * (1 / rho - 1)
@@ -694,7 +712,7 @@ def bb_tails(o, n, E, phi, upper):
         if lim.any():
             out = np.empty(m)
             out[lim] = bb_tails(o[lim], n[lim], E[lim], 0.0, upper)
-            if (~lim).any(): out[~lim] = bb_tails(o[~lim], n[~lim], E[~lim], phi, upper)
+            if (~lim).any(): out[~lim] = bb_tails(o[~lim], n[~lim], E[~lim], phi[~lim], upper)
             return out
         cpair = -lgamma_v(n + a_ + b_) - (lgamma_v(a_) + lgamma_v(b_) - lgamma_v(a_ + b_))
     oi = o.astype(np.int64); nint = n.astype(np.int64); B = 64
@@ -709,7 +727,7 @@ def bb_tails(o, n, E, phi, upper):
         has = cnt > 0; active, cnt, k0 = active[has], cnt[has], k0[has]
         if not len(active): break
         lp = _block_terms(k0, cnt, n[active], d[active], None if a_ is None else a_[active],
-                          None if b_ is None else b_[active], None if cpair is None else cpair[active], phi, B)
+                          None if b_ is None else b_[active], None if cpair is None else cpair[active], binom, B)
         blk = _logsumexp_rows(lp)
         out[active] = np.logaddexp(out[active], blk)
         rows = np.arange(len(active))
@@ -780,6 +798,42 @@ def _mem_available():
     except OSError: pass
     try: return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_AVPHYS_PAGES")
     except (ValueError, OSError, AttributeError): return 2 << 30
+
+
+MEM_BUDGET = None                 # bytes the run may use (--memory; main sets it, half of what is available by default); None: no budget
+
+
+def _rss():
+    """bytes resident now (Linux: /proc; elsewhere the peak so far)"""
+    try:
+        with open("/proc/self/statm") as fh: return int(fh.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError, IndexError): pass
+    try:
+        import resource; r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return int(r if sys.platform == "darwin" else r * 1024)
+    except Exception: return 0
+
+
+def _mem_room():
+    """bytes a stage may take for its threads and chunks: the budget less what is resident now (never below a sixteenth
+    of the budget, so a stage can always run small), or what the machine has available when there is no budget"""
+    if MEM_BUDGET is None: return _mem_available()
+    return max(MEM_BUDGET - _rss(), MEM_BUDGET // 16)
+
+
+def fmem(b):
+    """bytes as GB or MB"""
+    return f"{b / float(1 << 30):.1f} GB" if b >= (1 << 30) else f"{b / float(1 << 20):.0f} MB"
+
+
+def memory_estimate(n, L, loci):
+    """bytes the run holds resident, from the alignment's shape: the residue codes (taxa x sites), the per-locus pair
+    counts (two arrays of loci x pairs), and the taxa x taxa matrices of the pair stage and the test (about 72 bytes per
+    taxon pair, counting the pair stage's provisional copies and the pair index). The stages' own temporaries are sized
+    to the room left and are not counted. Returns the total and the three parts."""
+    nloc = len(loci); ntri = n * (n + 1) // 2; longest = max((len(st) for _, st in loci), default=0)
+    x = n * L; sw = 2 * nloc * ntri * (2 if longest < 65536 else 4); nn = 72 * n * n + 16 * ntri
+    return x + sw + nn, x, sw, nn
 
 
 
@@ -957,10 +1011,10 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
     n, nloc = len(names), len(loci)
     dense = rep["dense"]
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=4) as zf:          # level 4: half the time of 6 for 5% more bytes
         def put(name, arr):
             b = io.BytesIO(); np.lib.format.write_array(b, np.ascontiguousarray(arr), version=(1, 0)); zf.writestr(name, b.getvalue())
-        def put_json(name, obj): zf.writestr(name, json.dumps(obj, indent=1))
+        def put_json(name, obj, compact=False): zf.writestr(name, json.dumps(obj, separators=(",", ":")) if compact else json.dumps(obj, indent=1))
         for k in ("n_comp", "n_fail", "n_similar", "side", "focal_sites"): put(f"cells/{k}.npy", rep[k])
         numcols = ("med_identity", "med_expected", "excess_m", "closest", "closest_overlap", "closest_identity", "closest_expected",
                    "best_match", "best_match_identity", "partner", "div_log10p", "sim_log10p", "locus_closest", "locus_closest_log10p")
@@ -969,8 +1023,8 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
         for k in ("comparators", "comp_div_log10p", "comp_sim_log10p"): put(f"cells/{k}.npy", rep[k])
         for li, (cells_, blk) in rep["codes"].items():
             put(f"codes/{li}.npy", blk); put(f"codes/{li}_cells.npy", cells_)
-        for li, tr in rep["trees"].items(): put_json(f"trees/{li}.json", tr)
-        for li, ev in rep["similar"].items(): put_json(f"similar/{li}.json", ev)
+        for li, tr in rep["trees"].items(): put_json(f"trees/{li}.json", tr, compact=True)         # machine-read only: no indentation
+        for li, ev in rep["similar"].items(): put_json(f"similar/{li}.json", ev, compact=True)
         for li, (rows_, blk) in rep["seqs"].items():
             put(f"seq/{li}.npy", blk); put(f"seq/{li}_taxa.npy", rows_)
         put("taxa/closest.npy", rep["taxa_closest"])
@@ -1050,8 +1104,8 @@ def pair_divergences(S, W, n, iu, rr=None, ok_r=None, threads=1, progress=None, 
     # chunk size from the machine: each chunk's temporaries are about 64 bytes per locus x pair, the in-flight chunks
     # (one per thread) may take a quarter of the memory available now, and no chunk is below 8 MB (the per-chunk
     # Python overhead must stay negligible against the sorts) or above 256 MB (nothing is gained beyond it)
-    threads = max(threads, 1)
-    per_chunk = min(256 << 20, max(32 << 20, _mem_available() // (4 * threads)))
+    threads = max(1, min(threads, npair // PAIRS_PER_THREAD))                   # no more threads than the pairs warrant
+    per_chunk = min(256 << 20, max(32 << 20, _mem_room() // (4 * threads)))
     chunk = max(int(per_chunk // (64 * max(nloc, 1))), 1)
     if threads > 1: chunk = max(min(chunk, -(-npair // (4 * threads))), int((32 << 20) // (64 * max(nloc, 1))), 1)   # four chunks per thread, but never below 32 MB
     chunk = min(chunk, npair)
@@ -1159,7 +1213,7 @@ def prepare(a, names, rows, loci, dtype, K_eff, t0):
     sample = [loci[i][1] for i in np.linspace(0, nloc - 1, min(nloc, 64)).astype(int)]
     kbar = float(np.mean([np.mean([(X[:, st] == i).any(0).mean() for i in range(len(alphabet))]) * len(alphabet) for st in sample]))
     flops = 2.0 * n * n * float(np.mean([len(sites) for _, sites in loci])) * (1.0 + kbar)
-    workers = max(1, min(a.threads, nloc, int((_mem_available() // 4) // per_locus), int(round(flops / PASS1_FLOPS_PER_THREAD))))
+    workers = max(1, min(a.threads, nloc, int((_mem_room() // 2) // per_locus), int(round(flops / PASS1_FLOPS_PER_THREAD))))
     PROG.start("counts", nloc)
     if workers > 1:
         with ThreadPoolExecutor(workers) as ex: list(ex.map(locus_counts, range(nloc), chunksize=max(1, nloc // (8 * workers))))
@@ -1273,7 +1327,8 @@ def main():
     ap.add_argument("--donor-threshold", type=float, default=2.0, help="the direction of a too-similar pair is called (the copy masked, its source not) when the larger of the "
                     "two members' test-1 excesses, in absolute value, is more than this many times the smaller; otherwise the direction is uncertain and both members are masked (default 2)")
     ap.add_argument("--mask-similar-only", action="store_true"); ap.add_argument("--mask-different-only", action="store_true")
-    ap.add_argument("--threads", type=int, default=1, help="worker threads (0: every CPU available); each stage uses as many as pay off, never more than the CPUs")
+    ap.add_argument("--threads", type=int, default=1, help="at most this many threads or worker processes (0: every CPU this process may use); each stage takes as many as pay off")
+    ap.add_argument("--memory", type=float, help="GB of memory the run may use (default: half of what is available when it starts; 0: no budget); the stages size their threads and chunks to stay within it, and a run that cannot fit stops before it starts")
     ap.add_argument("--progress", choices=("auto", "bar", "none"), default="auto", help="auto: a progress bar on a terminal, progress lines at 2%% steps otherwise")
     ap.add_argument("--report-codes", choices=("fails", "masked", "none"), default="fails", help="site codes in the report: for every cell with a failing comparator (default), masked cells only, or none")
     ap.add_argument("--report-sequences", choices=("auto", "all", "fails", "masked", "none"), default="auto",
@@ -1293,6 +1348,9 @@ def main():
     if stale: LOG(f"note: {a.out} holds files this run does not write ({', '.join(stale)}): they are from an earlier run")
     ncpu = _cpus(); asked = a.threads; a.threads = ncpu if asked <= 0 else max(1, min(asked, ncpu))
     if asked > ncpu: LOG(f"threads: {asked} asked, {ncpu} CPUs available to this process: using {a.threads}")
+    global MEM_BUDGET
+    avail = _mem_available(); MEM_BUDGET = None if a.memory is not None and a.memory <= 0 else int(a.memory * (1 << 30)) if a.memory else avail // 2
+    if MEM_BUDGET is not None and MEM_BUDGET > avail: LOG(f"WARNING: --memory {a.memory:g} GB is more than the {avail / (1 << 30):.1f} GB available now")
     if K < 3 or K % 2 == 0: sys.exit("--n-comp must be an odd number of at least 3")
     if a.mask_similar_only and a.mask_different_only:
         sys.exit("--mask-similar-only and --mask-different-only are mutually exclusive")
@@ -1319,6 +1377,14 @@ def main():
     M_eff = (K_eff + 1) // 2                                          # fails that make a majority
     if K_eff < K: LOG(f"n-comp shrunk to {K_eff} ({n} taxa)")
     LOG(f"{n} taxa, {L} sites, {len(loci)} loci, {dtype}, {fmt}")
+    need, mx, msw, mnn = memory_estimate(n, L, loci)
+    parts = f"{fmem(msw)} of pair counts for {n:,} taxa x {len(loci):,} loci, {fmem(mnn)} of taxa x taxa matrices, {fmem(mx)} of residue codes"
+    if MEM_BUDGET is None: LOG(f"memory: about {fmem(need)} resident ({parts}); no budget (--memory 0)")
+    else:
+        LOG(f"memory: about {fmem(need)} resident ({parts}); budget {fmem(MEM_BUDGET)}" + ("" if a.memory else " (half of the memory available now; --memory sets it)"))
+        if need > MEM_BUDGET:
+            sys.exit(f"this run needs about {fmem(need)} of memory ({parts}), more than the budget of {fmem(MEM_BUDGET)}"
+                     + ("" if a.memory else ", half of what is available now") + ": --memory raises the budget (--memory 0 removes it), or give fewer taxa or loci")
 
     P = prepare(a, names, rows, loci, dtype, K_eff, t0)
     X, S, W, iu, diag_pos, tri_idx = P.X, P.S, P.W, P.iu, P.diag_pos, P.tri_idx
@@ -1343,8 +1409,14 @@ def main():
 
 
 # ------------------------------------------------------------------ the counting test
-LSET_CHUNK = 256        # taxa per chunk when a locus's closest matches are found (bounds the taxa x taxa slices)
+LSET_CHUNK = 256        # the fewest taxa per slice when a locus's closest matches are found (LSET_ELEMENTS sets the rest)
 LN10 = math.log(10.0)
+_TEST_BATCH = None
+def _test_batch(lis):
+    """a batch of loci in a worker process: the test's per-locus function, inherited at the fork"""
+    return _TEST_BATCH(lis)
+
+
 MASKED_COLUMNS = ["locus", "taxon", "reason", "residues_masked",
                   "divergent_fails", "divergent_comparators", "divergent_observed", "divergent_expected", "divergent_excess_m",
                   "divergent_log10p", "similar_test", "similar_partner", "similar_role", "similar_observed", "similar_expected",
@@ -1411,8 +1483,9 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         # Taxa x taxa slices are taken LSET_CHUNK rows at a time.
         Sl = S[li]; closest = np.full(n, -1, np.int64); fork = np.zeros(n, bool)
         rows = np.flatnonzero(cnt > 0)
-        for b0 in range(0, len(rows), LSET_CHUNK):
-            rr = rows[b0:b0 + LSET_CHUNK]; t_ = tri_idx[rr]
+        lset = max(LSET_CHUNK, LSET_ELEMENTS // max(n, 1))
+        for b0 in range(0, len(rows), lset):
+            rr = rows[b0:b0 + lset]; t_ = tri_idx[rr]
             ov = Wl[t_].astype(np.float64); sm = Sl[t_].astype(np.float64); mjr = mj[rr]
             okc = (ov >= a.fit_overlap) & np.isfinite(mjr)                       # mj is non-finite on the diagonal, for excluded taxa and for identical genomes
             with np.errstate(invalid="ignore", divide="ignore"):
@@ -1461,14 +1534,13 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
     # makes threads slower than one
     ntested = sum(1 for t in sel if (t[2] > 0).any())
     pool = ThreadPoolExecutor(min(a.threads, nloc)) if a.threads > 1 and (Npairs / max(ntested, 1) >= TEST_THREAD_PAIRS or big) else None
-    if a.threads > 1: LOG(f"test stage: {min(a.threads, nloc) if pool else 1} thread{'s' if pool and min(a.threads, nloc) > 1 else ''} ({Npairs / max(ntested, 1):,.0f} comparisons per locus on average, {n:,} taxa; threads pay off from {TEST_THREAD_PAIRS:,} per locus or 1,000 taxa)")
     # dispersion pre-pass: the robust spread of observed/expected among each locus's resolved comparator pairs with
     # enough expected mismatches, with the Poisson part removed: Var(O/E) = 1/E + phi. The same pass counts the tests
     # each locus will run (its distinct comparisons and its testable pairs), so the Bonferroni bar is known before any
     # test runs. The comparator arrays are kept for the test when they fit in a quarter of the memory available (about
     # 120 bytes per comparison).
     nrows_all = sum(int(t[2].sum()) for t in sel)
-    keep_pairs = nrows_all * 120 < _mem_available() // 4
+    keep_pairs = nrows_all * 120 < _mem_room() // 2
     cache = {}
     def locus_phi(li):
         L = locus_pairs(li); PROG.tick()
@@ -1542,16 +1614,19 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         tests_fh.write("\t".join(TESTS_COLUMNS) + "\n")
     every = tests_fh is not None
 
+    phi_l = (phi_n * np.where(okp, phi_hat, 0.0) + PHI_N0 * phi_bar) / (phi_n + PHI_N0)   # each locus's dispersion, shrunk toward the dataset's
     def process_locus(li):
         """everything the test decides and writes for one locus, as rows, text blocks and mask actions; touches no
-        shared state, so loci can be processed in parallel and written in order"""
+        shared state, so loci can be processed in parallel and written in order. A generator: it yields its requests
+        for exact tails (kind, observed, shared sites, expected) and receives the tails; run_batch drives a batch of
+        loci so that one call serves them all"""
         name, sites = loci[li]
         L = cache.pop(li, None) if keep_pairs else None
         if L is None: L = locus_pairs(li)
         if isinstance(L, str): return dict(skipped=True, log=f"{name}: {L}", status=L)
         idx, gi, ci, rk, o, same, mis, ident, dob, mp, mph, fit, Wl, Sl, ncomp, nres, expect, corr, rate_c = \
             (L[k] for k in ("idx", "gi", "ci", "rk", "o", "same", "mis", "ident", "dob", "mp", "mph", "fit", "Wl", "Sl", "ncomp", "nres", "expect", "corr", "rate_c"))
-        phi = (phi_n[li] * (phi_hat[li] if okp[li] else 0.0) + PHI_N0 * phi_bar) / (phi_n[li] + PHI_N0)
+        phi = phi_l[li]
         top = sel[li][0]
 
         # the count test with a quasi-Poisson variance: Var(O) = E + phi E^2, phi the locus's dispersion (shrunk toward
@@ -1559,19 +1634,9 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         dhat = expect(mph)                                          # too-divergent side: the divergence we cannot exclude
         E = o * dhat / 100.0
         excess = mis - E
-
-        # ---- test 1, too divergent: each comparison's upper tail P(X >= observed); a cell fails when a majority of its
-        # comparators do (with fewer comparators than requested, a majority of those it has: "ambiguous")
-        lp_hi = np.full(len(gi), np.nan)                            # natural-log upper tails where computed
-        up = excess > 0
-        if up.any(): lp_hi[up] = bb_tails(mis[up], o[up], E[up], phi, True)
-        fail_hi = up & (lp_hi < logbar)
+        up = excess > 0                                              # test 1's upper tails are asked for these comparisons
         kc = ncomp[idx].astype(np.intp); ncell = len(idx); ar = np.arange(ncell)
         starts = np.r_[0, np.cumsum(kc)[:-1]].astype(np.intp)                   # the platform index type: reduceat, repeat and bincount refuse int64 on 32-bit builds (WebAssembly)
-        nf = np.add.reduceat(fail_hi.astype(np.intp), starts)
-        flag = (kc >= K_eff) & (nf >= M_eff)
-        amb = (kc < K_eff) & (nf >= kc // 2 + 1)
-        dflag = flag | amb
         row = np.repeat(ar, kc); col = np.arange(len(gi)) - np.repeat(starts, kc)
         def cell_matrix(v):                                         # the comparisons laid out one row per cell, NaN beyond its count
             Pm = np.full((ncell, K_eff), np.nan); Pm[row, col] = v; return Pm
@@ -1599,6 +1664,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         # excess in absolute value: a foreign sequence in a fast lineage is CLOSER to the lineage's relatives than
         # expected), and it is masked; the other is its source.
         cpos = {int(g): q for q, g in enumerate(idx.tolist())}; Xs = None
+        qpos = np.full(n, -1, np.int64); qpos[idx] = ar                     # taxon -> its cell here, -1 when it has none
         pairs = {}                                                   # (min, max) -> the record of the test that fired lowest
         def record(key, rec):
             if key not in pairs or rec["lnp"] < pairs[key]["lnp"]: pairs[key] = rec
@@ -1621,35 +1687,50 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
                 out.append(np.where(has, f_loo[x, eq.argmax(1)], f_all[x]))
             return np.minimum(out[0], out[1])
         ff = row_factor(gi, ci)
+        dn = mis < E_lo; r_ff = np.flatnonzero(dn & (ff < 1.0))
+        # the exact tails: asked for here, computed by the driver for a batch of loci at once, answered in order
+        t_up, t_dn, t_ff = yield [("up", mis[up], o[up], E[up]), ("dn", mis[dn], o[dn], E_lo[dn]), ("dn", mis[r_ff], o[r_ff], E_lo[r_ff] * ff[r_ff])]
+
+        # ---- test 1, too divergent: each comparison's upper tail P(X >= observed); a cell fails when a majority of its
+        # comparators do (with fewer comparators than requested, a majority of those it has: "ambiguous")
+        lp_hi = np.full(len(gi), np.nan)                            # natural-log upper tails where computed
+        lp_hi[up] = t_up
+        fail_hi = up & (lp_hi < logbar)
+        nf = np.add.reduceat(fail_hi.astype(np.intp), starts)
+        flag = (kc >= K_eff) & (nf >= M_eff)
+        amb = (kc < K_eff) & (nf >= kc // 2 + 1)
+        dflag = flag | amb
         lp_in = np.zeros(len(gi))                                   # natural-log lower tails; 0 (p = 1) above expectation
-        dn = mis < E_lo
-        if dn.any():
-            lp_in[dn] = bb_tails(mis[dn], o[dn], E_lo[dn], phi, False)
-            r_ = np.flatnonzero(dn & (ff < 1.0))
-            if len(r_): lp_in[r_] = np.maximum(lp_in[r_], bb_tails(mis[r_], o[r_], E_lo[r_] * ff[r_], phi, False))
+        lp_in[dn] = t_dn
+        if len(r_ff): lp_in[r_ff] = np.maximum(lp_in[r_ff], t_ff)
         fail_in = lp_in < logbar
         for j in np.flatnonzero(fail_in).tolist():
             g, c = int(gi[j]), int(ci[j])
             record((min(g, c), max(g, c)), dict(arm="comparator", g=g, y=c, o=float(o[j]), mis=float(mis[j]), E=float(E_lo[j]), f=float(ff[j]),
                                                  lnp=float(lp_in[j]), rel=[]))
-        # closest-match arm
+        # closest-match arm, every forked cell at once: its comparators' mismatch rates to Y where they pass test 1 here,
+        # are not Y and share enough sites with Y; three or more of them set the expectation
         closest, fork = sel[li][4], sel[li][5]
         fk = fork[idx]; Y = np.where(fk, closest[idx], -1)
         tested2 = np.zeros(ncell, bool); o2 = np.zeros(ncell); mis2 = np.zeros(ncell); E2 = np.full(ncell, np.nan)
         lp_lo = np.zeros(ncell); rel2 = [[] for _ in range(ncell)]
-        for q in np.flatnonzero(fk).tolist():
-            g = int(idx[q]); y = int(Y[q]); rates = []
-            for c in top[g].tolist():
-                if c < 0 or c == y: continue
-                qc = cpos.get(c)
-                if qc is not None and dflag[qc]: continue                      # a relative that fails test 1 here says nothing
-                tcy = tri_idx[c, y]; wcy = float(Wl[tcy])
-                if wcy < a.fit_overlap: continue
-                rates.append((wcy - float(Sl[tcy])) / wcy); rel2[q].append(c)
-            if len(rates) < 3: continue
-            t = tri_idx[g, y]; o2[q] = float(Wl[t]); mis2[q] = o2[q] - float(Sl[t]); E2[q] = o2[q] * float(np.median(rates)); tested2[q] = True
+        fq = np.flatnonzero(fk)
+        if len(fq):
+            G = idx[fq]; Yv = Y[fq]; C = top[G]; C0 = np.maximum(C, 0); qc = qpos[C0]
+            valid = (C >= 0) & (C != Yv[:, None]) & ~((qc >= 0) & dflag[np.maximum(qc, 0)])
+            t = tri_idx[C0, Yv[:, None]]; w = Wl[t].astype(np.float64); valid &= w >= a.fit_overlap
+            with np.errstate(invalid="ignore", divide="ignore"):
+                rates = np.where(valid, (w - Sl[t].astype(np.float64)) / np.maximum(w, 1.0), np.nan)
+            ok3 = valid.sum(1) >= 3
+            if ok3.any():
+                q3 = fq[ok3]; tgy = tri_idx[G[ok3], Yv[ok3]]
+                o2[q3] = Wl[tgy].astype(np.float64); mis2[q3] = o2[q3] - Sl[tgy].astype(np.float64)
+                with np.errstate(all="ignore"): E2[q3] = o2[q3] * np.nanmedian(rates[ok3], axis=1)
+                tested2[q3] = True
+                for i in np.flatnonzero(ok3).tolist(): rel2[fq[i]] = C[i][valid[i]].tolist()
         tq = np.flatnonzero(tested2 & (mis2 < E2))
-        if len(tq): lp_lo[tq] = bb_tails(mis2[tq], o2[tq], E2[tq], phi, False)
+        (t_lo,) = yield [("dn", mis2[tq], o2[tq], E2[tq])]
+        lp_lo[tq] = t_lo
         fail2 = tested2 & (lp_lo < logbar)
         for q in np.flatnonzero(fail2).tolist():
             g = int(idx[q]); y = int(Y[q])
@@ -1687,7 +1768,8 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         # exact upper tails for every comparison of the cells the outputs describe (and of every comparison under --all-tests),
         # so a cell's decisive comparison (the one that makes or misses the majority) has its exact p-value
         rowsel = np.isnan(lp_hi) & (np.repeat(fail_q, kc) | every)
-        if rowsel.any(): lp_hi[rowsel] = bb_tails(mis[rowsel], o[rowsel], E[rowsel], phi, True)
+        (t_rows,) = yield [("up", mis[rowsel], o[rowsel], E[rowsel])]
+        lp_hi[rowsel] = t_rows
         need = np.where(kc >= K_eff, M_eff, kc // 2 + 1)
         LP = cell_matrix(lp_hi); LP.sort(axis=1)
         div_lp = np.where(fail_q, LP[ar, np.maximum(need, 1) - 1], np.nan)
@@ -1700,13 +1782,10 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         # the closest match at the locus for every cell (-1: no taxon shares enough sites) and its too-similar test: the
         # comparator arm when it is one of the comparators, the closest-match arm when it is not, NaN when not tested
         lclos_ = closest[idx].astype(np.int32); lclos_p = np.full(ncell, np.nan, np.float32)
-        for q in range(ncell):
-            y = int(lclos_[q])
-            if y < 0: continue
-            if tested2[q] and int(Y[q]) == y: lclos_p[q] = lp_lo[q] / LN10
-            else:
-                r_ = np.flatnonzero(top[int(idx[q])] == y)
-                if len(r_): lclos_p[q] = comp_sim_[q, int(r_[0])]
+        hasy = lclos_ >= 0; viaarm = hasy & tested2 & (Y == lclos_)
+        lclos_p[viaarm] = lp_lo[viaarm] / LN10
+        eq = top[idx] == lclos_[:, None]; has = hasy & ~viaarm & eq.any(1)
+        lclos_p[has] = comp_sim_[np.flatnonzero(has), eq.argmax(1)[has]]
 
         def sim_cols(q):
             """the too-similar columns of a cell: its pair's numbers from the test that fired, else its own closest-match test"""
@@ -1732,10 +1811,8 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         side_ |= np.where(dflag, 1 if mask_hi else 16, 0).astype(np.uint8); side_ |= (amb.astype(np.uint8) << 2)
         side_ |= np.where(sflag, 2 if mask_lo else 32, 0).astype(np.uint8); side_ |= np.where(tested2, 64, 0).astype(np.uint8)
         side_ |= np.where(src_q, 128, 0).astype(np.uint8); side_ |= np.where(unc_q, 8, 0).astype(np.uint8)
-        simlp_ = np.full(ncell, np.nan, np.float32)
-        for q in range(ncell):
-            if q in pair_of: simlp_[q] = pair_of[q][0]["lnp"] / LN10
-            elif tested2[q]: simlp_[q] = lp_lo[q] / LN10
+        simlp_ = np.full(ncell, np.nan, np.float32); simlp_[tested2] = lp_lo[tested2] / LN10
+        for q, (rec, _, _) in pair_of.items(): simlp_[q] = rec["lnp"] / LN10
         rep_q = fail_q if codes_policy == "fails" else masked_q if codes_policy == "masked" else np.zeros(ncell, bool)
         # best match: per-site divergence compared on the SAME sites. The closest taxon among those sharing the most sites
         # with the focal is the champion; a taxon closer over its own shared sites (>= BEST_MATCH_MIN_SITES) challenges
@@ -1757,32 +1834,35 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
             Xs_ = Xs if Xs is not None else X[:, sites]
             for r_ in np.flatnonzero(okb & (dvg < lo_t[:, None]).any(1)).tolist():
                 g = int(rows_bm[r_]); fx = Xs_[g]; fp = fx >= 0; c = int(champ[r_])
-                order_ = sorted(np.flatnonzero(dvg[r_] < lo_t[r_]).tolist(), key=lambda t: (-wrow[r_, t], dvg[r_, t], mmb[r_, t]))   # broadest coverage first
-                for t in order_:
-                    common = fp & (Xs_[c] >= 0) & (Xs_[t] >= 0)
-                    if int(common.sum()) < BEST_MATCH_MIN_SITES: continue
-                    dt_ = int(((Xs_[t] != fx) & common).sum()); dc_ = int(((Xs_[c] != fx) & common).sum())
-                    if dt_ < dc_ or (dt_ == dc_ and mmb[r_, t] < mmb[r_, c]): c = t
+                T = np.array(sorted(np.flatnonzero(dvg[r_] < lo_t[r_]).tolist(), key=lambda t: (-wrow[r_, t], dvg[r_, t], mmb[r_, t])))   # broadest coverage first
+                while len(T):                                                                  # every remaining challenger against the champion at once;
+                    XT = Xs_[T]; common = fp[None, :] & (Xs_[c] >= 0)[None, :] & (XT >= 0)      # the first that wins takes over, and the rest face it
+                    dt_ = ((XT != fx[None, :]) & common).sum(1); dc_ = ((Xs_[c] != fx)[None, :] & common).sum(1)
+                    wins = (common.sum(1) >= BEST_MATCH_MIN_SITES) & ((dt_ < dc_) | ((dt_ == dc_) & (mmb[r_, T] < mmb[r_, c])))
+                    if not wins.any(): break
+                    k = int(wins.argmax()); c = int(T[k]); T = T[k + 1:]
                 champ[r_] = c
             qb = np.array([cpos[int(g)] for g in rows_bm.tolist()], dtype=np.intp)
             best_[qb] = np.where(okb, champ, -1); bident_[qb] = np.where(okb, 100.0 * (1.0 - dvg[np.arange(len(rows_bm)), champ]), np.nan)
         codes_out = None
         if rep_q.any():
+            # k = the comparators present that differ from the focal residue; where the cell has a too-similar partner,
+            # the partner is left out of k and the sites where it agrees with the focal while at least two comparators
+            # differ carry CODE_SIMILAR + k (the blue of a copy), so one row holds both tests' evidence
             Xs_ = Xs if Xs is not None else X[:, sites]
-            qs = np.flatnonzero(rep_q); blk_c = np.full((len(qs), len(sites)), CODE_ABSENT, np.uint8)
-            for r_, q in enumerate(qs.tolist()):
-                # k = the comparators present that differ from the focal residue; where the cell has a too-similar
-                # partner, the partner is left out of k and the sites where it agrees with the focal while at least two
-                # comparators differ carry CODE_SIMILAR + k (the blue of a copy), so one row holds both tests' evidence
-                g = int(idx[q]); fx = Xs_[g]; pres = fx >= 0
-                B_ = int(partner_[q]) if (copy_q[q] or src_q[q]) else -1
-                comps = [int(c) for c in top[g] if c >= 0 and c != B_]
-                k_ = ((Xs_[comps] != fx[None, :]) & (Xs_[comps] >= 0)).sum(0) if comps else np.zeros(len(sites), int)
-                row_c = np.where(pres, np.minimum(k_, 127), CODE_ABSENT).astype(np.uint8)
-                if B_ >= 0:
-                    xb = Xs_[B_]; shared = pres & (xb >= 0) & (fx == xb) & (k_ >= 2)
-                    row_c[shared] = (CODE_SIMILAR + np.minimum(k_[shared], 125)).astype(np.uint8)
-                blk_c[r_] = row_c
+            qs = np.flatnonzero(rep_q); blk_c = np.empty((len(qs), len(sites)), np.uint8)
+            step = max(1, (16 << 20) // max(K_eff * len(sites), 1))                    # cells per slice: the slice's block stays under 16 MB
+            for c0 in range(0, len(qs), step):
+                qq = qs[c0:c0 + step]; G = idx[qq]; FX = Xs_[G]; pres = FX >= 0
+                Bq = np.where(copy_q[qq] | src_q[qq], partner_[qq], -1)
+                C = top[G]; cv = (C >= 0) & (C != Bq[:, None]); XC = Xs_[np.maximum(C, 0)]
+                k_ = ((XC != FX[:, None, :]) & (XC >= 0) & cv[:, :, None]).sum(1)
+                rows_c = np.where(pres, np.minimum(k_, 127), CODE_ABSENT).astype(np.uint8)
+                hb = Bq >= 0
+                if hb.any():
+                    XB = Xs_[np.maximum(Bq, 0)]; shared = hb[:, None] & pres & (XB >= 0) & (FX == XB) & (k_ >= 2)
+                    rows_c[shared] = (CODE_SIMILAR + np.minimum(k_[shared], 125)).astype(np.uint8)
+                blk_c[c0:c0 + step] = rows_c
             codes_out = (idx[qs].astype(np.int32), blk_c)
         # face-to-face trees for the masked cells: the focal, its comparators and its locus set, plus an outgroup to root
         # both trees on: the taxon at the locus sharing >= fit-overlap sites with every tree taxon that is the most distant
@@ -1899,14 +1979,53 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         if r["similar"]: rep["similar"][li] = r["similar"]
         PROG.tick(extra=f"{tally['divergent'] + tally['both']} too divergent, {tally['similar'] + tally['both']} copied")
 
+    # loci in batches of about TEST_BATCH_COMPARISONS comparisons: the exact tails of a batch are computed in one call
+    # per kind (upper, lower), the loci answered in turn, their results consumed in locus order. The stage is Python
+    # work per locus around those calls, so it runs in worker PROCESSES (forked: they inherit every array without a
+    # copy; threads only queue on the interpreter lock here), one batch per task, the batches sized to keep them busy
+    if pool: pool.shutdown(wait=True); pool = None                     # no live threads when the workers fork
+    ncmp_l = [int(t[1][t[2] > 0].sum()) for t in sel]
+    workers = min(a.threads, nloc) if a.threads > 1 and nloc > 1 and "fork" in multiprocessing.get_all_start_methods() else 1
+    target = max(TEST_BATCH_MIN, min(TEST_BATCH_COMPARISONS, sum(ncmp_l) // (4 * workers))) if workers > 1 else TEST_BATCH_COMPARISONS
+    batches = []; cur = []; acc = 0
+    for li in range(nloc):
+        cur.append(li); acc += ncmp_l[li]
+        if acc >= target: batches.append(cur); cur = []; acc = 0
+    if cur: batches.append(cur)
+    workers = min(workers, len(batches), max(1, _mem_room() // (TEST_BATCH_COMPARISONS * 64 * 80)))   # a batch's tails: about 256 MB of temporaries
+    if a.threads > 1: LOG(f"test stage: {workers} worker process{'es' if workers > 1 else ''} ({len(batches)} batch{'es' if len(batches) > 1 else ''} of loci, about {target:,} comparisons each)")
+    def run_batch(lis):
+        gens, reqs, done = {}, {}, {}
+        for li in lis:
+            g = process_locus(li)
+            try: reqs[li] = next(g); gens[li] = g
+            except StopIteration as e: done[li] = e.value
+        while reqs:
+            ans = {li: [None] * len(r) for li, r in reqs.items()}
+            for kind, upper in (("up", True), ("dn", False)):
+                slots = [(li, k) for li, r in reqs.items() for k, x in enumerate(r) if x[0] == kind]
+                if not slots: continue
+                parts = [reqs[li][k] for li, k in slots]
+                res = bb_tails(np.concatenate([x[1] for x in parts]), np.concatenate([x[2] for x in parts]), np.concatenate([x[3] for x in parts]),
+                               np.concatenate([np.full(len(x[1]), phi_l[li]) for (li, _), x in zip(slots, parts)]), upper)
+                pos = 0
+                for (li, k), x in zip(slots, parts): ans[li][k] = res[pos:pos + len(x[1])]; pos += len(x[1])
+            nxt = {}
+            for li in list(reqs):
+                try: nxt[li] = gens[li].send(ans[li])
+                except StopIteration as e: done[li] = e.value
+            reqs = nxt
+        return [done[li] for li in lis]
     PROG.start("test", nloc, "0 too divergent, 0 copied")
-    if pool:
-        batch = 8 * a.threads                                           # loci in flight, so the text blocks do not pile up
-        for b0 in range(0, nloc, batch):
-            for li, R in zip(range(b0, min(b0 + batch, nloc)), pool.map(process_locus, range(b0, min(b0 + batch, nloc)))): consume(li, R)
-        pool.shutdown()
+    if workers > 1:
+        global _TEST_BATCH; _TEST_BATCH = run_batch                       # the forked workers find it in their copy of this module
+        with multiprocessing.get_context("fork").Pool(workers) as mp:
+            for lis, Rs in zip(batches, mp.imap(_test_batch, batches)):   # results in locus order, consumed as they arrive
+                for li, R in zip(lis, Rs): consume(li, R)
+        _TEST_BATCH = None
     else:
-        for li in range(nloc): consume(li, process_locus(li))
+        for lis in batches:
+            for li, R in zip(lis, run_batch(lis)): consume(li, R)
     PROG.finish()
     if tests_fh is not None: tests_fh.close()
     # the report's remaining pieces: sparse rows stacked, the closest taxa by m, the test's constants
