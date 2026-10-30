@@ -7,3 +7,8 @@ test_data/
 validation/simsuite*/
 validation/bench/
 pngs/
+.hypothesis/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/

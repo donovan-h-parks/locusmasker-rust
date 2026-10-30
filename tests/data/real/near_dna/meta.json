@@ -1,0 +1,8 @@
+{
+ "name": "near_dna",
+ "note": "Near et al. 2013 (CC0), the first 40 taxa of the 608-taxon nucleotide alignment at all 30 loci",
+ "taxa": 40,
+ "loci": 10,
+ "sites": 8577,
+ "datatype": "dna"
+}

@@ -1,0 +1,13 @@
+# one locus per line, RAxML style
+DNA, locus1 = 1-141
+DNA, locus2 = 142-424
+DNA, locus3 = 425-683
+DNA, locus4 = 684-951
+DNA, locus5 = 952-1167
+DNA, locus6 = 1168-1404
+DNA, locus7 = 1405-1688
+DNA, locus8 = 1689-1863
+DNA, locus9 = 1864-2142
+DNA, locus10 = 2143-2384
+DNA, locus11 = 2385-2683
+DNA, locus12 = 2684-2901

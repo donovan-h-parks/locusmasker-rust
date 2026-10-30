@@ -1,0 +1,21 @@
+# the conda environment LocusMasker runs in, and the extras its test suite needs
+#   conda env create -f environment.yml && conda activate locusmasker
+#   python -m playwright install chromium      # once, for the viewer tests (tests/viewer); they are skipped without it
+name: locusmasker
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.10
+  - numpy>=1.24                # the only dependency of locus_outliers.py
+  - matplotlib>=3.7            # the PDF plots (plot_panels.py, plot_taxon.py, plot_pair.py)
+  - biopython>=1.80            # NEXUS files the fast reader does not handle (comments, quoted names)
+  # the test suite
+  - pytest>=7.4
+  - pytest-xdist
+  - pytest-cov
+  - pytest-timeout
+  - hypothesis
+  - scipy                      # the oracle for the exact tails and the normal quantile
+  - pip
+  - pip:
+      - playwright             # the headless browser for the report viewer's tests

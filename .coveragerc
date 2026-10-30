@@ -1,0 +1,19 @@
+# coverage of the tool and the plot scripts, as  pytest -n auto --cov  measures it (tests/README.md)
+[run]
+branch = False
+parallel = True
+source = .
+omit =
+    tests/*
+    validation/*
+    analysis/*
+    website/*
+    notes/*
+
+[report]
+fail_under = 95
+show_missing = True
+skip_covered = True
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:

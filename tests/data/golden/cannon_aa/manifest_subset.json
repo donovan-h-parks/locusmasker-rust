@@ -1,0 +1,46 @@
+{
+ "counts": {
+  "taxa": 78,
+  "loci": 12,
+  "cells": 600,
+  "present": 762,
+  "masked": 4,
+  "masked_divergent": 3,
+  "masked_similar": 1,
+  "masked_both": 0,
+  "ambiguous": 0,
+  "similar_tested": 204,
+  "similar_pairs": 1,
+  "similar_sources": 1,
+  "similar_uncertain": 0,
+  "near_miss": {
+   "1": 7,
+   "2": 0
+  },
+  "excluded_taxa": 25,
+  "skipped_loci": 0,
+  "untested_sequences": 162,
+  "untested": {
+   "sequences": 162,
+   "of_excluded_taxa": 162,
+   "at_untested_loci": 0,
+   "without_a_comparator": 0
+  },
+  "uncovered_sites": 0
+ },
+ "test": {
+  "tests": 5372,
+  "divergent_tests": 2584,
+  "similar_comparator_tests": 2584,
+  "similar_closest_tests": 204,
+  "similar_candidates": 204,
+  "comparisons": 2584,
+  "bonferroni_k": 4.2809,
+  "log_bar": -11.5847,
+  "log10_bar": -5.0312,
+  "phi_dataset": 0.004254,
+  "half": 0.5
+ },
+ "format_version": 7,
+ "version": "0.13.0"
+}

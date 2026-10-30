@@ -1,0 +1,12 @@
+# one locus per line, RAxML style
+WAG, locus1 = 1-138
+WAG, locus2 = 139-308
+WAG, locus3 = 309-432
+WAG, locus4 = 433-652
+WAG, locus5 = 653-857
+WAG, locus6 = 858-1064
+WAG, locus7 = 1065-1294
+WAG, locus8 = 1295-1420
+WAG, locus9 = 1421-1572
+WAG, locus10 = 1573-1722
+WAG, locus11 = 1723-1857

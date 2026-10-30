@@ -1,0 +1,8 @@
+{
+ "name": "cannon_aa",
+ "note": "Cannon et al. 2016 (CC0; doi 10.5061/dryad.107232), the 78 taxa of the amino-acid alignment at its first 12 loci",
+ "taxa": 78,
+ "loci": 12,
+ "sites": 2491,
+ "datatype": "aa"
+}

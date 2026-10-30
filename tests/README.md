@@ -1,0 +1,20 @@
+# The test suite
+
+    pytest -n auto                     # everything, in parallel (about 20 s on 96 CPUs, a few minutes on a laptop)
+    pytest -n auto -m "not viewer"     # without the headless browser
+    pytest tests/unit -n auto          # one group: unit, property, e2e, regression, viewer
+    pytest -n auto --cov              # with coverage of the tool and the plot scripts (.coveragerc: fails under 95%)
+
+Groups (markers in pytest.ini): `unit` tests state what each function should do and use scipy and Biopython as oracles;
+`property` tests (hypothesis) check round trips and the algebra of the tails and medians for any input; `e2e` tests run the
+tool on the fixture datasets (planted truths, every input format, thread and chunking invariance, broken inputs, degenerate
+alignments); `regression` tests pin the current outputs on the fixtures; `viewer` tests open the HTML report in headless
+Chromium and read every panel back (skipped when playwright's Chromium is not installed: `python -m playwright install chromium`).
+
+Fixtures live in `tests/data`: synthetic alignments with planted truths (`synth/*`, `truth.json` beside each) in every
+input format, excerpts of two real alignments (`real/*`, CC0), and the golden outputs (`golden/*`). All are written by
+`tests/data/make_fixtures.py` from fixed seeds; `--check` confirms the committed files are what the generator makes,
+`--golden` re-pins the outputs after a deliberate change of the method (say so in the commit).
+
+A test marked `xfail(strict=True)` states behaviour the code does not have yet; its reason starts with BUG, LIMIT or PRECISION.
+When the code is fixed the test starts passing and pytest reports the stale marker, so remove it then.
