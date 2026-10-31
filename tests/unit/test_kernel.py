@@ -133,7 +133,7 @@ class TestCompiledKernel:
 # ------------------------------------------------------------------ the stage's choice
 class TestDispatch:
     def test_small_work_stays_in_numpy(self, runs):
-        log = runs("dna_small").log; assert "compiled kernel" not in log and "pair stage:" in log and "chunk" in log
+        log = runs("dna_small").log; assert "compiled kernel" not in log and "pair sweep" in log and "numpy chunks" in log
 
     def test_the_kernel_runs_when_the_work_is_large_enough(self, kernel, runs, tmp_out, monkeypatch):
         monkeypatch.setattr(lo, "NUMBA_PAIR_LOCI_MIN", 0)
@@ -143,7 +143,7 @@ class TestDispatch:
     def test_no_numba_keeps_the_numpy_stage(self, kernel, runs, tmp_out, monkeypatch):
         monkeypatch.setattr(lo, "NUMBA_PAIR_LOCI_MIN", 0)
         ds = dataset("dna_small"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--no-numba"]); assert r.rc == 0, r.log
-        assert "compiled kernel" not in r.log and "chunk" in r.log and lo.USE_NUMBA is True and outputs(r) == outputs(runs("dna_small"))
+        assert "compiled kernel" not in r.log and "numpy chunks" in r.log and lo.USE_NUMBA is True and outputs(r) == outputs(runs("dna_small"))
 
     def test_without_numba_the_numpy_stage_runs_and_says_so(self, runs, tmp_out, monkeypatch):
         monkeypatch.setattr(lo, "NUMBA_PAIR_LOCI_MIN", 0); monkeypatch.setattr(lo, "_KERNEL", None); monkeypatch.setitem(sys.modules, "numba", None)

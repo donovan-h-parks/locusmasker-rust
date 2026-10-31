@@ -62,7 +62,8 @@ class TestReportTemplate:
 
 class TestPairStagePool:
     def test_chunked_threaded_pair_stage_matches_one_thread(self, tmp_path, monkeypatch):
-        """300 taxa give 45,150 pairs: with the memory reported tiny the pair stage runs in several chunks on several threads"""
+        """300 taxa in one block pair of 90,000 positions: with the memory reported tiny the medians run in several numpy
+        chunks on several threads, and the sweep's structures do not change"""
         rng = np.random.default_rng(3); n, nloc, ll = 300, 12, 40; anc = rng.integers(0, 4, nloc * ll); X = np.tile(anc, (n, 1)); mut = rng.random(X.shape) < 0.1
         X[mut] = (X[mut] + rng.integers(1, 4, int(mut.sum()))) % 4; rows = [bytearray(bytes(np.frombuffer(b"ACGT", dtype=np.uint8)[r])) for r in X]
         names = [f"t{i:03d}" for i in range(n)]; loci = [(f"l{i}", np.arange(i * ll, (i + 1) * ll)) for i in range(nloc)]
@@ -70,8 +71,10 @@ class TestPairStagePool:
         monkeypatch.setattr(lo, "_mem_available", lambda: 16 << 20)
         logs = []; monkeypatch.setattr(lo, "LOG", lambda m: logs.append(m))
         P4 = lo.prepare(argparse.Namespace(fit_overlap=20, threads=4), names, rows, loci, "dna", 5, time.time())
-        assert any("chunks of" in m and "threads" in m for m in logs), logs
-        for k in ("S", "W", "m", "m_hi", "mj", "rate"): assert np.array_equal(getattr(P1, k), getattr(P4, k), equal_nan=True), k
+        assert any("medians by numpy chunks" in m for m in logs), logs
+        for k in ("m_full", "mfl_full", "rate", "cls"): assert np.array_equal(getattr(P1, k), getattr(P4, k), equal_nan=True), k
+        for k in ("cand", "key", "m", "mfl", "nfin"): assert np.array_equal(P1.lists[k], P4.lists[k], equal_nan=True), k
+        for x, y in zip(P1.closest, P4.closest): assert np.array_equal(x, y, equal_nan=True)
 
 
 class TestMemoryRoom:

@@ -45,9 +45,12 @@ def corpus(names=None):
     return sorted(out, key=lambda x: x["bytes"])
 
 
+EXTRA = []                                                            # more options for the tool (--extra)
+
+
 def tool_args(ds, threads, out_dir):
     return [TOOL, "--aln", ds["aln"], "--datatype", ds["dtype"], "--out", out_dir, "--threads", str(threads), "--progress", "none"] + \
-           (["--partitions", ds["parts"]] if ds["parts"] else [])
+           (["--partitions", ds["parts"]] if ds["parts"] else []) + list(EXTRA)
 
 
 TIME_RE = {"wall": r"Elapsed \(wall clock\) time \(h:mm:ss or m:ss\): (\S+)", "user": r"User time \(seconds\): ([\d.]+)",
@@ -266,7 +269,9 @@ def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--out", required=True); ap.add_argument("--threads", type=int, nargs="*", default=[])
     ap.add_argument("--datasets", nargs="*"); ap.add_argument("--skip", nargs="*", default=[]); ap.add_argument("--jobs", type=int, default=1)
     ap.add_argument("--timeout", type=float, default=4 * 3600); ap.add_argument("--cprofile", action="store_true"); ap.add_argument("--pyspy")
-    ap.add_argument("--keep-outputs", action="store_true"); ap.add_argument("--report", action="store_true"); ap.add_argument("--compare"); a = ap.parse_args()
+    ap.add_argument("--keep-outputs", action="store_true"); ap.add_argument("--report", action="store_true"); ap.add_argument("--compare")
+    ap.add_argument("--extra", default="", help="more options for the tool, one string: --extra \"--block-taxa 50 --candidates 20\""); a = ap.parse_args()
+    global EXTRA; EXTRA = a.extra.split()
     if a.report: report(a.out); return
     if a.compare: compare(a.out, a.compare); return
     os.makedirs(a.out, exist_ok=True); sets = [d for d in corpus(a.datasets) if d["name"] not in a.skip]

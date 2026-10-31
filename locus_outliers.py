@@ -144,10 +144,13 @@ Options
   cannot fit stops before it starts and says what it needs)
   --no-numba (the pair stage in numpy even when numba is installed: the compiled kernel gives the
   same numbers, 3-8x faster at scale, so this switch is for checking that)
+  --candidates 200 (the closest genomes each taxon keeps as its candidate comparators; a taxon whose
+  list runs out at a locus gets its full row computed)  --block-taxa N (the taxon block of the pair sweep;
+  default from the taxa count, mainly for testing: any block size gives the same results)
   (constants in the code: HALF = 0.5 mismatch for the resolution floor and the rate
   pseudocount; dispersion from pairs with >= 10 expected mismatches, shrinkage weight 30)
 """
-import argparse, base64, collections, csv, gzip, hashlib, io, json, math, os, platform, re, subprocess, sys, threading, time, zipfile
+import argparse, base64, collections, csv, gzip, hashlib, io, json, math, os, platform, re, shutil, subprocess, sys, threading, time, zipfile
 for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):   # BLAS stays single-threaded (its matrices are
     os.environ.setdefault(_v, "1")                                          # small); --threads parallelises over loci and pairs
 import numpy as np
@@ -170,7 +173,8 @@ PAIR_CHUNK_MIN = 32 << 20              # the pair stage's chunks of pairs hold b
 PAIR_CHUNK_MAX = 256 << 20
 DISPERSION_PAIRS_PER_WORKER = 200_000  # the dispersion pre-pass takes a worker process per this many comparisons (Ivan_2026, 4.2 M
                                        # comparisons in a 10 GB process: 1 worker 0.8 s, 8 workers 0.7 s, 42 workers 1.8 s: forks cost)
-COMPARATOR_WORK_PER_WORKER = 1e7       # the comparator stage takes a worker process per this many taxa^2 x loci
+COMPARATOR_SECONDS_PER_WORKER = 0.3    # the comparator stage takes a worker process per this many seconds of estimated walk (measured 31 Oct 2026: about
+                                       # 0.5 ms + 4 us per taxon per locus from the kept counts, 20 x taxa x sites / 1.5e8 s per locus from the residues)
 TEST_BATCH_COMPARISONS = 50_000   # the test computes the exact tails of this many comparisons at a time (loci batched), so small
                                   # loci do not pay numpy's per-call overhead hundreds of times each; about 250 MB of temporaries per batch
 TEST_BATCH_MIN = 5_000            # with worker processes the batches shrink to keep every worker busy, but never below this
@@ -182,6 +186,24 @@ NUMBA_PAIR_LOCI_MIN = 2_000_000   # the pair stage runs its compiled kernel (num
 NUMBA_PAIR_SLAB = 1 << 22         # pairs per kernel call (the progress bar moves once per slab)
 PAIR_BLOCK = 256                  # pairs a kernel block gathers at a time (its scratch is 32 bytes per locus x pair)
 USE_NUMBA = True                  # --no-numba clears it: the numpy pair stage whatever the size
+SWEEP_BLOCK_MIN = 1024            # up to this many taxa the pair sweep is one block pair whose per-locus work runs over the loci in threads or
+                                  # processes, as pass one always did; beyond it the taxa are cut into blocks, a block pair per worker at a time
+SWEEP_BLOCKS = 2.0                # ... about this many times the square root of the workers blocks, so each worker gets a few block pairs
+SWEEP_BLOCK_FLOOR = 32            # ... never smaller than this (a block pair is then too little work for its overheads)
+SWEEP_FLOPS_PER_WORKER = 2e10      # ... and the workers the blocks are cut for are at most one per this many floating-point operations of products in the
+                                  # sweep (about a third of a second each): a small sweep over many taxa is not cut into more block pairs than its work is worth
+CLOSEST_THREADS_MIN = 200_000     # the one block pair's closest reduce runs in threads from this many positions (taxa^2) per locus; below it the
+                                  # per-locus arrays are too small for threads to pay (they queue on the interpreter lock) and the loci go to worker processes
+SWEEP_RESULTS_DIR = "/dev/shm"    # the sweep's worker processes leave each block pair's results in a file here (a memory-backed filesystem) when
+                                  # it exists and has the room, else they pickle them through the pool's one pipe, which is far slower
+CANDIDATES = 200                  # each taxon keeps this many closest candidates by the ranking key (--candidates); a taxon whose list runs
+                                  # out in the comparator walk gets its full row computed afterwards
+FULL_M_MAX_TAXA = 20000           # up to this many taxa the sweep also keeps the full m matrix (a few GB) for the consumers that read whole
+                                  # rows (best-match ties, trees); above it those rows are computed on demand and the trees are rooted at
+                                  # their midpoint (no outgroup search). A rule on the taxa count, never on memory: outputs never depend
+                                  # on the machine
+BAND_SLOTS = 4                    # per (taxon, locus) the closest-match band keeps one entry per distinct mismatch rate within 1e-9 of the
+                                  # minimum, up to this many (one is the rule; more needs two overlaps with 2 o1 o2 >= 1e9)
 LSET_ELEMENTS = 1 << 20           # a locus's closest matches are found in taxa x taxa slices of about this many elements (rows = this / taxa)
 __version__ = "0.13.1"
 REPORT_FORMAT = 7                 # bundle format version; the viewer refuses a newer one (3: tree branch lengths are F81-corrected; 4: the too-similar test over every pair; 7: every test of every cell, the closest match at the locus, the uncertain-direction pairs)
@@ -534,8 +556,9 @@ def _check_rows(path, names, rows):
 
 
 def read_input(path, partitions):
-    """returns names, rows (one bytearray per taxon), loci, format, datatype declared by a NEXUS file (or None), and
-    the NEXUS record the writer needs (a Bio.Nexus object, or NexusInfo from the fast reader)"""
+    """returns names, rows (the alignment as one (taxa, sites) uint8 array: a row per taxon), loci, format, datatype
+    declared by a NEXUS file (or None), and the NEXUS record the writer needs (a Bio.Nexus object, or NexusInfo from the
+    fast reader)"""
     try:
         with open(path, "rb") as fh: raw = fh.read(64)
     except OSError as e:
@@ -603,7 +626,9 @@ def read_input(path, partitions):
     dup = sorted(t for t, c in collections.Counter(names).items() if c > 1)
     if dup: sys.exit(f"duplicate taxon names: {dup[:5]}{' ...' if len(dup) > 5 else ''}")
     if not loci: sys.exit("no loci defined")
-    return names, rows, loci, fmt, declared, nexus
+    R = np.empty((len(names), len(rows[0])), np.uint8)                # one contiguous array: forking a process that holds thousands of small
+    for i in range(len(rows)): R[i] = np.frombuffer(rows[i], dtype=np.uint8); rows[i] = None   # allocations costs 20x more than one mapping
+    return names, R, loci, fmt, declared, nexus
 
 
 # ------------------------------------------------------------------ output
@@ -615,7 +640,7 @@ def write_masked(path, out_dir, fmt, names, rows, nexus):
             fh.write(("format datatype=" + nexus.datatype + (" missing=" + nexus.missing if nexus.missing else "")
                       + (" gap=" + nexus.gap if nexus.gap else "") + ";\nmatrix\n").encode())
             pad = max(len(_safename(t)) for t in names)
-            for t, r in zip(names, rows): fh.write(_safename(t).ljust(pad + 1).encode() + r + b"\n")
+            for t, r in zip(names, rows): fh.write(_safename(t).ljust(pad + 1).encode() + bytes(r) + b"\n")
             fh.write(b";\nend;\n")
             if nexus.charsets or nexus.taxsets:
                 lines = ["\nbegin sets"] + [f"charset {_safename(k)} = {_compact4nexus(v)}" for k, v in nexus.charsets.items() if v] + \
@@ -624,15 +649,15 @@ def write_masked(path, out_dir, fmt, names, rows, nexus):
     elif fmt == "nexus":
         try: from Bio.Seq import Seq
         except ImportError: sys.exit("writing the masked alignment back into this NEXUS file needs Biopython, which is not installed")
-        for t, r in zip(names, rows): nexus.matrix[t] = Seq(r.decode())
+        for t, r in zip(names, rows): nexus.matrix[t] = Seq(bytes(r).decode())
         nexus.write_nexus_data(filename=out, interleave=False, append_sets=True)
     elif fmt == "fasta":
         with open(out, "wb") as fh:
-            for t, r in zip(names, rows): fh.write(f">{t}\n".encode() + r + b"\n")
+            for t, r in zip(names, rows): fh.write(f">{t}\n".encode() + bytes(r) + b"\n")
     else:
         with open(out, "wb") as fh:
             fh.write(f"{len(names)} {len(rows[0])}\n".encode())
-            for t, r in zip(names, rows): fh.write(f"{t} ".encode() + r + b"\n")
+            for t, r in zip(names, rows): fh.write(f"{t} ".encode() + bytes(r) + b"\n")
     return out
 
 
@@ -890,6 +915,7 @@ def _pair_medians_py(S, W, c0, c1, rr, ok_r, diag, min_loci, c50, B):
 
 
 _pair_medians = _pair_medians_py
+_pair_medians_serial = _pair_medians_py
 
 
 def _pair_kernel(max_threads=1):
@@ -897,7 +923,7 @@ def _pair_kernel(max_threads=1):
     installed or --no-numba was given. numba is imported here rather than at the top: it costs about half a second, which
     only a pair stage of NUMBA_PAIR_LOCI_MIN loci x pairs earns back. Its thread pool is capped at max_threads (the
     run's --threads) and uses the workqueue layer, the one that is safe beside the fork pools of the later stages."""
-    global _KERNEL, _wmed_select, _pair_medians, prange
+    global _KERNEL, _wmed_select, _pair_medians, _pair_medians_serial, prange
     if not USE_NUMBA: return None
     if _KERNEL is None:
         os.environ.setdefault("NUMBA_THREADING_LAYER", "workqueue"); os.environ.setdefault("NUMBA_NUM_THREADS", str(max(1, int(max_threads))))
@@ -908,6 +934,7 @@ def _pair_kernel(max_threads=1):
             prange = numba.prange
             _wmed_select = numba.njit(cache=True)(_wmed_select_py)
             _pair_medians = numba.njit(parallel=True, cache=True)(_pair_medians_py)
+            _pair_medians_serial = numba.njit(cache=True)(_pair_medians_py)      # for worker processes: the same bits, no thread pool
             def set_threads(t):
                 t = max(1, min(int(t), int(numba.config.NUMBA_NUM_THREADS))); numba.set_num_threads(t); return t
             _KERNEL = (_pair_medians, set_threads)
@@ -964,14 +991,16 @@ def fmem(b):
     return f"{b / float(1 << 30):.1f} GB" if b >= (1 << 30) else f"{b / float(1 << 20):.0f} MB"
 
 
-def memory_estimate(n, L, loci):
-    """bytes the run holds resident, from the alignment's shape: the residue codes (taxa x sites), the per-locus pair
-    counts (two arrays of loci x pairs), and the taxa x taxa matrices of the pair stage and the test (about 72 bytes per
-    taxon pair, counting the pair stage's provisional copies and the pair index). The stages' own temporaries are sized
-    to the room left and are not counted. Returns the total and the three parts."""
-    nloc = len(loci); ntri = n * (n + 1) // 2; longest = max((len(st) for _, st in loci), default=0)
-    x = n * L; sw = 2 * nloc * ntri * (2 if longest < 65536 else 4); nn = 72 * n * n + 16 * ntri
-    return x + sw + nn, x, sw, nn
+def memory_estimate(n, L, loci, C=None, full=None):
+    """bytes the run holds resident, from the alignment's shape: the alignment twice (the raw rows and the residue
+    codes), each taxon's candidate list (C entries of 32 bytes), the closest-match band entries of every cell (24
+    bytes per slot), up to FULL_M_MAX_TAXA taxa the full m matrix and its floor, and up to SWEEP_BLOCK_MIN taxa the
+    counts of every pair at every locus (the one block pair's slab, kept for the run). The sweep's per-worker slabs
+    and the stages' other temporaries are sized to the room left and are not counted. Returns the total and the five parts."""
+    nloc = len(loci); C = min(C or CANDIDATES, n); full = n <= FULL_M_MAX_TAXA if full is None else full
+    longest = max((len(st) for _, st in loci), default=0); slab = 2 * nloc * n * n * (2 if longest < 65536 else 4) if n <= SWEEP_BLOCK_MIN else 0
+    x = 2 * n * L; lists = n * C * 32; closest = n * nloc * BAND_SLOTS * 24; mfull = 2 * n * n * 8 if full else 0
+    return x + lists + closest + mfull + slab, x, lists, closest, mfull, slab
 
 
 
@@ -1229,6 +1258,22 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
     LOG(f"report: report.html ({os.path.getsize(f'{a.out}/report.html') >> 20} MB), report.npz ({len(data) >> 20} MB)")
 
 
+def _slab_chunk_medians(Sc, Wc, rr, ok_r, diag_local):
+    """m, m_fl and the loci voting for a chunk of pair positions of a (loci, positions) slab of counts: the arithmetic of
+    the numpy pair stage, which the compiled kernel reproduces bit for bit"""
+    Sc = Sc.astype(np.float32); Wc = Wc.astype(np.float32)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        Dv = np.where(Wc > 0, 100.0 * (1.0 - Sc / np.maximum(Wc, 1)), np.nan)
+    Wfl = 100.0 * HALF / np.maximum(Wc, 1.0)
+    Wm = Wc.copy(); Wm[:, diag_local] = 0.0
+    if rr is not None:
+        Dv = Dv / rr[:, None]; Wfl = Wfl / rr[:, None]
+        Wm = np.where(ok_r[:, None], Wm, 0.0)
+    nan_fb = np.full(Sc.shape[1], np.nan)
+    m, nl = pair_median(Dv, Wm, MIN_LOCI_FOR_M, nan_fb); m_fl, _ = pair_median(Wfl, Wm, MIN_LOCI_FOR_M, nan_fb)
+    return m, m_fl, nl
+
+
 def pair_divergences(S, W, n, iu, rr=None, ok_r=None, threads=1, progress=None, stage="pairs"):
     """for every taxon pair (flattened n*n): the site-weighted median over loci of the pair's divergence
     (rate-normalised by rr when given), the same median of the resolution floor (half a mismatch per locus),
@@ -1264,19 +1309,7 @@ def pair_divergences(S, W, n, iu, rr=None, ok_r=None, threads=1, progress=None, 
     LOG(f"pair stage: {-(-npair // chunk)} chunk{'s' if npair > chunk else ''} of {chunk} pairs, about {max(chunk * 64 * nloc >> 20, 1)} MB each, {threads} thread{'s' if threads > 1 else ''}")
     def do_chunk(c0):
         c1 = min(c0 + chunk, npair)
-        Sc = S[:, c0:c1].astype(np.float32); Wc = W[:, c0:c1].astype(np.float32)
-        with np.errstate(invalid="ignore", divide="ignore"):
-            Dv = np.where(Wc > 0, 100.0 * (1.0 - Sc / np.maximum(Wc, 1)), np.nan)
-        Wfl = 100.0 * HALF / np.maximum(Wc, 1.0)
-        Wm = Wc.copy()
-        d = diag[(diag >= c0) & (diag < c1)] - c0
-        Wm[:, d] = 0.0
-        if rr is not None:
-            Dv = Dv / rr[:, None]; Wfl = Wfl / rr[:, None]
-            Wm = np.where(ok_r[:, None], Wm, 0.0)
-        nan_fb = np.full(c1 - c0, np.nan)
-        m[c0:c1], nl[c0:c1] = pair_median(Dv, Wm, MIN_LOCI_FOR_M, nan_fb)
-        m_fl[c0:c1], _ = pair_median(Wfl, Wm, MIN_LOCI_FOR_M, nan_fb)
+        m[c0:c1], m_fl[c0:c1], nl[c0:c1] = _slab_chunk_medians(S[:, c0:c1], W[:, c0:c1], rr, ok_r, diag[(diag >= c0) & (diag < c1)] - c0)
         if progress: progress.tick()
     starts = range(0, npair, chunk)
     if progress: progress.start(stage, len(starts))
@@ -1311,10 +1344,22 @@ def lbinom(m_, o_, q):
             + m_ * math.log(q) + (o_ - m_) * math.log(1 - q))
 
 
-def prepare(a, names, rows, loci, dtype, K_eff, t0):
-    """everything the test needs before it runs: the alignment as residue codes, the per-locus shared and same counts
-    of every pair, the locus plateaus and rates, and the genome-wide pair divergences m (with the resolution floor
-    m_hi and the ranking key mj). a needs fit_overlap and threads."""
+
+# ------------------------------------------------------------------ the pair sweep: nothing is stored per pair
+# Every statement of the method is about pairs of taxa, and the old engine stored every pair's per-locus counts and ten
+# taxa x taxa matrices (142 GB at 9,524 taxa; terabytes at GTDB size). The sweep walks pairs of taxon blocks: for each
+# block pair it computes the per-locus counts with pass one's matrix products, the medians with the kernel, the
+# identity, the ranking key and, in sweep 2, the closest match at every locus, keeps what the method asks for (each
+# taxon's closest CANDIDATES by the key, the closest match per cell, the identical pairs, a few counters, and the full m
+# up to FULL_M_MAX_TAXA) and drops the counts. Everything downstream reads a cell's few pairs from the residues
+# (pair_counts_at) and a pair's m from the lists. The reductions are order-independent (the keys are total orders), so
+# any block size, block order and worker count give the same bits; the goldens hold the sweep to the old engine.
+_SWEEP = None                     # the sweep's context for worker processes (set before the pool is forked)
+
+
+def encode_alignment(names, rows, dtype):
+    """the alignment as residue codes (taxa x sites int8, -1 for everything outside the alphabet); warns when most
+    letters are ambiguity codes"""
     n, L = len(names), len(rows[0]); alphabet = DNA if dtype == "dna" else PROTEIN
     lut = np.full(256, -1, dtype=np.int8)
     for i, c in enumerate(alphabet): lut[ord(c)] = i; lut[ord(c.lower())] = i
@@ -1322,148 +1367,600 @@ def prepare(a, names, rows, loci, dtype, K_eff, t0):
     X = np.empty((n, L), dtype=np.int8)                               # one row at a time: no joined copy of the alignment
     letters = np.zeros(256, np.int64)
     for i, r in enumerate(rows): b = np.frombuffer(r, dtype=np.uint8); X[i] = lut[b]; letters += np.bincount(b, minlength=256)
-    # letters outside the alphabet are missing data; when they are most of the letters the datatype (or the file) is wrong
     is_letter = np.zeros(256, bool); is_letter[65:91] = True; is_letter[97:123] = True
     n_letters = int(letters[is_letter].sum()); n_in = int(letters[is_letter & (lut >= 0)].sum())
     if n_letters and n_in < 0.95 * n_letters:
         LOG(f"WARNING: {n_letters - n_in:,} of the {n_letters:,} letters ({100.0 * (n_letters - n_in) / n_letters:.1f}%) are ambiguity codes and count as missing data")
+    return X
 
-    # ---- pass 1: per-locus shared/same counts; alignment-wide identity falls out of the sums
-    nloc = len(loci)
-    # the same-residue and shared-site counts of every pair, per locus: symmetric, so the upper triangle (diagonal
-    # included, row-major) is kept and a locus's full matrix is rebuilt when the test needs it
-    iu = np.triu_indices(n); ntri = len(iu[0]); diag_pos = np.flatnonzero(iu[0] == iu[1])
-    tri_idx = np.empty((n, n), np.int32); tri_idx[iu] = np.arange(ntri); tri_idx[iu[1], iu[0]] = np.arange(ntri)
-    cdt = np.uint16 if max(len(sites) for _, sites in loci) < 65536 else np.uint32   # counts never exceed a locus's length
-    S = np.empty((nloc, ntri), cdt); W = np.empty((nloc, ntri), cdt)
-    plateaus = np.empty(nloc)
-    def locus_counts(li):
-        sites = loci[li][1]
-        Xm = X[:, sites]; Pm = (Xm >= 0).astype(np.float32)
-        sh = Pm @ Pm.T; sm = np.zeros((n, n), np.float32)
-        # each letter's product runs over the sites where the letter occurs at all: the other columns are zero and
-        # add nothing, and a site holds only a few of the letters (3 of 20 in a typical protein alignment)
-        if len(alphabet) > 4:
-            occ = np.zeros((len(alphabet) + 1, Xm.shape[1]), bool); occ[Xm + 1, np.arange(Xm.shape[1])] = True   # row 0: missing
-            where = [np.flatnonzero(occ[i + 1]) for i in range(len(alphabet))]
-        else:
-            where = [np.flatnonzero((Xm == i).any(0)) for i in range(len(alphabet))]
-        for i, cols in enumerate(where):
-            if len(cols):
-                Ai = (Xm[:, cols] == i).astype(np.float32); sm += Ai @ Ai.T
-        S[li] = sm[iu]; W[li] = sh[iu]                                  # exact: float32 counts below 2^24
-        cnt = np.bincount(Xm[Xm >= 0], minlength=len(alphabet)).astype(float)
-        f = cnt / max(cnt.sum(), 1.0)
-        plateaus[li] = max(100.0 * (1.0 - float((f ** 2).sum())), 1.0)
-        PROG.tick()
-    # loci in flight at once: the threads, but no more than a quarter of the memory available now allows, each
-    # locus needing about three taxa x taxa float32 matrices plus two one-hot copies of its sites
-    per_locus = 3 * n * n * 4 + 2 * n * max(len(sites) for _, sites in loci) * 4
-    # the matrix-product work of a typical locus: the presence product plus one product per letter over the sites where
-    # the letter occurs, so the mean number of distinct letters per site (from a sample of loci) sets the width
-    sample = [loci[i][1] for i in np.linspace(0, nloc - 1, min(nloc, 64)).astype(int)]
-    kbar = float(np.mean([np.mean([(X[:, st] == i).any(0).mean() for i in range(len(alphabet))]) * len(alphabet) for st in sample]))
-    flops = 2.0 * n * n * float(np.mean([len(sites) for _, sites in loci])) * (1.0 + kbar)
-    workers = max(1, min(a.threads, nloc, int((_mem_room() // 2) // per_locus), int(round(flops / PASS1_FLOPS_PER_THREAD))))
-    # small loci (the flops rule allows at most two threads) are the interpreter's cost, not the products': worker
-    # processes then do the loci and return their rows, as long as the rows to send back stay small
-    procs = min(a.threads, max(1, nloc // PASS1_LOCI_PER_WORKER)) if workers <= 2 and a.threads > 1 and 2 * nloc * ntri * S.itemsize <= PASS1_RETURN_MAX else 1
-    def counts_chunk(lis):
-        for li in lis: locus_counts(li)
-        return [(li, S[li].copy(), W[li].copy(), plateaus[li]) for li in lis]
-    PROG.start("counts", nloc)
-    if procs > 1:
-        step = -(-nloc // (4 * procs)); chunks = [list(range(b0, min(b0 + step, nloc))) for b0 in range(0, nloc, step)]
-        for res in fork_map(counts_chunk, chunks, procs):
-            for li, srow, wrow, pl in res: S[li] = srow; W[li] = wrow; plateaus[li] = pl; PROG.tick()
-    elif workers > 1:
-        with ThreadPoolExecutor(workers) as ex: list(ex.map(locus_counts, range(nloc), chunksize=max(1, nloc // (8 * workers))))
+
+PLATEAU_BIG = 1 << 20             # a locus of this many residues x taxa or more counts its letters one at a time (no cast to a wider type) and
+                                  # the loci run in threads; smaller loci count in one bincount call each, serially (the per-call overhead rules there)
+def locus_plateaus(X, loci, A_, threads=1):
+    """each locus's random-identity plateau from its residue frequencies over every taxon, thin ones included (as pass
+    one computed it). The same integer counts either way, so the same plateaus"""
+    plateaus = np.empty(len(loci)); n = X.shape[0]
+    def one(li):
+        Xm = X[:, loci[li][1]]
+        if Xm.size < PLATEAU_BIG: v = Xm.ravel(); cnt = np.bincount(v[v >= 0], minlength=A_).astype(float)
+        else: cnt = np.array([np.count_nonzero(Xm == a) for a in range(A_)], float)
+        f = cnt / max(cnt.sum(), 1.0); plateaus[li] = max(100.0 * (1.0 - float((f ** 2).sum())), 1.0)
+    big = len(loci) > 1 and float(np.mean([len(st) for _, st in loci])) * n >= PLATEAU_BIG
+    if threads > 1 and big:
+        with ThreadPoolExecutor(min(threads, len(loci))) as ex: list(ex.map(one, range(len(loci)), chunksize=max(1, len(loci) // (8 * threads))))
     else:
-        for li in range(nloc): locus_counts(li)
-    PROG.finish()
-    if procs > 1: LOG(f"pass one: {procs} worker processes (small loci)")
-    elif workers < a.threads: LOG(f"pass one: {workers} of {a.threads} threads (the loci are small, few, or large in memory)")
-    focal_sites = np.ascontiguousarray(W[:, diag_pos].T).astype(np.uint32)   # each taxon's residues at each locus, before the exclusion zeroes anything
-    present = (W[:, diag_pos] >= a.fit_overlap).sum(0)
-    thin = np.flatnonzero(present < MIN_LOCI_PER_TAXON)
-    if len(thin):
-        drop = np.isin(iu[0], thin) | np.isin(iu[1], thin)
-        S[:, drop] = 0; W[:, drop] = 0                                     # out of the test entirely
-        LOG(f"{len(thin)} taxa with fewer than {MIN_LOCI_PER_TAXON} loci present are excluded from the test and left unmasked: "
-            + ", ".join(names[i] for i in thin[:20]) + (f" and {len(thin) - 20} more (the report lists them)" if len(thin) > 20 else ""))
-    tot_same = _expand(S.sum(0, dtype=np.float64), n, iu); tot_shared = _expand(W.sum(0, dtype=np.float64), n, iu)
+        for li in range(len(loci)): one(li)
+    return plateaus
+
+
+def _rows_sites(X, idx, sites):
+    return X[idx][:, sites] if isinstance(idx, slice) else X[np.ix_(idx, sites)]
+
+
+def _letter_columns(XA, XB, A_):
+    """for each letter the columns where it occurs in either block: the other columns add nothing to its product"""
+    if A_ > 4:
+        occ = np.zeros((A_ + 1, XA.shape[1]), bool); ar = np.arange(XA.shape[1]); occ[XA + 1, ar] = True
+        if XB is not XA: occ[XB + 1, ar] = True
+        return [np.flatnonzero(occ[i + 1]) for i in range(A_)]
+    return [np.flatnonzero((XA == i).any(0) | (XB == i).any(0)) for i in range(A_)]
+
+
+def _block_counts(X, sites, A, B, A_):
+    """the shared sites and same residues of every (a in A, b in B) pair at one locus by pass one's matrix products,
+    exact integers below 2^24 in two (bA, bB) float32 arrays. A and B are slices or index arrays"""
+    XA = _rows_sites(X, A, sites); same = B is A; XB = XA if same else _rows_sites(X, B, sites)
+    PA = (XA >= 0).astype(np.float32); PB = PA if same else (XB >= 0).astype(np.float32)
+    sh = PA @ PB.T; sm = np.zeros(sh.shape, np.float32)
+    for i, cols in enumerate(_letter_columns(XA, XB, A_)):
+        if len(cols):
+            Ai = (XA[:, cols] == i).astype(np.float32); Bi = Ai if same else (XB[:, cols] == i).astype(np.float32); sm += Ai @ Bi.T
+    return sh, sm
+
+
+def pair_counts_at(X, sites, gi, ci, keep, Xs=None):
+    """shared sites and same residues of the pairs (gi[k], ci[k]) at a locus, int64; a pair with an excluded member
+    counts 0 of each, as a thin taxon's stored counts were zeroed. Xs: the locus's residues, when the caller has them"""
+    gi = np.asarray(gi, dtype=np.int64); ci = np.asarray(ci, dtype=np.int64); o = np.zeros(len(gi), np.int64); same = np.zeros(len(gi), np.int64)
+    if len(gi) == 0: return o, same
+    if Xs is None: Xs = X[:, sites]
+    step = max(1, (10 << 20) // max(Xs.shape[1], 1))                           # about 10 M pair-sites of temporaries at a time
+    for k0 in range(0, len(gi), step):
+        XG = Xs[gi[k0:k0 + step]]; XC = Xs[ci[k0:k0 + step]]; both = (XG >= 0) & (XC >= 0)
+        o[k0:k0 + step] = both.sum(1); same[k0:k0 + step] = (both & (XG == XC)).sum(1)
+    ok = keep[gi] & keep[ci]; o[~ok] = 0; same[~ok] = 0
+    return o, same
+
+
+class LocusRows:
+    """the one-hot products of one locus, built once, for rows of counts of a few taxa against every taxon (the best
+    match, the outgroup search); pairs with an excluded member count 0"""
+    def __init__(self, X, sites, keep, A_, Xs=None):
+        self.Xs = X[:, sites] if Xs is None else Xs; self.keep = keep; self.P = (self.Xs >= 0).astype(np.float32)
+        self.ones = [(i, c, (self.Xs[:, c] == i).astype(np.float32)) for i, c in enumerate(_letter_columns(self.Xs, self.Xs, A_)) if len(c)]
+
+    def rows(self, rows, slice_rows=256):
+        """shared sites and same residues of each row taxon against every taxon, two (rows, n) float64 arrays"""
+        rows = np.asarray(rows, dtype=np.int64); n = self.Xs.shape[0]; W = np.empty((len(rows), n)); S = np.empty((len(rows), n))
+        for r0 in range(0, len(rows), slice_rows):
+            rr = rows[r0:r0 + slice_rows]; XR = self.Xs[rr]; sh = self.P[rr] @ self.P.T; sm = np.zeros(sh.shape, np.float32)
+            for i, c, Ai in self.ones: sm += (XR[:, c] == i).astype(np.float32) @ Ai.T
+            W[r0:r0 + slice_rows] = sh; S[r0:r0 + slice_rows] = sm
+        W[~self.keep[rows]] = 0.0; S[~self.keep[rows]] = 0.0; W[:, ~self.keep] = 0.0; S[:, ~self.keep] = 0.0
+        return W, S
+
+
+def pair_rows_at(X, sites, rows, keep, A_, slice_rows=256):
+    """shared sites and same residues of each row taxon against every taxon at a locus (LocusRows for one call)"""
+    return LocusRows(X, sites, keep, A_).rows(rows, slice_rows)
+
+
+class SlabCounts:
+    """the pair counts of every locus, kept from the one block pair's sweep (up to SWEEP_BLOCK_MIN taxa, as the old
+    engine stored them for the run): the counts of pairs and the rows of a few taxa are gathers. A pair's position in
+    the slab is g * n + c; a pair with an excluded member holds 0"""
+    def __init__(self, Ssl, Wsl, n): self.S = Ssl; self.W = Wsl; self.n = n
+
+    def at(self, li, gi, ci, Xs=None):
+        """shared sites and same residues of the pairs (gi[k], ci[k]) at locus li, int64"""
+        idx = np.asarray(gi, np.int64) * self.n + np.asarray(ci, np.int64); return self.W[li][idx].astype(np.int64), self.S[li][idx].astype(np.int64)
+
+    def locus(self, li, Xs=None): return _SlabRows(self.W[li].reshape(self.n, self.n), self.S[li].reshape(self.n, self.n))
+
+
+class _SlabRows:
+    """rows of a kept slab at one locus, with LocusRows' interface"""
+    def __init__(self, W2, S2): self.W2 = W2; self.S2 = S2
+
+    def rows(self, rows, slice_rows=256):
+        r = np.asarray(rows, np.int64); return self.W2[r].astype(np.float64), self.S2[r].astype(np.float64)
+
+
+class ResidueCounts:
+    """the pair counts computed from the residues as they are needed (above SWEEP_BLOCK_MIN taxa, where no slab of
+    every pair is kept): pairs by comparing their rows, the rows of a few taxa by the one-hot products"""
+    def __init__(self, X, loci, keep, A_): self.X = X; self.loci = loci; self.keep = keep; self.A_ = A_
+
+    def at(self, li, gi, ci, Xs=None): return pair_counts_at(self.X, self.loci[li][1], gi, ci, self.keep, Xs)
+
+    def locus(self, li, Xs=None): return LocusRows(self.X, self.loci[li][1], self.keep, self.A_, Xs)
+
+
+def slab_medians(Ssl, Wsl, diag, rr, ok_r, threads, kernel=None):
+    """m, m_fl and the loci voting for every position of a (loci, positions) slab of counts: the compiled kernel when
+    it was built, else the numpy chunks of the old pair stage (the same bits either way)"""
+    nloc, P = Ssl.shape
+    if kernel is not None:
+        rr_ = np.ones(nloc) if rr is None else np.asarray(rr, np.float64); ok_ = np.ones(nloc, bool) if ok_r is None else np.asarray(ok_r, bool)
+        return kernel(Ssl, Wsl, 0, P, rr_, ok_, diag, MIN_LOCI_FOR_M, 100.0 * HALF, PAIR_BLOCK)
+    m = np.full(P, np.nan); m_fl = np.full(P, np.nan); nl = np.zeros(P, np.int64)
+    chunk = max(int(min(PAIR_CHUNK_MAX, max(PAIR_CHUNK_MIN, _mem_room() // (4 * max(threads, 1)))) // (64 * max(nloc, 1))), 1)
+    dpos = np.flatnonzero(diag)
+    def do(c0):
+        c1 = min(c0 + chunk, P)
+        m[c0:c1], m_fl[c0:c1], nl[c0:c1] = _slab_chunk_medians(Ssl[:, c0:c1], Wsl[:, c0:c1], rr, ok_r, dpos[(dpos >= c0) & (dpos < c1)] - c0)
+    starts = range(0, P, chunk)
+    if threads > 1 and len(starts) > 1:
+        with ThreadPoolExecutor(min(threads, len(starts))) as ex: list(ex.map(do, starts))
+    else:
+        for c0 in starts: do(c0)
+    return m, m_fl, nl
+
+
+def _block_keys(m, tot_same, tot_shared, gidx, cidx, diag):
+    """for a block of pair positions: the identity flag and the comparator ranking key mj in both directions (the
+    tie-break carries the OTHER taxon's pooled identity and index), by the operations the old engine used"""
     with np.errstate(invalid="ignore", divide="ignore"):
         ani = np.where(tot_shared > 0, 100.0 * tot_same / tot_shared, np.nan)
-    np.fill_diagonal(ani, np.nan)
-    ident = (tot_shared > 0) & (tot_same == tot_shared); np.fill_diagonal(ident, False)   # genomes identical at every shared site: six copies of a bad sequence must not vouch for each other
-    del tot_same, tot_shared
-    cls = np.arange(n)                                                 # identical genomes form a class (its lowest index); one class, one comparator
-    while True:
-        new = np.minimum(cls, np.where(ident, cls[None, :], n).min(1))
-        if np.array_equal(new, cls): break
-        cls = new
-    has_dup = bool(ident.any())
-    if has_dup: LOG(f"{int((cls != np.arange(n)).sum())} genomes are identical to another at every shared site: an identical genome is never a comparator, and no two comparators are identical to each other")
-    # deterministic tie-break for comparator ranking: pooled divergence, then taxon order
-    tie = np.nan_to_num(100.0 - ani, nan=100.0) * 1e-9 + np.arange(n)[None, :] * 1e-12
-    del ani
-    LOG(f"per-locus identities done, {time.time() - t0:.0f}s")
+    ani = np.where(diag, np.nan, ani)
+    ident = (tot_shared > 0) & (tot_same == tot_shared) & ~diag
+    base = np.nan_to_num(100.0 - ani, nan=100.0) * 1e-9
+    fin = np.where(np.isfinite(m) & ~ident, m, np.inf)
+    return ident, fin + (base + cidx * 1e-12), fin + (base + gidx * 1e-12)
 
-    # ---- pair divergence m: capped site-weighted median across loci of rate-normalised divergence
-    # ONE rate per locus, estimated once and used everywhere (to normalise loci inside m and as the
-    # expectation in the test). It is estimated where the test looks: each taxon's nearest neighbours
-    # by the provisional pair divergence m0 (the raw site-weighted median over loci, available before rates exist), one equal
-    # vote per neighbour pair resolved beyond its floor, of the multiple-hit-corrected ratio
-    # c(d + half a mismatch) / c(m0), m0 the provisional pair divergence (raw site-weighted median).
-    m0, m0_fl, _ = pair_divergences(S, W, n, iu, threads=a.threads, progress=PROG, stage="pairs0")   # the floor: the imputed half mismatch per locus, as a percentage
-    m0_hi = np.maximum(m0, m0_fl); res0 = m0 > m0_fl
-    dist = np.where(np.isfinite(m0) & res0 & ~ident & (cls == np.arange(n))[None, :], m0, np.inf); np.fill_diagonal(dist, np.inf)   # neighbours by the provisional pair divergence (a median over loci, not swayed by one long fast locus); an unresolved pair casts no vote, an identical genome is no neighbour, one genome stands for its copies
-    Kn = min(K_eff, n - 1)
-    nb = np.argsort(dist, axis=1, kind="stable")[:, :Kn]      # stable: a tie goes to the lower index on every platform (numpy's default sort is unstable and its tie order differs with the CPU's SIMD level)
-    gi0 = np.repeat(np.arange(n), Kn); ci0 = nb.ravel()
-    okn = np.isfinite(dist[gi0, ci0]) & res0[gi0, ci0]
-    gi0, ci0 = gi0[okn], ci0[okn]
-    m0n = m0_hi[gi0, ci0]
+
+def _topc_rows(keys, m, m_fl, cidx, C):
+    """per row the C smallest finite keys in (key, column) order: columns (-1 beyond), m, m_fl, keys, and the number of
+    finite keys in the row"""
+    bA, bB = keys.shape; k = min(C, bB)
+    order = np.lexsort((np.broadcast_to(cidx, (bA, bB)), keys), axis=1)[:, :k]
+    sk = np.take_along_axis(keys, order, 1); fin = np.isfinite(sk)
+    return (np.where(fin, cidx[order], -1), np.where(fin, np.take_along_axis(m, order, 1), np.nan),
+            np.where(fin, np.take_along_axis(m_fl, order, 1), np.nan), np.where(fin, sk, np.inf), np.isfinite(keys).sum(1))
+
+
+def _closest_rows(ov, sm, mj, fit, cidx):
+    """the closest-match search of one locus for a block of rows over a block of columns (the old engine's lines, with
+    bookkeeping): per row the minimum mismatch rate and, for each distinct rate within 1e-9 of it (BAND_SLOTS at
+    most), the entry (d, vals, column) the rule would pick; overflow counts rows with more distinct rates than slots"""
+    okc = (ov >= fit) & np.isfinite(mj)
+    with np.errstate(invalid="ignore", divide="ignore"): d = np.where(okc, (ov - sm + HALF) / np.maximum(ov, 1.0), np.inf)
+    dmin = d.min(1); R = BAND_SLOTS; nr = len(ov); big = np.iinfo(np.int64).max
+    remaining = okc & (d <= dmin[:, None] + 1e-9); vals = d + 1e-9 * mj / 100.0
+    ed = np.full((nr, R), np.inf); ev = np.full((nr, R), np.inf); ec = np.full((nr, R), -1, np.int64); cur = np.where(np.isfinite(dmin), dmin, np.inf)
+    for k in range(R):
+        grp = remaining & (d == cur[:, None])                           # the members at this distinct rate
+        if not grp.any(): break
+        v = np.where(grp, vals, np.inf); vmin = v.min(1); cmin = np.where(grp & (v == vmin[:, None]), cidx[None, :], big).min(1)
+        ok = np.isfinite(cur); ed[ok, k] = cur[ok]; ev[ok, k] = vmin[ok]; ec[ok, k] = cmin[ok]
+        remaining &= ~grp; cur = np.where(remaining, d, np.inf).min(1)  # the next distinct rate within the band
+    return dmin, ed, ev, ec, int(np.isfinite(cur).sum())
+
+
+def _merge_closest(dd, dv, dc, sd, sv, sc):
+    """merge two band-entry sets of the same cells (..., R): the entries within 1e-9 of the lower minimum, one per
+    distinct rate (the (vals, column)-smallest), R at most; order-independent"""
+    big = np.iinfo(np.int64).max; R = dd.shape[-1]
+    if R > 1 and not (np.isfinite(dd[..., 1]).any() or np.isfinite(sd[..., 1]).any()):
+        # every cell holds one entry on each side (the rule): the lower d wins, an equal d goes to the smaller (vals, column),
+        # and only the rare cells with unequal d within 1e-9 of each other take the general path
+        a, b = dd[..., 0], sd[..., 0]
+        with np.errstate(invalid="ignore"): close = np.isfinite(a) & np.isfinite(b) & (a != b) & (np.abs(a - b) <= 1e-9)   # inf - inf where a cell has no candidate
+        take_b = (b < a) | ((b == a) & ((sv[..., 0] < dv[..., 0]) | ((sv[..., 0] == dv[..., 0]) & (sc[..., 0] < dc[..., 0]))))
+        od = dd.copy(); ov = dv.copy(); oc = dc.copy()
+        od[..., 0] = np.where(take_b, b, a); ov[..., 0] = np.where(take_b, sv[..., 0], dv[..., 0]); oc[..., 0] = np.where(take_b, sc[..., 0], dc[..., 0])
+        if not close.any(): return od, ov, oc, 0
+        gd, gv, gc, o = _merge_closest(dd[close], dv[close], dc[close], sd[close], sv[close], sc[close]); od[close] = gd; ov[close] = gv; oc[close] = gc
+        return od, ov, oc, o
+    d = np.concatenate([dd, sd], -1); v = np.concatenate([dv, sv], -1); c = np.concatenate([dc, sc], -1)
+    keep = d <= d.min(-1, keepdims=True) + 1e-9
+    d = np.where(keep, d, np.inf); v = np.where(keep, v, np.inf); c = np.where(keep, c, big)
+    o = np.lexsort((c, v, d), axis=-1); d = np.take_along_axis(d, o, -1); v = np.take_along_axis(v, o, -1); c = np.take_along_axis(c, o, -1)
+    dup = np.zeros(d.shape, bool); dup[..., 1:] = (d[..., 1:] == d[..., :-1]) & np.isfinite(d[..., 1:])
+    d = np.where(dup, np.inf, d); v = np.where(dup, np.inf, v); c = np.where(dup, big, c)
+    o = np.lexsort((c, v, d), axis=-1); d = np.take_along_axis(d, o, -1)[..., :R]; v = np.take_along_axis(v, o, -1)[..., :R]; c = np.take_along_axis(c, o, -1)[..., :R]
+    return d, v, np.where(np.isfinite(d), c, -1), int((np.isfinite(np.take_along_axis(d, o, -1) if False else d).sum(-1) > R).sum())
+
+
+def closest_winners(cd, cv, cc):
+    """the closest match per cell from its band entries: the (vals, column)-smallest entry, -1 where the cell has none"""
+    big = np.iinfo(np.int64).max; c = np.where(cc >= 0, cc, big); o = np.lexsort((c, cv), axis=-1)[..., :1]
+    w = np.take_along_axis(cc, o, -1)[..., 0]; return w, cd[..., 0]
+
+
+def _merge_lists(L, rows, cols, mm, mf, keys, nfin):
+    """the C smallest (key, column) of the running lists of these rows and the new candidates (a candidate comes from one
+    block pair only, so the union has no duplicates); order-independent"""
+    C = L["cand"].shape[1]; big = np.iinfo(np.int64).max
+    cc = np.concatenate([L["cand"][rows], cols], 1); ck = np.concatenate([L["key"][rows], keys], 1)
+    cm = np.concatenate([L["m"][rows], mm], 1); cf = np.concatenate([L["mfl"][rows], mf], 1)
+    o = np.lexsort((np.where(cc >= 0, cc, big), ck), axis=1)[:, :C]
+    L["cand"][rows] = np.take_along_axis(cc, o, 1); L["key"][rows] = np.take_along_axis(ck, o, 1)
+    L["m"][rows] = np.take_along_axis(cm, o, 1); L["mfl"][rows] = np.take_along_axis(cf, o, 1); L["nfin"][rows] += nfin
+
+
+def _sweep_block(A, B, gidx, cidx, ctx, threads=1, kernel=None, procs=1, slab=None, cl_threads=None):
+    """one block pair of the sweep: the counts of its pairs at every locus (or the slab of counts kept from an earlier
+    sweep), their medians, keys and identity, then the reductions the sweep keeps. With threads or procs above 1 (the
+    single-block path) the per-locus phases run over the loci as pass one did. Returns a dict of per-row results for
+    A's rows and, when B differs, B's rows; the slab too when the context asks for it. cl_threads: the threads of the
+    closest reduce when they differ from the counts' (the one block pair: the run's whole count)"""
+    X, loci, keep, A_, fit, C, rr, ok_r, cdt, want_closest, want_full, key_kind = (ctx[k] for k in ("X", "loci", "keep", "A_", "fit", "C", "rr", "ok_r", "cdt", "closest", "full", "key"))
+    nloc = len(loci); bA, bB = len(gidx), len(cidx); P = bA * bB; same = B is A
+    kpos = (keep[gidx][:, None] & keep[cidx][None, :]).ravel()               # pairs with both members in the run
+    if slab is not None: Ssl, Wsl = slab                                     # kept from an earlier sweep: pairs with an excluded member already 0
+    else:
+        Ssl = np.empty((nloc, P), cdt); Wsl = np.empty((nloc, P), cdt)
+        def counts(li):
+            sh, sm = _block_counts(X, loci[li][1], A, B, A_); Wsl[li] = sh.ravel(); Ssl[li] = sm.ravel()
+        if procs > 1:
+            def chunk_counts(lis):
+                out = []
+                for li in lis: sh, sm = _block_counts(X, loci[li][1], A, B, A_); out.append((li, sh.ravel().astype(cdt), sm.ravel().astype(cdt)))
+                return out
+            step = -(-nloc // (4 * procs)); chunks = [list(range(b0, min(b0 + step, nloc))) for b0 in range(0, nloc, step)]
+            for res in fork_map(chunk_counts, chunks, procs):
+                for li, wrow, srow in res: Wsl[li] = wrow; Ssl[li] = srow
+        elif threads > 1:
+            with ThreadPoolExecutor(threads) as ex: list(ex.map(counts, range(nloc), chunksize=max(1, nloc // (8 * threads))))
+        else:
+            for li in range(nloc): counts(li)
+        if not kpos.all(): Ssl[:, ~kpos] = 0; Wsl[:, ~kpos] = 0             # a pair with an excluded member has no counts, as before
+    G = np.repeat(gidx, bB); Cc = np.tile(cidx, bA); diag = G == Cc                   # a self pair: also when the rows of a second pass meet their own column
+    m, m_fl, nl = slab_medians(Ssl, Wsl, diag, rr, ok_r, threads, kernel)
+    tot_same = Ssl.sum(0, dtype=np.float64); tot_shared = Wsl.sum(0, dtype=np.float64)
+    ident, mj_row, mj_col = _block_keys(m, tot_same, tot_shared, G, Cc, diag)
+    if key_kind == "m0":                                                 # sweep 1: the raw divergence of resolved, non-identical pairs
+        elig = np.isfinite(m) & (m > m_fl) & ~ident & ~diag; key_row = np.where(elig, m, np.inf); key_col = key_row
+    elif key_kind == "m_all":                                            # rows of m on demand: every finite m, identical pairs included
+        key_row = np.where(np.isfinite(m) & ~diag, m, np.inf); key_col = key_row
+    else: key_row, key_col = mj_row, mj_col
+    m2 = m.reshape(bA, bB); f2 = m_fl.reshape(bA, bB); out = dict(overflow=0)
+    out["rows"] = (gidx, _topc_rows(key_row.reshape(bA, bB), m2, f2, cidx, C))
+    if not same: out["cols"] = (cidx, _topc_rows(key_col.reshape(bA, bB).T, m2.T, f2.T, gidx, C))
+    upper = kpos & ~diag & ((G < Cc) if same else np.ones(P, bool))
+    out["counters"] = (int((nl[upper] < MIN_LOCI_FOR_M).sum()), int(upper.sum()), int(np.isfinite(m[upper]).sum()))
+    ip = ident & (G < Cc) if same else ident; out["ident"] = np.stack([G[ip], Cc[ip]], 1)
+    if want_full: out["full"] = (m2, f2)
+    if want_closest:
+        R = BAND_SLOTS; mr2 = mj_row.reshape(bA, bB); mc2 = mj_col.reshape(bA, bB)
+        rd = np.full((bA, nloc, R), np.inf); rv = np.full((bA, nloc, R), np.inf); rc = np.full((bA, nloc, R), -1, np.int64)
+        if not same: qd = np.full((bB, nloc, R), np.inf); qv = np.full((bB, nloc, R), np.inf); qc = np.full((bB, nloc, R), -1, np.int64)
+        ovf = [0]
+        def closest(li):
+            ov = Wsl[li].reshape(bA, bB).astype(np.float64); sm = Ssl[li].reshape(bA, bB).astype(np.float64)
+            _, ed, ev, ec, o1 = _closest_rows(ov, sm, mr2, fit, cidx); rd[:, li] = ed; rv[:, li] = ev; rc[:, li] = ec
+            if not same:
+                _, ed, ev, ec, o2 = _closest_rows(ov.T, sm.T, mc2.T, fit, gidx); qd[:, li] = ed; qv[:, li] = ev; qc[:, li] = ec; o1 += o2
+            return o1
+        small = bA * bB < CLOSEST_THREADS_MIN                                # measured 31 Oct 2026: Ivan (701 taxa) 2.7 s in threads against 5.2 s forked, Shen (343) 2.6 s forked against 2.8 s in threads
+        cl_procs = max(1, min(max(cl_threads or 0, threads, procs), nloc // 16)) if same and small and max(cl_threads or 0, threads, procs) > 1 and _can_fork() else 1
+        if cl_procs > 1:                                                     # one block pair of few taxa: the loci over worker processes (its per-locus numpy work is too fine for threads, which queue on the interpreter lock; a fork is a few ms)
+            def closest_chunk(lis):
+                out = []
+                for li in lis:
+                    ov = Wsl[li].reshape(bA, bB).astype(np.float64); sm = Ssl[li].reshape(bA, bB).astype(np.float64)
+                    _, ed, ev, ec, o1 = _closest_rows(ov, sm, mr2, fit, cidx); out.append((li, ed, ev, ec, o1))
+                return out
+            step = -(-nloc // (4 * cl_procs)); chunks = [list(range(b0, min(b0 + step, nloc))) for b0 in range(0, nloc, step)]
+            for res in fork_map(closest_chunk, chunks, cl_procs):
+                for li, ed, ev, ec, o1 in res: rd[:, li] = ed; rv[:, li] = ev; rc[:, li] = ec; ovf[0] += o1
+        elif (cl_threads or threads) > 1:                                    # no fork here (a worker process, or Windows): the loci in threads
+            t_ = min(cl_threads or threads, nloc)
+            with ThreadPoolExecutor(t_) as ex: ovf[0] = sum(ex.map(closest, range(nloc), chunksize=max(1, nloc // (8 * t_))))
+        else: ovf[0] = sum(closest(li) for li in range(nloc))
+        out["closest_rows"] = (gidx, rd, rv, rc)
+        if not same: out["closest_cols"] = (cidx, qd, qv, qc)
+        out["overflow"] = ovf[0]
+    if ctx.get("keep_slab"): out["slab"] = (Ssl, Wsl)
+    return out
+
+
+def sweep_block_bytes(b, nloc, cdt, C, Lmax):
+    """bytes a block pair of b taxa holds in flight: the slab of counts, the products, medians and keys (about 200 bytes
+    a pair), the one-hot rows of the longest locus, and the lists and band entries it returns"""
+    return b * b * (2 * nloc * np.dtype(cdt).itemsize + 200) + b * (2 * C * 32 + 2 * nloc * BAND_SLOTS * 24) + 4 * b * Lmax * 4
+
+
+def sweep_block_size(n, nloc, cdt, threads, C, Lmax, L=None, A_=4):
+    """the taxon block of the sweep: one block up to SWEEP_BLOCK_MIN taxa (its loci run in threads); above it about
+    SWEEP_BLOCKS * sqrt(workers) blocks (the workers capped by the sweep's work, SWEEP_FLOPS_PER_WORKER), so every worker
+    gets a few block pairs and the last ones are short, never under SWEEP_BLOCK_FLOOR taxa, and small enough that the
+    workers' block pairs in flight take at most half the room. L: the alignment's sites (the work estimate)"""
+    if n <= SWEEP_BLOCK_MIN: return n
+    flops = float(n) * n * float(L if L is not None else Lmax * nloc) * (A_ + 1)       # the products of one sweep: n^2 x sites per letter and for the shared sites
+    workers = max(1, min(threads, int(flops / SWEEP_FLOPS_PER_WORKER))); b = max(SWEEP_BLOCK_FLOOR, -(-n // int(math.ceil(SWEEP_BLOCKS * math.sqrt(workers)))))
+    room = _mem_room() // 2
+    while b > SWEEP_BLOCK_FLOOR and workers * sweep_block_bytes(b, nloc, cdt, C, Lmax) > room: b = max(SWEEP_BLOCK_FLOOR, int(b * 0.9))
+    return min(b, n)
+
+
+def _flatten(v, prefix, out):
+    """a block pair's results (a dict of arrays, scalars and tuples of them) as flat name -> array, for one npz file"""
+    if isinstance(v, dict):
+        for k, x in v.items(): _flatten(x, f"{prefix}{k}.", out)
+    elif isinstance(v, tuple):
+        for i, x in enumerate(v): _flatten(x, f"{prefix}{i}.", out)
+    else: out[prefix[:-1]] = np.asarray(v)
+
+
+def _unflatten(flat):
+    """the inverse: dotted names back to the dict of tuples, 0-d arrays back to scalars"""
+    tree = {}
+    for key, v in flat.items():
+        node = tree; parts = key.split(".")
+        for q in parts[:-1]: node = node.setdefault(q, {})
+        node[parts[-1]] = v
+    def build(node):
+        if not isinstance(node, dict): return node.item() if node.ndim == 0 else node
+        if node and all(k.isdigit() for k in node): return tuple(build(node[str(i)]) for i in range(len(node)))
+        return {k: build(x) for k, x in node.items()}
+    return build(tree)
+
+
+_SWEEP_SEQ = 0
+def _results_dir(need):
+    """a fresh directory on the memory-backed filesystem for a sweep's results, when it exists and has room for about
+    twice `need` bytes; None when the results should come back through the pool's pipe instead"""
+    global _SWEEP_SEQ
+    try:
+        if not os.path.isdir(SWEEP_RESULTS_DIR) or shutil.disk_usage(SWEEP_RESULTS_DIR).free < 2 * need: return None
+        _SWEEP_SEQ += 1; d = os.path.join(SWEEP_RESULTS_DIR, f"locusmasker-{os.getpid()}-{_SWEEP_SEQ}"); os.makedirs(d); return d
+    except OSError: return None
+
+
+def _sweep_worker(pair):
+    """a block pair in a worker process: the context was set in the parent before the fork"""
+    ctx = _SWEEP; blocks = ctx["blocks"]; i, j = pair; A, B = blocks[i], (blocks[i] if i == j else blocks[j])
+    return _sweep_block(A, B if i != j else A, ctx["gidx"][i], ctx["gidx"][j], ctx, 1, ctx["kernel_serial"])
+
+
+def sweep_pairs(X, loci, keep, A_, fit, C, b, rr, ok_r, threads, want_closest, want_full, key, cdt, progress=None, stage="pairs", kernel=None, kernel_serial=None, rows_only=None, slab=None, keep_slab=False):
+    """the sweep over block pairs (rows_only: the given taxa against everyone, for the second passes): returns the
+    lists (cand, key, m, mfl, nfin), the closest-match band entries, the identical pairs, the counters and the full m.
+    slab: the counts of every pair kept from the one block pair's first sweep (nothing is recomputed from the residues);
+    keep_slab: return that slab from a one-block sweep"""
+    global _SWEEP
+    n, nloc = X.shape[0], len(loci); kept = None
+    def part(ga, gb):
+        """the kept counts of these rows against these columns, or None when counts are computed"""
+        if slab is None: return None
+        pos = (np.asarray(ga, np.int64)[:, None] * n + np.asarray(gb, np.int64)[None, :]).ravel(); return (slab[0][:, pos], slab[1][:, pos])
+    if rows_only is not None:
+        rows = np.asarray(rows_only, np.int64); blocks_r = [rows[i:i + b] for i in range(0, len(rows), b)]; blocks_c = [slice(i, min(i + b, n)) for i in range(0, n, b)]
+        items = [(i, j) for i in range(len(blocks_r)) for j in range(len(blocks_c))]
+        gidx_r = [np.asarray(r) for r in blocks_r]; gidx_c = [np.arange(c.start, c.stop) for c in blocks_c]
+        nrows = len(rows)
+    else:
+        blocks_c = [slice(i, min(i + b, n)) for i in range(0, n, b)]; gidx_c = [np.arange(c.start, c.stop) for c in blocks_c]
+        items = [(i, j) for i in range(len(blocks_c)) for j in range(i, len(blocks_c))]; nrows = n
+    Cmax = min(C, n)
+    L = dict(cand=np.full((nrows, Cmax), -1, np.int64), key=np.full((nrows, Cmax), np.inf), m=np.full((nrows, Cmax), np.nan), mfl=np.full((nrows, Cmax), np.nan), nfin=np.zeros(nrows, np.int64))
+    R = BAND_SLOTS
+    cd = np.full((nrows, nloc, R), np.inf) if want_closest else None; cv = np.full((nrows, nloc, R), np.inf) if want_closest else None; cc = np.full((nrows, nloc, R), -1, np.int64) if want_closest else None
+    full = (np.full((n, n), np.nan), np.full((n, n), np.nan)) if want_full else None
+    ident = []; counters = [0, 0, 0]; overflow = 0
+    pos = {int(g): k for k, g in enumerate(rows)} if rows_only is not None else None     # row taxon -> row of the results
+    def rowpos(g): return np.array([pos[int(x)] for x in g]) if pos is not None else g
+    def absorb(out):
+        nonlocal overflow
+        for side in ("rows", "cols"):
+            if side in out:
+                g, (cols, mm, mf, keys, nfin) = out[side]
+                if rows_only is not None and side == "cols": continue      # the second pass keeps the rows' results only
+                _merge_lists(L, rowpos(g), cols, mm, mf, keys, nfin)
+        for side in ("closest_rows", "closest_cols"):
+            if side in out:
+                g, rd, rv, rc = out[side]
+                if rows_only is not None and side == "closest_cols": continue
+                rp = rowpos(g); cd[rp], cv[rp], cc[rp], o = _merge_closest(cd[rp], cv[rp], cc[rp], rd, rv, rc); overflow += o
+        if "full" in out and full is not None:
+            m2, f2 = out["full"]; g, c = out["gidx"], out["cidx"]
+            full[0][np.ix_(g, c)] = m2; full[1][np.ix_(g, c)] = f2; full[0][np.ix_(c, g)] = m2.T; full[1][np.ix_(c, g)] = f2.T
+        ident.append(out["ident"]); overflow += out["overflow"]
+        for k in range(3): counters[k] += out["counters"][k]
+    ctx = dict(X=X, loci=loci, keep=keep, A_=A_, fit=fit, C=Cmax, rr=rr, ok_r=ok_r, cdt=cdt, closest=want_closest, full=want_full, key=key,
+               blocks=blocks_c if rows_only is None else None, gidx=gidx_c if rows_only is None else None, kernel_serial=kernel_serial, keep_slab=keep_slab)
+    def block_pair(i, j):
+        if rows_only is not None: A, B = blocks_r[i], blocks_c[j]; ga, gb = gidx_r[i], gidx_c[j]
+        else: A, B = blocks_c[i], blocks_c[j]; ga, gb = gidx_c[i], gidx_c[j]
+        return (A, (A if (rows_only is None and i == j) else B), ga, gb)
+    bmax = max(len(g) for g in gidx_c); rdir = None
+    if len(items) > 1 and threads > 1 and _can_fork():               # the worker path: where its results go
+        ret = 2 * bmax * (Cmax * 32 + nloc * BAND_SLOTS * 24) + (2 * bmax * bmax * 8 if want_full else 0)     # bytes one block pair returns
+        rdir = _results_dir(min(threads, len(items)) * ret)
+    if rows_only is None:
+        inflight = sweep_block_bytes(bmax, nloc, cdt, Cmax, max(len(st) for _, st in loci))
+        LOG(f"pair sweep {stage}: {len(items)} block pair{'s' if len(items) > 1 else ''} of {bmax:,} taxa, medians by {'the compiled kernel (numba)' if kernel else 'numpy chunks'}, "
+            f"about {fmem(inflight)} per block pair in flight" + (f", {min(threads, len(items))} worker processes" if len(items) > 1 and threads > 1 else "")
+            + (f", results through {SWEEP_RESULTS_DIR}" if rdir else ""))
+    if progress: progress.start(stage, len(items))
+    if len(items) == 1 and rows_only is None:                            # one block pair: the per-locus phases over the loci, as pass one did
+        A, B, ga, gb = block_pair(*items[0])
+        per_locus = 3 * n * n * 4 + 2 * n * max(len(st) for _, st in loci) * 4
+        sample = [loci[i][1] for i in np.linspace(0, nloc - 1, min(nloc, 64)).astype(int)]
+        kbar = float(np.mean([np.mean([(X[:, st] == i).any(0).mean() for i in range(A_)]) * A_ for st in sample]))
+        flops = 2.0 * n * n * float(np.mean([len(st) for _, st in loci])) * (1.0 + kbar)
+        workers = max(1, min(threads, nloc, int((_mem_room() // 2) // per_locus), int(round(flops / PASS1_FLOPS_PER_THREAD))))
+        procs = min(threads, max(1, nloc // PASS1_LOCI_PER_WORKER)) if workers <= 2 and threads > 1 and 2 * nloc * n * n * np.dtype(cdt).itemsize <= PASS1_RETURN_MAX else 1
+        out = _sweep_block(A, B, ga, gb, ctx, threads=max(workers, 1) if procs == 1 else 1, kernel=kernel, procs=procs, slab=slab, cl_threads=threads)
+        out["gidx"], out["cidx"] = ga, gb; absorb(out); kept = out.get("slab")
+        if progress: progress.tick()
+    else:
+        workers = min(threads, len(items)) if threads > 1 and _can_fork() else 1
+        per_worker = max(1, threads // max(workers, 1))                        # block pairs fewer than the threads: each runs its loci in threads
+        order = sorted(items, key=lambda ij: (ij[0] == ij[1], ij))            # diagonal blocks last: about half the work of the others (symmetric products, one closest direction), so the tail is short
+        if workers > 1:
+            _SWEEP = ctx
+            try:
+                def run(ij):
+                    A, B, ga, gb = block_pair(*ij); out = _sweep_block(A, B, ga, gb, ctx, per_worker, kernel_serial, slab=part(ga, gb)); out["gidx"], out["cidx"] = ga, gb
+                    if rdir is None: return out
+                    flat = {}; _flatten(out, "", flat); path = os.path.join(rdir, f"{ij[0]}-{ij[1]}.npz"); np.savez(path, **flat); return path
+                for r in fork_map(run, order, workers):
+                    if rdir is not None:
+                        with np.load(r) as z: out = _unflatten({k: z[k] for k in z.files})
+                        os.remove(r)
+                    else: out = r
+                    absorb(out); progress and progress.tick()
+            finally:
+                _SWEEP = None
+                if rdir is not None: shutil.rmtree(rdir, ignore_errors=True)
+        else:
+            for ij in order:
+                A, B, ga, gb = block_pair(*ij); out = _sweep_block(A, B, ga, gb, ctx, threads, kernel, slab=part(ga, gb)); out["gidx"], out["cidx"] = ga, gb; absorb(out)
+                if progress: progress.tick()
+    if progress: progress.finish()
+    ident = np.concatenate(ident) if ident else np.zeros((0, 2), np.int64)
+    return dict(lists=L, closest=(cd, cv, cc), ident=ident, counters=tuple(counters), full=full, overflow=overflow, blocks=len(blocks_c), b=b, items=len(items), slab=kept)
+
+
+def classes_from_pairs(n, pairs):
+    """each taxon's class of identical genomes (its lowest index), the fixed point the old engine iterated on the
+    full relation, run on the list of identical pairs"""
+    cls = np.arange(n)
+    if len(pairs) == 0: return cls
+    g, c = pairs[:, 0], pairs[:, 1]
+    while True:
+        new = cls.copy(); np.minimum.at(new, g, cls[c]); np.minimum.at(new, c, cls[g])
+        if np.array_equal(new, cls): return cls
+        cls = new
+
+
+def list_lookup(L, gi, ci):
+    """the position of each pair's partner in the focal taxon's list, -1 where it is not there"""
+    gi = np.asarray(gi, np.int64); ci = np.asarray(ci, np.int64); cand = L["cand"][gi]
+    hit = cand == ci[:, None]; pos = hit.argmax(1); return np.where(hit.any(1), pos, -1)
+
+
+def prepare(a, names, rows, loci, dtype, K_eff, t0, full=None):
+    """everything the test needs before it runs: the alignment as residue codes, the locus plateaus and rates, and the
+    pair structures of the sweep (each taxon's candidate list with m, its floor and the ranking key; the closest match
+    at every locus; the classes of identical genomes; the full m up to FULL_M_MAX_TAXA), and the counts provider: the
+    kept slab of every pair's counts when the sweep was one block pair, else the residues. a needs fit_overlap and
+    threads; a.candidates and a.block_taxa are read when present"""
+    n, L = len(names), len(rows[0]); A_ = 4 if dtype == "dna" else 20; nloc = len(loci)
+    X = encode_alignment(names, rows, dtype)
+    focal_sites = np.stack([(X[:, st] >= 0).sum(1) for _, st in loci], 1).astype(np.uint32)     # each taxon's residues at each locus
+    present = (focal_sites >= a.fit_overlap).sum(1); thin = np.flatnonzero(present < MIN_LOCI_PER_TAXON)
+    keep = np.ones(n, bool); keep[thin] = False
+    if len(thin):
+        LOG(f"{len(thin)} taxa with fewer than {MIN_LOCI_PER_TAXON} loci present are excluded from the test and left unmasked: "
+            + ", ".join(names[i] for i in thin[:20]) + (f" and {len(thin) - 20} more (the report lists them)" if len(thin) > 20 else ""))
+    plateaus = locus_plateaus(X, loci, A_, min(a.threads, 8))
+    longest = max(len(st) for _, st in loci); assert longest < (1 << 24), "a locus of 2^24 sites or more: the float32 products would not be exact"
+    cdt = np.uint16 if longest < 65536 else np.uint32
+    C = max(1, int(getattr(a, "candidates", None) or CANDIDATES)); b = int(getattr(a, "block_taxa", None) or sweep_block_size(n, nloc, cdt, a.threads, C, longest, L, A_)); b = max(1, min(b, n))
+    if full is None: full = n <= FULL_M_MAX_TAXA
+    kern = _pair_kernel(a.threads) if nloc * n * n >= NUMBA_PAIR_LOCI_MIN else None
+    kernel = kern[0] if kern else None; kernel_serial = _pair_medians_serial if kern else None
+    if kern:                                                             # compile both kernels here, before any worker is forked
+        tiny_s = np.zeros((nloc, 1), cdt); tiny_w = np.ones((nloc, 1), cdt); dg = np.zeros(1, bool)
+        kernel(tiny_s, tiny_w, 0, 1, np.ones(nloc), np.ones(nloc, bool), dg, MIN_LOCI_FOR_M, 100.0 * HALF, PAIR_BLOCK)
+        kernel_serial(tiny_s, tiny_w, 0, 1, np.ones(nloc), np.ones(nloc, bool), dg, MIN_LOCI_FOR_M, 100.0 * HALF, PAIR_BLOCK)
+    LOG(f"pair sweep: blocks of {b:,} taxa, {C} candidates per taxon, the full m matrix {'kept' if full else 'not kept'}")
+    common = dict(X=X, loci=loci, keep=keep, A_=A_, fit=a.fit_overlap, C=C, b=b, threads=a.threads, cdt=cdt, kernel=kernel, kernel_serial=kernel_serial)
+    # ---- sweep 1: the raw divergences, for the rate-vote neighbours
+    S1 = sweep_pairs(rr=None, ok_r=None, want_closest=False, want_full=False, key="m0", progress=PROG, stage="pairs0", keep_slab=b >= n, **common)
+    if S1["slab"] is not None:                                           # one block pair: its counts of every pair serve the whole run, as the old engine's did
+        common["slab"] = S1["slab"]; LOG(f"the pair counts of the one block pair ({fmem(2 * S1['slab'][0].nbytes)}) are kept for the run")
+    counts = SlabCounts(*common["slab"], n) if "slab" in common else ResidueCounts(X, loci, keep, A_)
+    cls = classes_from_pairs(n, S1["ident"]); has_dup = len(S1["ident"]) > 0
+    if has_dup: LOG(f"{int((cls != np.arange(n)).sum())} genomes are identical to another at every shared site: an identical genome is never a comparator, and no two comparators are identical to each other")
+    LOG(f"per-locus identities done, {time.time() - t0:.0f}s")
+    Kn = min(K_eff, n - 1); rep = cls == np.arange(n)
+    def neighbours(L1, rows_of):
+        gi, ci, starved = [], [], []
+        for k, g in enumerate(rows_of):
+            cands = L1["cand"][k]; cands = cands[cands >= 0]; picked = cands[rep[cands]][:Kn]
+            gi += [g] * len(picked); ci += picked.tolist()
+            if len(picked) < Kn and L1["nfin"][k] > L1["cand"].shape[1]: starved.append(g)
+        return np.array(gi, np.int64), np.array(ci, np.int64), starved
+    gi0, ci0, starved = neighbours(S1["lists"], range(n))
+    if starved:                                                          # the list ran out before Kn representatives: their full rows
+        LOG(f"rate neighbours: {len(starved)} taxa ran out of candidates (copies of one genome fill the list): full rows computed")
+        E = sweep_pairs(rr=None, ok_r=None, want_closest=False, want_full=False, key="m0", rows_only=np.array(starved), **{**common, "C": n})
+        gi_e, ci_e, _ = neighbours(E["lists"], starved)
+        keepmask = ~np.isin(gi0, starved); gi0 = np.concatenate([gi0[keepmask], gi_e]); ci0 = np.concatenate([ci0[keepmask], ci_e])
+        lk = list_lookup(E["lists"], np.array([starved.index(g) for g in gi_e]), ci_e); m0n_e = np.maximum(E["lists"]["m"][np.array([starved.index(g) for g in gi_e]), lk], E["lists"]["mfl"][np.array([starved.index(g) for g in gi_e]), lk])
+    lk = list_lookup(S1["lists"], gi0[:len(gi0) - (len(gi_e) if starved else 0)], ci0[:len(ci0) - (len(ci_e) if starved else 0)])
+    base_rows = gi0[:len(gi0) - (len(gi_e) if starved else 0)]
+    m0n = np.maximum(S1["lists"]["m"][base_rows, lk], S1["lists"]["mfl"][base_rows, lk])
+    if starved: m0n = np.concatenate([m0n, m0n_e])
+    del S1
     rate = np.full(nloc, np.nan)
-    t0i = tri_idx[gi0, ci0]
-    PROG.start("rates", nloc)
-    for li in range(nloc):
-        PROG.tick()
-        o_, s_ = W[li][t0i].astype(np.float32), S[li][t0i].astype(np.float32)
+    def locus_rate(li):
+        o_i, s_i = counts.at(li, gi0, ci0); o_ = o_i.astype(np.float32); s_ = s_i.astype(np.float32)
         with np.errstate(invalid="ignore", divide="ignore"):
             d_ = np.where(o_ > 0, 100.0 * (1.0 - s_ / np.maximum(o_, 1)), np.nan)
         val = np.isfinite(d_) & (o_ >= a.fit_overlap)
-        if val.sum() < MIN_FIT_PAIRS: continue
+        if val.sum() < MIN_FIT_PAIRS: return
         P_ = plateaus[li]
-        corr = lambda p: -P_ * np.log(1.0 - np.minimum(np.asarray(p, np.float64), 0.98 * P_) / P_)   # float64 under every numpy (1.x kept float32 here when p was float32, 2.x promotes)
+        corr = lambda p: -P_ * np.log(1.0 - np.minimum(np.asarray(p, np.float64), 0.98 * P_) / P_)
         rate[li] = float(np.median(corr(d_[val] + 100.0 * HALF / o_[val]) / corr(m0n[val])))
+    PROG.start("rates", nloc)
+    if a.threads > 1 and nloc > 1 and "slab" not in common:             # the counts from the residues release the interpreter lock; gathers from the kept slab are quicker serial
+        with ThreadPoolExecutor(min(a.threads, nloc)) as ex:
+            for _ in ex.map(locus_rate, range(nloc), chunksize=max(1, nloc // (8 * a.threads))): PROG.tick()
+    else:
+        for li in range(nloc): locus_rate(li); PROG.tick()
     PROG.finish()
-    del m0, m0_fl, m0_hi, res0, dist, nb, m0n
     lsites = np.array([len(s) for _, s in loci], dtype=float)
     ok_r = np.isfinite(rate) & (rate > 0)
     if ok_r.sum() >= 3:
         scale = wmedian_stack(rate[ok_r, None], lsites[ok_r, None])[0]
         rate = rate / max(scale, 1e-6)
     rr = np.where(ok_r, rate, np.nan)
-    m, m_fl, nl = pair_divergences(S, W, n, iu, rr, ok_r, threads=a.threads, progress=PROG, stage="pairs")
-    np.fill_diagonal(m, np.nan)
-    # resolution floor of the pair: the median over its loci of half a mismatch per locus (rate-normalised);
-    # the divergence used on the too-divergent side is the larger of the measured median and this floor
-    m_hi = np.maximum(m, m_fl); np.fill_diagonal(m_hi, np.nan)
-    m_xs = np.maximum(m - m_fl, 0.0)                                  # divergence resolved beyond the floor: the rate-vote weight
-    del m_fl
-    keep = np.ones(n, bool); keep[thin] = False
-    nlk = nl[np.ix_(keep, keep)][np.triu_indices(int(keep.sum()), 1)]
-    fb = float((nlk < MIN_LOCI_FOR_M).mean()) if len(nlk) else 0.0
-    del nl, nlk
+    # ---- sweep 2: the rate-normalised divergences, the lists, the closest match at every locus
+    S2 = sweep_pairs(rr=rr, ok_r=ok_r, want_closest=True, want_full=full, key="mj", progress=PROG, stage="pairs", **common)
+    nl_low, npk, fin_pairs = S2["counters"]; fb = nl_low / npk if npk else 0.0
     LOG(f"pair divergences done, {time.time() - t0:.0f}s"
           + (f"; note: no locus has a rate (no nearest-neighbour pairs resolved beyond their resolution floor), so no pair has a divergence" if ok_r.sum() == 0 else
              f"; note: {fb:.0%} of taxon pairs overlap in <{MIN_LOCI_FOR_M} loci with a rate and are never compared" if fb > 0.05 else ""))
+    if S2["overflow"]: LOG(f"note: {S2['overflow']:,} cells had more distinct closest-match rates within 1e-9 of the minimum than {BAND_SLOTS} slots")
+    m_full, mfl_full = S2["full"] if full else (None, None)
+    return argparse.Namespace(X=X, keep=keep, thin=thin, present=present, focal_sites=focal_sites, plateaus=plateaus, rate=rate, rr=rr, ok_r=ok_r, cls=cls, has_dup=has_dup,
+                              lists=S2["lists"], closest=S2["closest"], m_full=m_full, mfl_full=mfl_full, fin_pairs=fin_pairs, C=C, b=b, cdt=cdt, A_=A_, fit=a.fit_overlap,
+                              sweep_args=common, ext={}, counts=counts)
 
-    mj = np.where(np.isfinite(m) & ~ident, m, np.inf) + tie           # the comparator ranking key: m with the tie-break; an identical genome is never a comparator (Rob, 30 Oct 2026)
-    del tie
-    return argparse.Namespace(X=X, S=S, W=W, iu=iu, diag_pos=diag_pos, tri_idx=tri_idx, m=m, m_hi=m_hi, m_xs=m_xs, mj=mj,
-                              plateaus=plateaus, rate=rate, focal_sites=focal_sites, thin=thin, present=present, cls=cls, has_dup=has_dup)
+
+def pair_m_lists(P, gi, ci):
+    """m and its floor for the pairs (gi[k], ci[k]) from the focal taxa's lists (a comparator is always in its focal's
+    list), the extended rows of the second pass, or the full matrix when it is kept"""
+    gi = np.asarray(gi, np.int64); ci = np.asarray(ci, np.int64); m_ = np.full(len(gi), np.nan); f_ = np.full(len(gi), np.nan)
+    if len(gi) == 0: return m_, f_
+    if P.m_full is not None: return P.m_full[gi, ci], P.mfl_full[gi, ci]       # the lists were filled from the same block results: the same numbers
+    pos = list_lookup(P.lists, gi, ci); hit = pos >= 0
+    m_[hit] = P.lists["m"][gi[hit], pos[hit]]; f_[hit] = P.lists["mfl"][gi[hit], pos[hit]]
+    if P.ext:
+        for k in np.flatnonzero(~hit & np.isin(gi, np.array(list(P.ext)))).tolist():
+            cand, mm, mf, _ = P.ext[int(gi[k])]; j = np.flatnonzero(cand == ci[k])
+            if len(j): m_[k] = mm[j[0]]; f_[k] = mf[j[0]]; hit[k] = True
+    if P.m_full is not None and not hit.all():
+        miss = ~hit; m_[miss] = P.m_full[gi[miss], ci[miss]]; f_[miss] = P.mfl_full[gi[miss], ci[miss]]
+    return m_, f_
+
+
+def m_rows(P, rows):
+    """full rows of m for a few taxa: from the matrix when it is kept, else computed on demand by the sweep (their pairs
+    against everyone, every finite m, identical pairs included)"""
+    rows = np.asarray(rows, np.int64)
+    if P.m_full is not None: return P.m_full[rows]
+    n = P.X.shape[0]; E = sweep_pairs(rr=P.rr, ok_r=P.ok_r, want_closest=False, want_full=False, key="m_all", rows_only=rows, **{**P.sweep_args, "C": n})
+    out = np.full((len(rows), n), np.nan)
+    for k in range(len(rows)):
+        c = E["lists"]["cand"][k]; fin = c >= 0; out[k, c[fin]] = E["lists"]["m"][k][fin]
+    return out
 
 
 def divergence_matrix(aln, partitions=None, datatype="dna", fit_overlap=20, n_comp=5, threads=1):
@@ -1476,8 +1973,10 @@ def divergence_matrix(aln, partitions=None, datatype="dna", fit_overlap=20, n_co
     if declared and declared != datatype: raise ValueError(f"datatype {datatype!r} was given but the NEXUS file declares {declared!r}")
     if not isinstance(nexus, NexusInfo): check_characters(aln, names, rows, datatype, getattr(nexus, "gap", None), getattr(nexus, "missing", None))
     n = len(names); K_eff = min(n_comp, n - 1); K_eff -= 1 - K_eff % 2
-    P = prepare(argparse.Namespace(fit_overlap=fit_overlap, threads=max(1, min(threads, _cpus()))), names, rows, loci, datatype, K_eff, time.time())
-    return names, P.m, P.m_hi
+    if n > FULL_M_MAX_TAXA: raise ValueError(f"{n} taxa: the full matrix is kept up to {FULL_M_MAX_TAXA}")
+    P = prepare(argparse.Namespace(fit_overlap=fit_overlap, threads=max(1, min(threads, _cpus()))), names, rows, loci, datatype, K_eff, time.time(), full=True)
+    m_hi = np.maximum(P.m_full, P.mfl_full); np.fill_diagonal(m_hi, np.nan)
+    return names, P.m_full, m_hi
 
 
 def main():
@@ -1490,6 +1989,8 @@ def main():
                     "two members' test-1 excesses, in absolute value, is more than this many times the smaller; otherwise the direction is uncertain and both members are masked (default 2)")
     ap.add_argument("--mask-similar-only", action="store_true"); ap.add_argument("--mask-different-only", action="store_true")
     ap.add_argument("--threads", type=int, default=1, help="at most this many threads or worker processes (0: every CPU this process may use); each stage takes as many as pay off")
+    ap.add_argument("--candidates", type=int, help=f"the closest genomes each taxon keeps as its candidate comparators (default {CANDIDATES}); a taxon whose list runs out at a locus gets its full row computed afterwards, so any value gives the same results")
+    ap.add_argument("--block-taxa", type=int, help="the taxon block of the pair sweep (default from the taxa count, the threads and the memory room); any block size gives the same results, so this is for testing")
     ap.add_argument("--no-numba", action="store_true", help="the pair stage in numpy even when numba is installed (the compiled kernel gives the same numbers, 3-8x faster at scale; this is for checking that)")
     ap.add_argument("--memory", type=float, help="GB of memory the run may use (default: half of what is available when it starts; 0: no budget); the stages size their threads and chunks to stay within it, and a run that cannot fit stops before it starts")
     ap.add_argument("--progress", choices=("auto", "bar", "none"), default="auto", help="auto: a progress bar on a terminal, progress lines at 2%% steps otherwise")
@@ -1516,6 +2017,8 @@ def main():
     avail = _mem_available(); MEM_BUDGET = None if a.memory is not None and a.memory <= 0 else int(a.memory * (1 << 30)) if a.memory else avail // 2
     if MEM_BUDGET is not None and MEM_BUDGET > avail: LOG(f"WARNING: --memory {a.memory:g} GB is more than the {avail / (1 << 30):.1f} GB available now")
     if K < 3 or K % 2 == 0: sys.exit("--n-comp must be an odd number of at least 3")
+    if a.candidates is not None and a.candidates < 1: sys.exit("--candidates must be at least 1")
+    if a.block_taxa is not None and a.block_taxa < 1: sys.exit("--block-taxa must be at least 1")
     if a.mask_similar_only and a.mask_different_only:
         sys.exit("--mask-similar-only and --mask-different-only are mutually exclusive")
     if a.partitions and not os.path.isfile(a.partitions): sys.exit(f"the partition file {a.partitions} does not exist")
@@ -1542,8 +2045,10 @@ def main():
     if K_eff < K: LOG(f"n-comp shrunk to {K_eff} ({n} taxa)")
     LOG(f"{n} taxa, {L} sites, {len(loci)} loci, {dtype}, {fmt}")
     global MEM_RESIDENT_EST
-    need, mx, msw, mnn = memory_estimate(n, L, loci); MEM_RESIDENT_EST = need
-    parts = f"{fmem(msw)} of pair counts for {n:,} taxa x {len(loci):,} loci, {fmem(mnn)} of taxa x taxa matrices, {fmem(mx)} of residue codes"
+    need, mx, mlists, mclosest, mfull, mslab = memory_estimate(n, L, loci, a.candidates); MEM_RESIDENT_EST = need
+    parts = (f"{fmem(mx)} of alignment (the rows and the residue codes), {fmem(mlists)} of candidate lists for {n:,} taxa, {fmem(mclosest)} of closest matches for "
+             f"{n:,} taxa x {len(loci):,} loci" + (f", {fmem(mfull)} of the full m matrix (kept up to {FULL_M_MAX_TAXA:,} taxa)" if mfull else "")
+             + (f", {fmem(mslab)} of pair counts at every locus (kept up to {SWEEP_BLOCK_MIN:,} taxa)" if mslab else ""))
     if MEM_BUDGET is None: LOG(f"memory: about {fmem(need)} resident ({parts}); no budget (--memory 0)")
     else:
         LOG(f"memory: about {fmem(need)} resident ({parts}); budget {fmem(MEM_BUDGET)}" + ("" if a.memory else " (half of the memory available now; --memory sets it)"))
@@ -1552,16 +2057,14 @@ def main():
                      + ("" if a.memory else ", half of what is available now") + ": --memory raises the budget (--memory 0 removes it), or give fewer taxa or loci")
 
     P = prepare(a, names, rows, loci, dtype, K_eff, t0)
-    X, S, W, iu, diag_pos, tri_idx = P.X, P.S, P.W, P.iu, P.diag_pos, P.tri_idx
-    m, m_hi, m_xs, mj, plateaus, rate = P.m, P.m_hi, P.m_xs, P.mj, P.plateaus, P.rate
-    run_z.cls, run_z.has_dup = P.cls, P.has_dup
+    X = P.X; run_z.cls, run_z.has_dup = P.cls, P.has_dup
     focal_sites, thin, present = P.focal_sites, P.thin, P.present
     masked = rows                                                      # blanked in place; X is its own copy
 
     seq_policy = a.report_sequences if a.report_sequences != "auto" else ("all" if n * L <= REPORT_SEQ_ALL_MAX else "fails")
     rep = dict(focal_sites=focal_sites, thin=thin, present=present, seq_policy=seq_policy if not a.no_report else "none",
                codes_policy=a.report_codes if not a.no_report else "none", no_report=a.no_report, uncovered_sites=nuncov)
-    nmasked = run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, plateaus, rate, masked, K_eff, M_eff, rep)
+    nmasked = run_z(a, names, loci, P, masked, K_eff, M_eff, rep)
 
     PROG.start("write", 2)
     out = write_masked(a.aln, a.out, fmt, names, masked, nexus)
@@ -1578,6 +2081,10 @@ LSET_CHUNK = 256        # the fewest taxa per slice when a locus's closest match
 LN10 = math.log(10.0)
 _FORK_FN = None
 def _fork_call(x): return _FORK_FN(x)
+def _can_fork():
+    """worker processes are possible: fork exists, and this is not itself a pool worker (a daemonic process may not
+    have children, and a rows-only sweep can be asked for from inside the test stage's workers)"""
+    return "fork" in multiprocessing.get_all_start_methods() and not multiprocessing.current_process().daemon
 def fork_map(fn, items, workers, chunksize=1):
     """fn over items in forked worker processes, the results in order, one at a time as they arrive (a generator: the
     workers run on while a result is consumed). The workers inherit fn and everything it closes over at the fork, so
@@ -1586,7 +2093,7 @@ def fork_map(fn, items, workers, chunksize=1):
     calls of modest size, and threads only queue on the interpreter lock (Chen_2015: 15 s alone, 32 s with 8 threads)"""
     global _FORK_FN
     items = list(items); workers = min(workers, len(items))
-    if workers <= 1 or "fork" not in multiprocessing.get_all_start_methods():
+    if workers <= 1 or not _can_fork():
         for x in items: yield fn(x)
         return
     _FORK_FN = fn
@@ -1609,100 +2116,101 @@ def fnum(v, nd):
 TESTS_COLUMNS = ["test", "locus", "taxon", "comparator", "overlap", "mismatches", "expected", "row_factor", "log10p", "fail"]
 
 
-def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, plateaus, rate, masked, K_eff, M_eff, rep):
-    n = len(names); nloc = len(loci); ntri = len(iu[0])
+def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
+    n = len(names); nloc = len(loci); X, plateaus, rate, keep, lists = P.X, P.plateaus, P.rate, P.keep, P.lists
     mask_hi = not a.mask_similar_only
     mask_lo = not a.mask_different_only
     views = [np.frombuffer(mb, dtype=np.uint8) for mb in masked]        # writable views for blanking
 
-    # each taxon's candidates in order of pair divergence (the tie-break makes every row a strict order), computed
-    # once: a locus's comparators are the first K candidates that share enough sites with the taxon at that locus
-    big = n >= 1000
-    cmp_workers = max(1, min(a.threads, nloc, int(float(n) * n * nloc // COMPARATOR_WORK_PER_WORKER))) if a.threads > 1 else 1
+    # each taxon's candidates in order of pair divergence are its list from the sweep (the tie-break makes every row a
+    # strict order): a locus's comparators are the first K candidates that share enough sites with the taxon at that
+    # locus. A taxon whose list runs out at some locus gets its full row afterwards and is walked again
+    Lbar = float(np.mean([len(st) for _, st in loci])) if nloc else 0.0
+    cmp_cpu = nloc * ((5e-4 + 4e-6 * n) if isinstance(P.counts, SlabCounts) else 20.0 * n * Lbar / 1.5e8)     # seconds of walk, about
+    cmp_workers = max(1, min(a.threads, nloc, int(cmp_cpu / COMPARATOR_SECONDS_PER_WORKER) + 1)) if a.threads > 1 else 1
     if a.threads > 1: LOG(f"comparators: {cmp_workers} worker process{'es' if cmp_workers > 1 else ''} ({n:,} taxa x {nloc:,} loci)")
-    order = np.empty((n, n), np.int32)
-    def sort_rows(b0):
-        b1 = min(b0 + 256, n); order[b0:b1] = np.argsort(mj[b0:b1], axis=1, kind="stable")
-    if big and a.threads > 1:                                              # argsort releases the interpreter lock on rows this long
-        with ThreadPoolExecutor(min(a.threads, -(-n // 256))) as ex: list(ex.map(sort_rows, range(0, n, 256)))
-    else:
-        for b0 in range(0, n, 256): sort_rows(b0)
-
-    mj_fin = np.isfinite(mj)                                                  # a byte per pair: the closest-match search reads it per locus instead of mj
-    def choose_comparators(li):
+    C_len = lists["cand"].shape[1]; nfin = lists["nfin"]
+    cl_win, cl_dmin = closest_winners(*P.closest)                           # the closest match at every cell, from the sweep
+    def row_cands(g):
+        if g in P.ext: return P.ext[g][0]
+        c = lists["cand"][g]; return c[c >= 0]
+    def choose_comparators(li, only=None):
         """for every taxon at this locus: its first K_eff candidates (in order of m) that have the overlap the taxon
-        needs here, walking the sorted candidates in windows that grow until every taxon has K or runs out"""
-        Wl = W[li]; nres = Wl[diag_pos].astype(int); need = np.minimum(a.fit_overlap, nres)
-        top = np.full((n, K_eff), -1, np.int64); cnt = np.zeros(n, np.int64)
-        rows = np.flatnonzero(nres > 0); start = 0; width = 4 * K_eff
-        if getattr(run_z, "has_dup", False):                               # identical genomes in the data: one comparator per class of copies, so the walk is per taxon
-            cls = run_z.cls
-            for g in rows.tolist():
-                seen = set(); k = 0; tg = tri_idx[g]
-                for cnd in order[g].tolist():
-                    if not np.isfinite(mj[g, cnd]): break
-                    if Wl[tg[cnd]] < need[g] or cls[cnd] in seen: continue
-                    seen.add(cls[cnd]); top[g, k] = cnd; k += 1
-                    if k == K_eff: break
-                cnt[g] = k
-            rows = rows[:0]
-        while len(rows) and start < n:
-            stop = min(start + width, n)
-            cand = order[rows, start:stop]
-            mjc = mj[rows[:, None], cand]
-            ok = np.isfinite(mjc) & (cand != rows[:, None]) & (Wl[tri_idx[rows[:, None], cand]] >= need[rows][:, None])
-            pos = cnt[rows][:, None] + np.cumsum(ok, axis=1) - ok                 # the comparator slot each accepted candidate takes
-            r_, j_ = np.nonzero(ok & (pos < K_eff))
-            top[rows[r_], pos[r_, j_]] = cand[r_, j_]
-            cnt[rows] = np.minimum(cnt[rows] + ok.sum(1), K_eff)
-            exhausted = ~np.isfinite(mjc[:, -1])                                  # non-finite candidates sort last: nothing beyond
-            rows = rows[(cnt[rows] < K_eff) & ~exhausted]
+        needs here, walking its list in windows that grow until every taxon has K or the list ends; then the closest
+        match at the locus and whether it is in the set. only: these taxa alone (the second pass)"""
+        sites = loci[li][1]; Xs = X[:, sites]; nres = np.where(keep, P.focal_sites[:, li], 0).astype(np.int64); need = np.minimum(a.fit_overlap, nres)
+        top = np.full((n, K_eff), -1, np.int64); cnt = np.zeros(n, np.int64); exhausted = np.zeros(n, bool)
+        rows = np.flatnonzero(nres > 0) if only is None else np.asarray(only, np.int64)[nres[np.asarray(only, np.int64)] > 0]
+        dup = getattr(run_z, "has_dup", False); cls = run_z.cls if dup else None
+        seen_cls = np.full((n, K_eff), -1, np.int64) if dup else None          # with identical genomes in the data: the classes each row's comparators already cover
+        ext_ids = np.array(list(P.ext), np.int64); longest = max([C_len] + [len(P.ext[g][0]) for g in P.ext]) if P.ext else C_len
+        def window(rows, start, stop):
+            """the candidates [start, stop) of these rows, from the lists or the extended rows, -1 beyond a row's end"""
+            out = np.full((len(rows), stop - start), -1, np.int64)
+            if start < C_len: seg = lists["cand"][rows, start:stop]; out[:, :seg.shape[1]] = seg
+            if len(ext_ids):
+                for i in np.flatnonzero(np.isin(rows, ext_ids)).tolist():
+                    seg = P.ext[int(rows[i])][0][start:stop]; out[i] = -1; out[i, :len(seg)] = seg
+            return out
+        start = 0; width = 4 * K_eff
+        while len(rows) and start < longest:
+            stop = min(start + width, longest); cand = window(rows, start, stop); valid = cand >= 0
+            ov, _ = P.counts.at(li, np.repeat(rows, stop - start), np.where(valid, cand, 0).ravel(), Xs); ov = ov.reshape(len(rows), -1)
+            ok = valid & (ov >= need[rows][:, None]) & (cand != rows[:, None])
+            if dup:                                                        # one comparator per class of copies: column by column, a class already covered is skipped
+                k_ = cnt[rows].copy(); acc = seen_cls[rows]
+                for j in range(cand.shape[1]):
+                    cj = cls[np.maximum(cand[:, j], 0)]; good = ok[:, j] & (k_ < K_eff) & ~(acc == cj[:, None]).any(1); r_ = np.flatnonzero(good)
+                    top[rows[r_], k_[r_]] = cand[r_, j]; acc[r_, k_[r_]] = cj[r_]; k_[r_] += 1
+                cnt[rows] = k_; seen_cls[rows] = acc
+            else:
+                pos = cnt[rows][:, None] + np.cumsum(ok, axis=1) - ok             # the comparator slot each accepted candidate takes
+                r_, j_ = np.nonzero(ok & (pos < K_eff))
+                top[rows[r_], pos[r_, j_]] = cand[r_, j_]
+                cnt[rows] = np.minimum(cnt[rows] + ok.sum(1), K_eff)
+            rows = rows[(cnt[rows] < K_eff) & valid[:, -1]]                      # the list ended inside the window: nothing beyond
             start = stop; width *= 4
-        # the closest match AT THE LOCUS: the taxon in the test with the fewest mismatches per shared site (half a mismatch
-        # added; ties by m) among those sharing >= --fit-overlap sites with the sequence. When it is not one of the K_eff
-        # closest genomes (a tie for closest that includes one counts as in-set) the sequence is tested against it (test 2).
-        # Taxa x taxa slices are taken LSET_CHUNK rows at a time.
-        Sl = S[li]; closest = np.full(n, -1, np.int64); fork = np.zeros(n, bool)
-        rows = np.flatnonzero(cnt > 0)
-        lset = max(LSET_CHUNK, LSET_ELEMENTS // max(n, 1))
-        for b0 in range(0, len(rows), lset):
-            rr = rows[b0:b0 + lset]; t_ = tri_idx[rr]
-            ov = Wl[t_]; sm = Sl[t_]                                                 # the counts as stored; one byte per pair for "has an m"
-            okc = (ov >= a.fit_overlap) & mj_fin[rr]                                 # mj is non-finite on the diagonal, for excluded taxa and for identical genomes
-            with np.errstate(invalid="ignore", divide="ignore"):
-                d = np.where(okc, (ov.astype(np.float64) - sm + HALF) / np.maximum(ov, 1.0), np.inf)
-            dmin = d.min(1); has = np.isfinite(dmin)
-            tops = np.zeros((len(rr), n), bool); r_, c_ = np.nonzero(top[rr] >= 0); tops[r_, top[rr][r_, c_]] = True
-            inset = ((d <= dmin[:, None]) & tops).any(1)
-            # the closest match: the minimum of d + 1e-9 m / 100 (ties by m, well below the count resolution); only the
-            # candidates within 1e-9 of the minimum can win, so only their entries of mj are read
-            band = d <= dmin[:, None] + 1e-9
-            closest[rr] = np.where(has, band.argmax(1), -1)
-            multi = has & (band.sum(1) > 1)
-            if multi.any():
-                ri, cj = np.nonzero(band[multi]); sub = rr[multi]; vals = d[multi][ri, cj] + 1e-9 * mj[sub[ri], cj] / 100.0
-                order_ = np.lexsort((cj, vals, ri)); firsts = order_[np.unique(ri[order_], return_index=True)[1]]
-                closest[sub] = cj[firsts]
-            fork[rr] = has & ~inset
-        return top, top >= 0, cnt, nres, closest, fork
+        short = np.flatnonzero((cnt < K_eff) & (nres > 0) & (nfin > C_len)); exhausted[short[~np.isin(short, ext_ids)]] = True
+        if only is not None: exhausted[~np.isin(np.arange(n), np.asarray(only, np.int64))] = False
+        # the closest match AT THE LOCUS from the sweep; it is tested (test 2) when it is not one of the K_eff closest
+        # genomes (a tie for closest that includes one counts as in-set)
+        closest = np.full(n, -1, np.int64); fork = np.zeros(n, bool); rows = np.flatnonzero(cnt > 0) if only is None else np.asarray(only, np.int64)[cnt[np.asarray(only, np.int64)] > 0]
+        if len(rows):
+            closest[rows] = cl_win[rows, li]; has = closest[rows] >= 0; rr = rows[has]
+            if len(rr):
+                Ct = top[rr]; valid = Ct >= 0
+                ov, sm = P.counts.at(li, np.repeat(rr, K_eff), np.where(valid, Ct, 0).ravel(), Xs)
+                ov = ov.reshape(len(rr), K_eff).astype(np.float64); sm = sm.reshape(len(rr), K_eff).astype(np.float64)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    d = np.where(valid & (ov >= a.fit_overlap), (ov - sm + HALF) / np.maximum(ov, 1.0), np.inf)
+                inset = (d <= cl_dmin[rr, li][:, None]).any(1); fork[rr] = ~inset
+        return top, top >= 0, cnt, nres, closest, fork, exhausted
 
     PROG.start("comparators", nloc)
     sel = []
     for r in fork_map(choose_comparators, range(nloc), cmp_workers): sel.append(r); PROG.tick()
     PROG.finish()
+    exhausted = sorted({int(g) for r in sel for g in np.flatnonzero(r[6])})
+    if exhausted:                                                        # the bounded second pass: full rows for the taxa whose list ran out, then their comparators again
+        t1 = time.time(); E = sweep_pairs(rr=P.rr, ok_r=P.ok_r, want_closest=False, want_full=False, key="mj", rows_only=np.array(exhausted, np.int64), **{**P.sweep_args, "C": n})
+        for k, g in enumerate(exhausted):
+            c = E["lists"]["cand"][k]; fin = c >= 0; P.ext[g] = (c[fin], E["lists"]["m"][k][fin], E["lists"]["mfl"][k][fin], E["lists"]["key"][k][fin])
+        for li in range(nloc):
+            r = choose_comparators(li, only=exhausted)
+            for old, new in zip(sel[li][:6], r[:6]): old[exhausted] = new[exhausted]
+        LOG(f"comparators: {len(exhausted)} taxa ran out of their {C_len} candidates at some locus: full rows computed and walked ({time.time() - t1:.0f}s)")
     Npairs = 0                                                        # comparisons over all loci: sizes the thread decision only
     for sel_ in sel: Npairs += int(sel_[1][sel_[2] > 0].sum())
 
     def locus_pairs(li):
         """the comparator pairs of a locus and the locus's rate; None when the locus is skipped"""
-        Wl, Sl = W[li], S[li]
-        top, valid, ncomp, nres, closest, fork = sel[li]
+        top, valid, ncomp, nres, closest, fork = sel[li][:6]
         idx = np.flatnonzero(ncomp > 0)
         if len(idx) == 0: return "skipped-no-cells"
         gi, ci, rk = flatten_pairs(idx, top, valid, K_eff)
-        t = tri_idx[gi, ci]; o = Wl[t].astype(np.float32); same = Sl[t].astype(np.float32); mis = o - same
+        Xs = X[:, loci[li][1]]; oi, si = P.counts.at(li, gi, ci, Xs); o = oi.astype(np.float32); same = si.astype(np.float32); mis = o - same
         ident = 100.0 * same / o; dob = 100.0 - ident
-        mp = m[gi, ci]; mph = m_hi[gi, ci]; mpx = m_xs[gi, ci]
+        mp, mfl_ = pair_m_lists(P, gi, ci); mph = np.maximum(mp, mfl_); mpx = np.maximum(mp - mfl_, 0.0)
         fit = (o >= a.fit_overlap) & (mpx > 0)
         if fit.sum() < MIN_FIT_PAIRS and not np.isfinite(rate[li]): return f"skipped-few-resolved-pairs({int(fit.sum())})"
         P_ = plateaus[li]
@@ -1714,7 +2222,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
             mvc = np.maximum(np.asarray(mv, float), 1e-4)
             return np.maximum(P_ * (1.0 - np.exp(-rate_c * corr(mvc) / P_)), 1e-4)
         return dict(idx=idx, gi=gi, ci=ci, rk=rk, o=o, same=same, mis=mis, ident=ident, dob=dob, mp=mp, mph=mph, fit=fit,
-                    Wl=Wl, Sl=Sl, ncomp=ncomp, nres=nres, expect=expect, corr=corr, rate_c=rate_c)
+                    ncomp=ncomp, nres=nres, expect=expect, corr=corr, rate_c=rate_c, Xs=Xs)
 
     # worker threads pay off in the test only when a locus's arrays are large (thousands of comparisons, or the pairs of
     # a thousand taxa and more): with small loci the per-call interpreter-lock traffic of many small numpy operations
@@ -1730,7 +2238,8 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         gmin = np.minimum(L["gi"], L["ci"]).astype(np.int64); gmax = np.maximum(L["gi"], L["ci"]).astype(np.int64)
         ndist = len(np.unique(gmin * n + gmax))
         fk = np.flatnonzero(sel[li][5]); Y_ = sel[li][4][fk]; top_ = sel[li][0][fk]
-        okr = (top_ >= 0) & (top_ != Y_[:, None]) & (L["Wl"][tri_idx[np.where(top_ >= 0, top_, 0), Y_[:, None]]] >= a.fit_overlap)
+        wo, _ = P.counts.at(li, np.where(top_ >= 0, top_, 0).ravel(), np.repeat(Y_, K_eff))
+        okr = (top_ >= 0) & (top_ != Y_[:, None]) & (wo.reshape(top_.shape) >= a.fit_overlap)
         npt = int((okr.sum(1) >= 3).sum())
         E = L["o"] * L["expect"](L["mph"]) / 100.0
         use = L["fit"] & (E >= PHI_MIN_E)
@@ -1748,8 +2257,8 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         # no test can run: say why, in the words of the thresholds, and stop before writing outputs that would mean nothing
         reasons = collections.Counter(locus_pairs(li) for li in range(nloc))
         reasons = collections.Counter(v if isinstance(v, str) else "tested" for v in reasons.elements())
-        thin = rep["thin"]; keep = np.ones(n, bool); keep[thin] = False
-        nk = int(keep.sum()); fin = int(np.isfinite(m[np.ix_(keep, keep)]).sum() // 2); npairs = nk * (nk - 1) // 2; nrated = int(np.isfinite(rate).sum())
+        thin = rep["thin"]
+        nk = int(keep.sum()); fin = int(P.fin_pairs); npairs = nk * (nk - 1) // 2; nrated = int(np.isfinite(rate).sum())
         why = [f"{len(thin)} of {n} taxa excluded (fewer than {MIN_LOCI_PER_TAXON} loci with at least {a.fit_overlap} residues)"]
         if nrated == 0: why.append(f"no locus has a rate: at no locus are {MIN_FIT_PAIRS} nearest-neighbour pairs resolved beyond their resolution floor (the sequences are too similar, or share too few sites, for their divergence to show), so no pair has a divergence m")
         elif nk >= 2: why.append(f"{npairs - fin:,} of the {npairs:,} pairs of the remaining taxa overlap in fewer than {MIN_LOCI_FOR_M} loci with a rate and are never compared")
@@ -1805,8 +2314,8 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         name, sites = loci[li]
         L = locus_pairs(li)
         if isinstance(L, str): return dict(skipped=True, log=f"{name}: {L}", status=L)
-        idx, gi, ci, rk, o, same, mis, ident, dob, mp, mph, fit, Wl, Sl, ncomp, nres, expect, corr, rate_c = \
-            (L[k] for k in ("idx", "gi", "ci", "rk", "o", "same", "mis", "ident", "dob", "mp", "mph", "fit", "Wl", "Sl", "ncomp", "nres", "expect", "corr", "rate_c"))
+        idx, gi, ci, rk, o, same, mis, ident, dob, mp, mph, fit, ncomp, nres, expect, corr, rate_c = \
+            (L[k] for k in ("idx", "gi", "ci", "rk", "o", "same", "mis", "ident", "dob", "mp", "mph", "fit", "ncomp", "nres", "expect", "corr", "rate_c"))
         phi = phi_l[li]
         top = sel[li][0]
 
@@ -1844,7 +2353,7 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         # A failing pair is too similar; the COPY is the member that fits its own relatives worse (the larger test-1
         # excess in absolute value: a foreign sequence in a fast lineage is CLOSER to the lineage's relatives than
         # expected), and it is masked; the other is its source.
-        cpos = {int(g): q for q, g in enumerate(idx.tolist())}; Xs = None
+        cpos = {int(g): q for q, g in enumerate(idx.tolist())}; Xs = L["Xs"]; LR = None
         qpos = np.full(n, -1, np.int64); qpos[idx] = ar                     # taxon -> its cell here, -1 when it has none
         pairs = {}                                                   # (min, max) -> the record of the test that fired lowest
         def record(key, rec):
@@ -1899,13 +2408,14 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         if len(fq):
             G = idx[fq]; Yv = Y[fq]; C = top[G]; C0 = np.maximum(C, 0); qc = qpos[C0]
             valid = (C >= 0) & (C != Yv[:, None]) & ~((qc >= 0) & dflag[np.maximum(qc, 0)])
-            t = tri_idx[C0, Yv[:, None]]; w = Wl[t].astype(np.float64); valid &= w >= a.fit_overlap
+            wo, ws = P.counts.at(li, C0.ravel(), np.repeat(Yv, K_eff), Xs)
+            w = wo.reshape(C0.shape).astype(np.float64); ws = ws.reshape(C0.shape).astype(np.float64); valid &= w >= a.fit_overlap
             with np.errstate(invalid="ignore", divide="ignore"):
-                rates = np.where(valid, (w - Sl[t].astype(np.float64)) / np.maximum(w, 1.0), np.nan)
+                rates = np.where(valid, (w - ws) / np.maximum(w, 1.0), np.nan)
             ok3 = valid.sum(1) >= 3
             if ok3.any():
-                q3 = fq[ok3]; tgy = tri_idx[G[ok3], Yv[ok3]]
-                o2[q3] = Wl[tgy].astype(np.float64); mis2[q3] = o2[q3] - Sl[tgy].astype(np.float64)
+                q3 = fq[ok3]; go, gs = P.counts.at(li, G[ok3], Yv[ok3], Xs)
+                o2[q3] = go.astype(np.float64); mis2[q3] = o2[q3] - gs.astype(np.float64)
                 with np.errstate(all="ignore"): E2[q3] = o2[q3] * np.nanmedian(rates[ok3], axis=1)
                 tested2[q3] = True
                 for i in np.flatnonzero(ok3).tolist(): rel2[fq[i]] = C[i][valid[i]].tolist()
@@ -2002,11 +2512,11 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         rows_bm = idx if bm_all else idx[fail_q]
         best_ = np.full(ncell, -1, np.int32); bident_ = np.full(ncell, np.nan, np.float32)
         if len(rows_bm):
-            srow = Sl[tri_idx[rows_bm]].astype(np.float64); wrow = Wl[tri_idx[rows_bm]].astype(np.float64)
+            LR = LR or P.counts.locus(li, Xs); wrow, srow = LR.rows(rows_bm)
             okc = wrow >= BEST_MATCH_MIN_SITES; okc[np.arange(len(rows_bm)), rows_bm] = False
             with np.errstate(invalid="ignore", divide="ignore"):
                 dvg = np.where(okc, (wrow - srow) / np.maximum(wrow, 1.0), np.inf)
-            mmb = np.where(np.isfinite(m[rows_bm]), m[rows_bm], np.inf)
+            mm_ = m_rows(P, rows_bm); mmb = np.where(np.isfinite(mm_), mm_, np.inf)
             wmax = np.where(okc, wrow, -1.0).max(1)
             dtier = np.where(okc & (wrow >= wmax[:, None]), dvg, np.inf); lo_t = dtier.min(1)
             tied = dtier == lo_t[:, None]; tkey = np.where(tied, mmb, np.inf); champ = tkey.argmin(1)
@@ -2052,20 +2562,26 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         if masked_q.any():
             Xs_ = Xs if Xs is not None else X[:, sites]
             tcells, texp, tobs, ttips, togs, tclos = [], [], [], [], [], []
+            cells_t = []
             for q in np.flatnonzero(masked_q).tolist():
                 g = int(idx[q]); tips = [g] + [int(c) for c in top[g] if c >= 0]
                 if partner_[q] >= 0 and int(partner_[q]) not in tips: tips.append(int(partner_[q]))
-                if len(tips) < 2: continue
+                if len(tips) >= 2: cells_t.append((g, tips))
+            Wu = mu = None
+            if cells_t and P.m_full is not None:                                   # the outgroup search's rows of counts and of m for every tip at the locus, in one call
+                u = np.array(sorted({t for _, tips in cells_t for t in tips})); upos = {int(t): k for k, t in enumerate(u)}
+                LR = LR or P.counts.locus(li, Xs); Wu = LR.rows(u)[0]; mu = m_rows(P, u)
+            for g, tips in cells_t:
                 og = -1; cand = np.ones(n, bool); cand[tips] = False; cidx = np.flatnonzero(cand)
-                if len(cidx):
-                    tarr0 = np.array(tips); Wsub = Wl[tri_idx[np.ix_(cidx, tarr0)]]; msub = m[np.ix_(cidx, tarr0)]
+                if len(cidx) and Wu is not None:                                   # above FULL_M_MAX_TAXA there is no outgroup search: the trees are rooted at their midpoint
+                    ti = [upos[t] for t in tips]; Wsub = Wu[ti].T[cidx]; msub = mu[ti].T[cidx]
                     okog = (Wsub >= a.fit_overlap).all(1) & np.isfinite(msub).all(1)
                     if okog.any(): og = int(cidx[okog][np.argmax(msub[okog].mean(1))]); tips.append(og)
                 tarr = np.array(tips); nt = len(tips); rows_t = Xs_[tarr]; pres_t = rows_t >= 0
                 both = pres_t[:, None, :] & pres_t[None, :, :]; nb = both.sum(2)
                 with np.errstate(invalid="ignore", divide="ignore"):
                     Do = np.where(nb > 0, 100.0 * ((rows_t[:, None, :] != rows_t[None, :, :]) & both).sum(2) / np.maximum(nb, 1), np.nan)
-                    mv = m[np.ix_(tarr, tarr)]; De = np.where(np.isfinite(mv), expect(np.where(np.isfinite(mv), mv, 1.0)), np.nan)
+                    mv = m_rows(P, tarr)[:, tarr]; De = np.where(np.isfinite(mv), expect(np.where(np.isfinite(mv), mv, 1.0)), np.nan)
                 np.fill_diagonal(De, 0.0); np.fill_diagonal(Do, 0.0)
                 if np.isnan(De).any(): De = np.where(np.isnan(De), np.nanmax(De) if np.isfinite(np.nanmax(De)) else 50.0, De)
                 if np.isnan(Do).any(): Do = np.where(np.isnan(Do), De, Do)
@@ -2208,7 +2724,8 @@ def run_z(a, names, loci, X, S, W, iu, diag_pos, tri_idx, m, m_hi, m_xs, mj, pla
         for k, dt, _ in NUMCOLS: rep[k] = np.concatenate(rep[k]).astype(dt) if rep[k] else np.zeros(0, dt)
         rep["comparators"] = np.concatenate(rep["comparators"]) if rep["comparators"] else np.zeros((0, K_eff), np.int32)
         for k in ("comp_div_log10p", "comp_sim_log10p"): rep[k] = np.concatenate(rep[k]) if rep[k] else np.zeros((0, K_eff), np.float32)
-    cl = order[:, :min(5, n)].astype(np.int32); cl[~np.isfinite(mj[np.arange(n)[:, None], cl])] = -1   # the closest non-identical relatives
+    cl = np.full((n, min(5, n)), -1, np.int32); cl[:, :min(5, lists["cand"].shape[1])] = lists["cand"][:, :5]      # the closest non-identical relatives
+    for g, (cand, _, _, _) in P.ext.items(): cl[g] = -1; cl[g, :min(5, len(cand))] = cand[:5]
     rep.update(taxa_closest=cl, rate=rate, plateaus=plateaus, kq=kq, logbar=logbar, phi_bar=phi_bar,
                tests=dict(divergent=D_tests, similar_comparator=D_tests, similar_closest=S_tests, total=N_tests, locus_sets=nfork))
     with open(f"{a.out}/masked.csv", "w", newline="") as fh:

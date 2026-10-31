@@ -150,7 +150,7 @@ class TestOptions:
         ds = dataset("dna_clean"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, progress="auto")      # stderr is captured: not a terminal
         lines = [l for l in r.log.split("\n") if l.startswith("progress\t")]
         stages = [l.split("\t")[1] for l in lines]
-        for st in ("read", "counts", "pairs0", "rates", "pairs", "comparators", "dispersion", "test", "write"): assert st in stages, st
+        for st in ("read", "pairs0", "rates", "pairs", "comparators", "dispersion", "test", "write"): assert st in stages, st
         assert "\r" not in r.log and not any(l.startswith("event\t") for l in r.log.split("\n"))
 
     def test_progress_lines_is_no_longer_a_mode(self, tmp_out):
@@ -177,7 +177,7 @@ class TestRunRecord:
         ds = dataset("dna_small"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--alpha", "0.01", "--threads", "2"]); m = r.report.man
         assert m["input"]["file"] == "alignment.fasta" and m["input"]["sha256"] == lo._sha256(ds.aln) and m["input"]["partitions"] == "partitions.txt" and m["input"]["format"] == "fasta"
         assert m["options"]["alpha"] == 0.01 and m["options"]["threads"] == 2 and m["options"]["datatype"] == "dna" and m["tool"] == "LocusMasker" and m["version"] == lo.__version__
-        assert "--alpha 0.01" in m["command"] and set(m["timings"]) >= {"total", "test", "counts"}
+        assert "--alpha 0.01" in m["command"] and set(m["timings"]) >= {"total", "test", "pairs0", "pairs"}
 
     def test_a_real_process_run(self, tmp_out):
         ds = dataset("dna_clean"); r = run_cli(["--aln", ds.aln, "--partitions", ds.parts, "--datatype", "dna", "--out", tmp_out, "--progress", "none"])
@@ -208,8 +208,12 @@ class TestMemoryAndWorkers:
 
     def test_the_estimate_counts_the_pair_arrays(self):
         loci = [("a", np.arange(100)), ("b", np.arange(100, 200))]
-        need, x, sw, nn = lo.memory_estimate(10, 200, loci); assert x == 2000 and sw == 2 * 2 * 55 * 2 and nn == 72 * 100 + 16 * 55 and need == x + sw + nn
-        assert lo.memory_estimate(10, 200, [("a", np.arange(70000))])[2] == 2 * 1 * 55 * 4                 # a locus over 65,535 sites: 4-byte counts
+        need, x, lists, closest, mfull, slab = lo.memory_estimate(10, 200, loci)
+        assert x == 2 * 2000 and lists == 10 * 10 * 32 and closest == 10 * 2 * lo.BAND_SLOTS * 24 and mfull == 2 * 100 * 8 and slab == 2 * 2 * 100 * 2 and need == x + lists + closest + mfull + slab
+        assert lo.memory_estimate(10, 200, loci, C=3)[2] == 10 * 3 * 32 and lo.memory_estimate(10, 200, loci, full=False)[4] == 0
+        big = [("a", np.arange(70000))]; assert lo.memory_estimate(10, 70000, big)[5] == 2 * 1 * 100 * 4           # uint32 counts above 65,535 sites
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(lo, "SWEEP_BLOCK_MIN", 5); assert lo.memory_estimate(10, 200, loci)[5] == 0                 # several blocks: no slab is kept
 
     @pytest.mark.skipif("fork" not in multiprocessing.get_all_start_methods(), reason="the worker processes need fork")
     def test_the_test_stage_runs_in_worker_processes(self, tmp_out, monkeypatch):

@@ -302,7 +302,7 @@ class TestReadInput:
     def test_fasta_with_partitions(self):
         ds = dataset("dna_small"); names, rows, loci, fmt, declared, nexus = lo.read_input(ds.aln, ds.parts)
         assert fmt == "fasta" and declared is None and nexus is None and len(names) == ds.ntaxa and len(loci) == ds.nloci
-        assert all(isinstance(r, bytearray) for r in rows)
+        assert isinstance(rows, np.ndarray) and rows.dtype == np.uint8 and rows.ndim == 2 and rows.flags.c_contiguous      # one array, a row per taxon
 
     def test_phylip_with_partitions(self):
         ds = dataset("dna_small"); names, rows, loci, fmt, declared, nexus = lo.read_input(ds.file("phylip"), ds.parts)

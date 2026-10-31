@@ -40,7 +40,7 @@ class TestWriteMasked:
     def test_nexus_through_biopython_round_trip(self, tmp_path):
         pytest.importorskip("Bio.Nexus"); from Bio.Nexus import Nexus
         ds = dataset("dna_small"); names, rows, loci, fmt, declared, nexus = lo.read_input(ds.file("nexus_quirky"), None)
-        rows[0][:50] = b"-" * 50
+        rows[0, :50] = ord("-")
         out = lo.write_masked(ds.file("nexus_quirky"), str(tmp_path), "nexus", names, rows, nexus)
         nex = Nexus.Nexus(out)
         assert list(nex.taxlabels) == names and str(nex.matrix[names[0]])[:50] == "-" * 50

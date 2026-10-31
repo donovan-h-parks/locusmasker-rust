@@ -387,7 +387,7 @@ def load_alignment():
     import locus_outliers as lo
     names, seqs, loci, fmt, declared, nexus = lo.read_input(a.alignment, a.partitions)
     if list(names) != list(TAXA): raise SystemExit(f"{a.alignment} does not hold the run's taxa in the run's order: give the alignment the run was made from")
-    seqs = [bytes(q) if isinstance(q, (bytes, bytearray)) else q.encode() for q in seqs]     # the readers return bytes
+    seqs = [q.encode() if isinstance(q, str) else bytes(q) for q in seqs]     # the reader returns one array, a row per taxon
     dtype = a.datatype or MAN["options"]["datatype"]
     alphabet = lo.DNA if dtype == "dna" else lo.PROTEIN
     lut = np.full(256, -1, dtype=np.int8)

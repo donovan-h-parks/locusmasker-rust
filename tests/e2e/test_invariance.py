@@ -49,7 +49,7 @@ class TestThreads:
     def test_threads_do_not_change_the_outputs(self, runs, tmp_out, name, threads, monkeypatch):
         """with the thread pools forced on even for small loci"""
         monkeypatch.setattr(lo, "PASS1_FLOPS_PER_THREAD", 1.0); monkeypatch.setattr(lo, "DISPERSION_PAIRS_PER_WORKER", 1)
-        monkeypatch.setattr(lo, "COMPARATOR_WORK_PER_WORKER", 1.0); monkeypatch.setattr(lo, "TEST_BATCH_COMPARISONS", 100); monkeypatch.setattr(lo, "TEST_BATCH_MIN", 100)
+        monkeypatch.setattr(lo, "COMPARATOR_SECONDS_PER_WORKER", 1e-9); monkeypatch.setattr(lo, "TEST_BATCH_COMPARISONS", 100); monkeypatch.setattr(lo, "TEST_BATCH_MIN", 100)
         ds = dataset(name); r = run_tool(ds.aln, tmp_out, ds.dtype, ds.parts, ["--threads", threads]); assert r.rc == 0
         assert outputs(r) == outputs(runs(name))
 
@@ -111,3 +111,44 @@ class TestKernel:
         monkeypatch.setattr(lo, "NUMBA_PAIR_LOCI_MIN", 0); monkeypatch.setattr(lo, "NUMBA_PAIR_SLAB", 1000); monkeypatch.setattr(lo, "PAIRS_PER_THREAD", 1)
         ds = dataset(name); r = run_tool(ds.aln, tmp_out, ds.dtype, ds.parts, ["--threads", str(threads)]); assert r.rc == 0, r.log
         assert r.log.count("compiled kernel (numba)") == 2 and outputs(r) == outputs(runs(name))
+
+
+class TestSweep:
+    """the pair sweep gives the same outputs whatever its block size, its list size (a taxon whose list runs out gets its
+    full row) and whether the full m matrix is kept; above FULL_M_MAX_TAXA the trees are rooted at their midpoint
+    (no outgroup search), the one difference allowed"""
+    @pytest.mark.parametrize("name,block", [("dna_small", 3), ("dna_small", 7), ("aa_small", 11), ("dna_dense", 64), ("dna_blocks", 64), ("dna_blocks", 300), ("aa_random_trees", 33)])
+    def test_the_block_size_does_not_change_the_outputs(self, runs, tmp_out, name, block):
+        ds = dataset(name); r = run_tool(ds.aln, tmp_out, ds.dtype, ds.parts, ["--block-taxa", str(block), "--threads", "4"]); assert r.rc == 0, r.log
+        assert f"blocks of {min(block, ds.ntaxa):,} taxa" in r.log and outputs(r) == outputs(runs(name))
+
+    @pytest.mark.parametrize("name,cand", [("dna_small", 3), ("dna_small", 1), ("dna_blocks", 50), ("aa_random_trees", 2)])
+    def test_a_short_candidate_list_does_not_change_the_outputs(self, runs, tmp_out, name, cand):
+        ds = dataset(name); r = run_tool(ds.aln, tmp_out, ds.dtype, ds.parts, ["--candidates", str(cand)]); assert r.rc == 0, r.log
+        assert "ran out of their" in r.log and outputs(r) == outputs(runs(name))
+
+    def test_results_through_the_pipe_give_the_same_outputs(self, runs, tmp_out, tmp_path, monkeypatch):
+        monkeypatch.setattr(lo, "SWEEP_RESULTS_DIR", str(tmp_path / "nowhere"))
+        ds = dataset("dna_blocks"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--block-taxa", "700", "--threads", "4"]); assert r.rc == 0, r.log
+        assert "results through" not in r.log and outputs(r) == outputs(runs("dna_blocks"))
+
+    @pytest.mark.skipif(not os.path.isdir(lo.SWEEP_RESULTS_DIR), reason="no memory-backed filesystem here")
+    def test_results_through_files_are_logged(self, runs, tmp_out):
+        ds = dataset("dna_blocks"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--block-taxa", "700", "--threads", "4"]); assert r.rc == 0, r.log
+        assert f"results through {lo.SWEEP_RESULTS_DIR}" in r.log and outputs(r) == outputs(runs("dna_blocks"))
+        assert not [d for d in os.listdir(lo.SWEEP_RESULTS_DIR) if d.startswith(f"locusmasker-{os.getpid()}-")]        # cleaned up
+
+    def test_blocks_lists_threads_and_numpy_together(self, runs, tmp_out):
+        ds = dataset("dna_blocks"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--block-taxa", "100", "--candidates", "20", "--threads", "8", "--no-numba"]); assert r.rc == 0, r.log
+        assert outputs(r) == outputs(runs("dna_blocks"))
+
+    @pytest.mark.parametrize("threads", [1, 4])
+    def test_without_the_full_matrix_only_the_trees_root_differently(self, runs, tmp_out, monkeypatch, threads):
+        """threads 4: the rows of m asked for on demand inside the test stage's worker processes must not fork again"""
+        monkeypatch.setattr(lo, "FULL_M_MAX_TAXA", 5)
+        ds = dataset("dna_small"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--threads", str(threads)]); assert r.rc == 0, r.log
+        assert "full m matrix not kept" in r.log
+        base = outputs(runs("dna_small")); got = outputs(r); assert got[0] == base[0]
+        diff = sorted(k for k in set(base[1]) | set(got[1]) if base[1].get(k) != got[1].get(k))
+        assert all(k.startswith("trees/") for k in diff), diff
+        for k in diff: assert all(e is None or e < 0 for e in r.report.js(k)["outgroup"]), k

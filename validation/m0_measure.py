@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""M0 of the large-data plan (notes/LARGEDATA_2026-11.md): measure, on the present engine, the quantities that decide the
+"""M0 of the large-data plan (notes/LARGEDATA_2026-11.md): measure, on the OLD engine (feea34b, the last commit before the
+block sweep: it reads prepare()'s S, W, m, mj and tri_idx, which the sweep no longer builds; run it with that commit's
+locus_outliers.py beside it), the quantities that decide the
 block-sweep engine's constants and rules, dataset by dataset, from prepare()'s structures and the pinned report of each
 dataset (a profile_corpus.py run made with --keep-outputs).
 
