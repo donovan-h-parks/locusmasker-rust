@@ -113,6 +113,55 @@ class TestKernel:
         assert r.log.count("compiled kernel (numba)") == 2 and outputs(r) == outputs(runs(name))
 
 
+def manifest(run):
+    import zipfile, json
+    with zipfile.ZipFile(run.file("report.npz")) as Z: return json.loads(Z.read("manifest.json"))
+
+
+class TestRestart:
+    """the restart points: a run stopped after either point is finished by a rerun in the same --out without repeating
+    the sweeps, to the same outputs; a point of another run is refused; an incomplete one is removed; --restart ignores them"""
+    @pytest.mark.parametrize("point", ["rates", "pairs"])
+    def test_a_run_stopped_after_a_point_restarts_to_the_same_outputs(self, runs, tmp_out, monkeypatch, point):
+        ds = dataset("dna_blocks"); monkeypatch.setattr(lo, "STOP_AFTER", point)
+        r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--threads", "4"]); assert r.rc != 0 and f"stopped after the {point} restart point" in r.log
+        assert os.path.isfile(os.path.join(tmp_out, "restart", point, "header.json")) and not r.exists("masked.csv")
+        monkeypatch.setattr(lo, "STOP_AFTER", None)
+        r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--threads", "4"]); assert r.rc == 0, r.log
+        assert "restarted after " + ("the locus rates" if point == "rates" else "the pair sweeps") in r.log and ("pair sweep pairs0:" not in r.log)
+        assert (point == "rates") == ("pair sweep pairs:" in r.log)
+        assert outputs(r) == outputs(runs("dna_blocks")) and not os.path.exists(os.path.join(tmp_out, "restart"))
+        assert manifest(r)["restart"]["after"] == ("the locus rates" if point == "rates" else "the pair sweeps")
+        assert manifest(runs("dna_blocks"))["restart"] is None
+
+    def test_a_point_of_another_run_is_refused_and_restart_ignores_it(self, runs, tmp_out, monkeypatch):
+        ds = dataset("dna_small"); monkeypatch.setattr(lo, "STOP_AFTER", "rates")
+        r = run_tool(ds.aln, tmp_out, "dna", ds.parts); assert r.rc != 0
+        monkeypatch.setattr(lo, "STOP_AFTER", None); other = dataset("dna_dense")
+        r = run_tool(other.aln, tmp_out, "dna", other.parts); assert r.rc != 0 and "is from a different run" in r.log and "input" in r.log and "taxa" in r.log
+        r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--candidates", "3"]); assert r.rc != 0 and "candidates" in r.log
+        r = run_tool(other.aln, tmp_out, "dna", other.parts, ["--restart"]); assert r.rc == 0, r.log
+        assert "restarted after" not in r.log and outputs(r) == outputs(runs("dna_dense"))
+
+    def test_an_incomplete_point_is_removed_and_the_sweeps_run(self, runs, tmp_out):
+        ds = dataset("dna_small"); d = os.path.join(tmp_out, "restart", "pairs"); os.makedirs(d)
+        with open(os.path.join(d, "header.json"), "w") as fh: fh.write("{}")
+        r = run_tool(ds.aln, tmp_out, "dna", ds.parts); assert r.rc == 0, r.log
+        assert "restart point" in r.log and "incomplete" in r.log and "pair sweep pairs0:" in r.log and outputs(r) == outputs(runs("dna_small"))
+
+    def test_a_process_that_dies_after_a_point_is_finished_by_the_next(self, runs, tmp_out):
+        """as a user would see it: the command line, the environment hook standing in for the crash"""
+        from tests.conftest import run_cli
+        ds = dataset("dna_small"); args = ["--aln", ds.aln, "--out", tmp_out, "--datatype", "dna", "--partitions", ds.parts, "--progress", "none"]
+        env = dict(os.environ, LOCUSMASKER_STOP_AFTER="pairs"); import subprocess
+        from tests.conftest import PY, TOOL_PATH
+        p = subprocess.run([PY, TOOL_PATH] + args, capture_output=True, text=True, env=env, timeout=600); assert p.returncode != 0 and "stopped after the pairs" in p.stderr
+        p = run_cli(args); assert p.returncode == 0, p.stderr
+        assert "restarted after the pair sweeps" in p.stderr
+        from tests.conftest import Run
+        assert outputs(Run(tmp_out, p.stderr, 0)) == outputs(runs("dna_small"))
+
+
 class TestSweep:
     """the pair sweep gives the same outputs whatever its block size, its list size (a taxon whose list runs out gets its
     full row) and whether the full m matrix is kept; above FULL_M_MAX_TAXA the trees are rooted at their midpoint

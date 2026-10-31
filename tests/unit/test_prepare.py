@@ -189,6 +189,34 @@ class TestClosest:
                 assert win[g, li] == min(band)[1] and dmin[g, li] == d0, (g, li)
 
 
+class TestClosestKernel:
+    """the compiled closest-match reduce gives the numpy rule's bits: random tables with ties, unusable pairs, rows
+    without a candidate, and bands with more distinct rates than slots"""
+    def kernel(self):
+        if lo._pair_kernel(1) is None: pytest.skip("numba is not installed")
+        return lo._closest_rows_nb
+
+    def test_random_tables_with_ties(self):
+        k = self.kernel(); rng = np.random.default_rng(7)
+        for trial in range(40):
+            nr, nc = rng.integers(1, 30), rng.integers(1, 60)
+            W = rng.integers(0, 60, (nr, nc)).astype(np.float64); S = np.floor(W * rng.uniform(0.0, 1.0, (nr, nc)))
+            eq = rng.random((nr, nc)) < 0.3; S[eq] = W[eq]                                                      # identical pairs: rate ties at zero
+            mj = np.round(rng.uniform(0, 30, (nr, nc)), 2); mj[rng.random((nr, nc)) < 0.1] = np.nan; mj[rng.random((nr, nc)) < 0.2] = 0.0   # many equal keys
+            cidx = rng.permutation(nc * 3)[:nc].astype(np.int64); fit = int(rng.integers(1, 25))
+            a = lo._closest_rows(W, S, mj, fit, cidx); b = k(W, S, mj, fit, cidx, lo.BAND_SLOTS, lo.HALF)
+            for x, y in zip(a[:4], b[:4]): assert np.array_equal(x, y, equal_nan=True), trial
+            assert a[4] == b[4], trial
+
+    def test_rows_without_candidates_and_bands_beyond_the_slots(self):
+        k = self.kernel()
+        W = np.full((3, 6), 4e9); S = W - np.array([[0, 1, 2, 3, 4, 5], [0, 0, 0, 0, 0, 0], [0, 1, 2, 3, 4, 5]], float)   # rates 2.5e-10 apart: one band, six distinct rates
+        mj = np.ones((3, 6)); mj[1] = np.nan; W[2, 3:] = 1.0                                                       # row 1 has no usable pair; row 2 three usable
+        a = lo._closest_rows(W, S, mj, 20, np.arange(6)); b = k(W, S, mj, 20, np.arange(6), lo.BAND_SLOTS, lo.HALF)
+        for x, y in zip(a[:4], b[:4]): assert np.array_equal(x, y, equal_nan=True)
+        assert a[4] == b[4] == 1 and np.isinf(a[0][1]) and (a[3][1] == -1).all() and np.isfinite(a[1][0]).sum() == lo.BAND_SLOTS and np.isfinite(a[1][2]).sum() == 3
+
+
 class TestClasses:
     def alignment(self, n=12, nloc=12, ll=100, seed=5):
         rng = np.random.default_rng(seed); anc = rng.integers(0, 4, nloc * ll); X = np.tile(anc, (n, 1)); mut = rng.random(X.shape) < 0.08

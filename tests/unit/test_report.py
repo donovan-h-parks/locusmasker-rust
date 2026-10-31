@@ -55,3 +55,34 @@ class TestHtml:
     def test_the_page_size_is_the_data_plus_a_small_viewer(self, runs):
         r = runs("dna_small"); page = os.path.getsize(r.file("report.html")); data = os.path.getsize(r.file("report.npz"))
         assert data * 4 / 3 < page < data * 4 / 3 + 600_000
+
+
+class TestOneFileCeiling:
+    """report.html carries the bundle up to REPORT_ONE_FILE_MAX; above it the run says so at the start and the end, and
+    the tables stand in; the files are whole or absent; every run leaves run.log"""
+    def test_above_the_ceiling_the_tables_stand_in_for_the_page(self, runs, tmp_out, monkeypatch):
+        monkeypatch.setattr(lo, "REPORT_ONE_FILE_MAX", 1)
+        ds = dataset("dna_small"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts); assert r.rc == 0, r.log
+        assert not r.exists("report.html") and r.exists("report.npz") and "report.html not written" in r.log and "above the one-file ceiling" in r.log
+        assert "likely to exceed" in r.log and r.log.index("likely to exceed") < r.log.index("pair sweep:")
+        taxa = open(r.file("taxa.tsv")).read().splitlines(); loci = open(r.file("loci.tsv")).read().splitlines()
+        with zipfile.ZipFile(r.file("report.npz")) as Z: man = json.loads(Z.read("manifest.json")); tj = json.loads(Z.read("taxa.json")); lj = json.loads(Z.read("loci.json"))
+        assert len(taxa) == ds.ntaxa + 1 and len(loci) == ds.nloci + 1 and taxa[0].startswith("taxon\tstatus\tloci_present") and loci[0].startswith("locus\tlength\tstatus")
+        assert [l.split("\t")[0] for l in taxa[1:]] == tj["names"] and [l.split("\t")[0] for l in loci[1:]] == lj["names"]
+        assert json.load(open(r.file("summary.json"))) == man
+        cols = taxa[0].split("\t"); row = dict(zip(cols, taxa[1].split("\t"))); assert row["status"] == tj["status"][0] and int(row["loci_present"]) == tj["loci_present"][0]
+        assert all(c in cols for c in ("masked_divergent", "masked_similar", "short_of_comparators", "closest_1"))
+        assert not [f for f in os.listdir(tmp_out) if f.endswith(".part")] and "taxa.tsv" in r.log.split("outputs:")[1] and "report.html" not in r.log.split("outputs:")[1]
+        base = runs("dna_small"); assert open(r.file("masked.csv")).read() == open(base.file("masked.csv")).read()
+
+    def test_a_normal_run_writes_whole_files_and_a_log(self, runs):
+        r = runs("dna_small")
+        assert r.exists("report.html") and r.exists("run.log") and not r.exists("taxa.tsv") and not r.exists("summary.json")
+        assert not [f for f in os.listdir(r.out) if f.endswith(".part")]
+        log = open(r.file("run.log"), encoding="utf-8").read(); assert "LocusMasker" in log and "outputs:" in log and "run.log" in log.split("outputs:")[1]
+
+    def test_the_tables_of_an_earlier_run_are_removed(self, tmp_out, monkeypatch):
+        ds = dataset("dna_small")
+        with monkeypatch.context() as mp:
+            mp.setattr(lo, "REPORT_ONE_FILE_MAX", 1); r = run_tool(ds.aln, tmp_out, "dna", ds.parts); assert r.rc == 0 and r.exists("taxa.tsv")
+        r = run_tool(ds.aln, tmp_out, "dna", ds.parts); assert r.rc == 0 and r.exists("report.html") and not r.exists("taxa.tsv") and not r.exists("loci.tsv") and not r.exists("summary.json")
