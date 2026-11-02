@@ -1,9 +1,9 @@
-locus,taxon,reason,residues_masked,divergent_fails,divergent_comparators,divergent_observed,divergent_expected,divergent_excess_m,divergent_log10p,similar_test,similar_partner,similar_role,similar_observed,similar_expected,similar_row_factor,similar_log10p,similar_relatives,partner_excess_m,comparators,log10_bar
-locus2,t06,similar,250,0,5,38.00,35.59,4.053,-0.477,comparator,t14,uncertain,0.00,35.59,1.000,-29.293,,7.507,t25; t00; t14; t05; t24,-4.670
-locus2,t14,similar,250,1,5,38.00,33.45,7.507,-1.826,comparator,t06,uncertain,0.00,35.59,1.000,-29.293,,4.053,t25; t00; t24; t16; t06,-4.670
-locus3,t08,similar,275,0,5,21.09,16.14,14.816,-0.942,comparator,t20,copy,0.00,16.08,1.000,-12.904,,5.090,t23; t20; t02; t04; t22,-4.670
-locus5,t16,divergent,267,5,5,96.25,25.90,414.441,-76.410,closest,t11,,92.88,49.06,,0.000,t15; t25; t00; t07; t14,-3.036,t15; t25; t00; t07; t14,-4.670
-locus6,t25,similar,111,0,5,40.54,29.26,17.092,-3.009,comparator,t24,copy,0.00,29.26,1.000,-12.456,,8.061,t00; t14; t24; t16; t05,-4.670
-locus7,t19,similar,210,1,5,68.10,52.91,33.680,-2.733,closest,t22,copy,0.00,68.10,,-37.647,t18; t17; t03; t01; t16,2.562,t18; t17; t03; t01; t16,-4.670
-locus8,t09,divergent,295,5,5,95.25,55.88,168.768,-21.947,closest,t18,,91.86,72.88,,0.000,t04; t10; t02; t11; t20,-11.509,t04; t10; t02; t11; t20,-4.670
-locus13,t04,divergent,28,3,3,100.00,15.55,555.464,-17.305,,,,,,,,,,t09; t10; t02,-4.670
+locus,taxon,reason,residues_masked,divergent_fails,divergent_comparators,divergent_observed,divergent_expected,divergent_excess_m,divergent_log10p,similar_test,similar_partner,similar_role,similar_observed,similar_expected,similar_row_factor,similar_log10p,similar_relatives,partner_excess_m,comparators,log10_bar,random_side,random_log10p,random_partner
+locus2,t06,similar,250,0,5,38.00,35.59,4.053,-0.477,comparator,t14,uncertain,0.00,35.59,1.000,-29.293,,7.507,t25; t00; t14; t05; t24,-4.731,,,
+locus2,t14,similar,250,1,5,38.00,33.45,7.507,-1.826,comparator,t06,uncertain,0.00,35.59,1.000,-29.293,,4.053,t25; t00; t24; t16; t06,-4.731,,,
+locus3,t08,similar,275,0,5,21.09,16.14,14.816,-0.942,comparator,t20,copy,0.00,16.08,1.000,-12.904,,5.090,t23; t20; t02; t04; t22,-4.731,,,
+locus5,t16,divergent,267,5,5,96.25,25.90,414.441,-76.410,closest,t11,,92.88,49.06,,0.000,t15; t25; t00; t07; t14,-3.036,t15; t25; t00; t07; t14,-4.731,,,
+locus6,t25,similar,111,0,5,40.54,29.26,17.092,-3.009,comparator,t24,copy,0.00,29.26,1.000,-12.456,,8.061,t00; t14; t24; t16; t05,-4.731,,,
+locus7,t19,similar,210,1,5,68.10,52.91,33.680,-2.733,closest,t22,copy,0.00,68.10,,-37.647,t18; t17; t03; t01; t16,2.562,t18; t17; t03; t01; t16,-4.731,,,
+locus8,t09,divergent,295,5,5,95.25,55.88,168.768,-21.947,closest,t18,,91.86,72.88,,0.000,t04; t10; t02; t11; t20,-11.509,t04; t10; t02; t11; t20,-4.731,,,
+locus13,t04,divergent,28,3,3,100.00,15.55,555.464,-17.305,,,,,,,,,,t09; t10; t02,-4.731,,,

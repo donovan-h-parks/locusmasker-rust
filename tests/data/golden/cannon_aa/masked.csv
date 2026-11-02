@@ -1,5 +1,5 @@
-locus,taxon,reason,residues_masked,divergent_fails,divergent_comparators,divergent_observed,divergent_expected,divergent_excess_m,divergent_log10p,similar_test,similar_partner,similar_role,similar_observed,similar_expected,similar_row_factor,similar_log10p,similar_relatives,partner_excess_m,comparators,log10_bar
-ALICUT_0045,CHON,divergent,160,5,5,72.11,19.85,154.923,-34.102,closest,DLON,,70.27,30.05,,0.000,LLON; NANO; HPSI; LRUG; CTEL,-8.612,LLON; NANO; HPSI; LRUG; CTEL,-5.031
-ALICUT_0049,ARIC,divergent,160,3,5,65.62,36.38,68.119,-5.294,closest,XBOC,,61.88,31.06,,0.000,PBAH; PPSA; BCAL; SMER,1.387,AVAG; PBAH; PPSA; BCAL; SMER,-5.031
-ALICUT_0049,AVAG,divergent,280,5,5,67.56,36.88,74.106,-6.963,closest,BCAL,,64.89,45.45,,0.000,HPSI; PPSA; NANO; LGIG,17.158,ARIC; HPSI; PPSA; NANO; LGIG,-5.031
-ALICUT_0056,GGAL,similar,203,0,5,36.31,32.52,4.502,-0.627,comparator,HSAP,copy,2.46,13.10,1.000,-6.187,,-0.062,HSAP; PBAH; BFLO; SMER; LRUG,-5.031
+locus,taxon,reason,residues_masked,divergent_fails,divergent_comparators,divergent_observed,divergent_expected,divergent_excess_m,divergent_log10p,similar_test,similar_partner,similar_role,similar_observed,similar_expected,similar_row_factor,similar_log10p,similar_relatives,partner_excess_m,comparators,log10_bar,random_side,random_log10p,random_partner
+ALICUT_0045,CHON,divergent,160,5,5,72.11,19.85,154.923,-34.102,closest,DLON,,70.27,30.05,,0.000,LLON; NANO; HPSI; LRUG; CTEL,-8.612,LLON; NANO; HPSI; LRUG; CTEL,-5.077,,,
+ALICUT_0049,ARIC,divergent,160,3,5,65.62,36.38,68.119,-5.294,closest,XBOC,,61.88,31.06,,0.000,PBAH; PPSA; BCAL; SMER,1.387,AVAG; PBAH; PPSA; BCAL; SMER,-5.077,,,
+ALICUT_0049,AVAG,divergent,280,5,5,67.56,36.88,74.106,-6.963,closest,BCAL,,64.89,45.45,,0.000,HPSI; PPSA; NANO; LGIG,17.158,ARIC; HPSI; PPSA; NANO; LGIG,-5.077,,,
+ALICUT_0056,GGAL,similar,203,0,5,36.31,32.52,4.502,-0.627,comparator,HSAP,copy,2.46,13.10,1.000,-6.187,,-0.062,HSAP; PBAH; BFLO; SMER; LRUG,-5.077,,,

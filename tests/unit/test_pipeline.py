@@ -109,10 +109,11 @@ class TestDivergent:
 
     def test_masked_divergent_is_a_majority_of_the_comparators(self, ctx):
         R = ctx["R"]; side = R.arr("cells/side.npy"); nf = R.arr("cells/n_fail.npy"); nc = R.arr("cells/n_comp.npy")
+        s2 = R.arr("cells/side2.npy") if R.has("cells/side2.npy") else np.zeros_like(side)
         for g, li in cells_tested(R):
             sd = int(side[g, li]); k, f = int(nc[g, li]), int(nf[g, li])
             full = k == R.K and f >= R.M; amb = k < R.K and f >= k // 2 + 1
-            assert bool(sd & 1) == (full or amb), (g, li, sd, k, f)
+            assert bool(sd & 1) == (full or amb or bool(s2[g, li] & 8)), (g, li, sd, k, f)   # or the random-comparator excess fired
             assert bool(sd & 4) == amb
             assert not (sd & 16)                                                  # masking of divergent sequences was on
 
@@ -144,9 +145,10 @@ class TestSimilar:
 
     def test_a_masked_copy_names_a_failing_pair(self, ctx):
         R = ctx["R"]; side = R.arr("cells/side.npy"); pt = R.arr("cells/partner.npy"); pairs = self.pairs(R)
+        s2 = R.arr("cells/side2.npy") if R.has("cells/side2.npy") else np.zeros_like(side)
         for g, li in cells_tested(R):
             sd = int(side[g, li])
-            if sd & (2 | 128):
+            if (sd & (2 | 128)) and not (int(s2[g, li]) & 4):                   # a random-comparator mask names a comparator (random/<locus>.json), not a pair
                 p = int(pt[g, li]); assert p >= 0 and (li, min(g, p), max(g, p)) in pairs, (g, li)
             assert not (sd & 32)
 
@@ -191,7 +193,9 @@ class TestSimilar:
 
     def test_failing_pairs_are_below_the_bar_and_reported_once(self, ctx):
         R, bar = ctx["R"], ctx["bar"]
-        for (li, a, b), e in self.pairs(R).items(): assert e["log10p"] < bar + 1e-3 and e["test"] in ("comparator", "closest")
+        for (li, a, b), e in self.pairs(R).items():
+            if e["test"] == "random": assert e["log10p"] < math.log10(R.man["options"]["alpha"]) + 1e-3   # stage 2 of the random-comparator test is held at alpha, after its stage 1 passed the bar
+            else: assert e["log10p"] < bar + 1e-3 and e["test"] in ("comparator", "closest")
         for li in range(R.nloc):
             keys = [(min(e["taxon"], e["partner"]), max(e["taxon"], e["partner"])) for e in R.similar(li) if e["fail"]]
             assert len(keys) == len(set(keys))
@@ -254,9 +258,12 @@ class TestFamily:
                 for c in R.comps(g, li): prs.add((min(g, c), max(g, c)))
             D += len(prs)
         S = int(((side & 64) > 0).sum())
-        assert t["divergent_tests"] == D and t["similar_comparator_tests"] == D and t["similar_closest_tests"] == S and t["tests"] == 2 * D + S
-        assert np.isclose(t["log10_bar"], math.log10(R.man["options"]["alpha"] / (2 * D + S)), atol=1e-4)
-        assert t["log_bar"] == pytest.approx(math.log(R.man["options"]["alpha"] / (2 * D + S)), abs=1e-4)
+        assert t["divergent_tests"] == D and t["similar_comparator_tests"] == D and t["similar_closest_tests"] == S
+        assert t["tests"] == 2 * D + S + t["random_tests"]                  # one random-comparator test per present sequence of a kept taxon
+        pres = (ctx["R"].arr("cells/focal_sites.npy") > 0); thin = set(ctx["R"].man["counts"].get("excluded_taxa") and [] or [])
+        assert t["random_tests"] in (0, int(pres.sum()) - int(pres[[i for i, st in enumerate(ctx["R"].taxa["status"]) if st != "tested"]].sum()))
+        assert np.isclose(t["log10_bar"], math.log10(R.man["options"]["alpha"] / (2 * D + S + t["random_tests"])), atol=1e-4)
+        assert t["log_bar"] == pytest.approx(math.log(R.man["options"]["alpha"] / (2 * D + S + t["random_tests"])), abs=1e-4)
 
     def test_counts_match_the_side_bits(self, ctx):
         R = ctx["R"]; side = R.arr("cells/side.npy"); nc = R.arr("cells/n_comp.npy"); c = R.man["counts"]
@@ -284,7 +291,10 @@ class TestOutputs:
         for r in masked:
             g, li = R.tx(r["taxon"]), R.lx(r["locus"]); sd = int(side[g, li])
             assert r["reason"] == ("both" if (sd & 3) == 3 else "divergent" if sd & 1 else "similar")
-            assert int(r["residues_masked"]) == fs[g, li] and int(r["divergent_fails"]) == nf[g, li] and int(r["divergent_comparators"]) == nc[g, li]
+            assert int(r["residues_masked"]) == fs[g, li]
+            if r["divergent_fails"] == "":                                       # masked by the random-comparator test alone: its own columns carry the evidence
+                assert r["random_side"] != "" and float(r["random_log10p"]) < 0; continue
+            assert int(r["divergent_fails"]) == nf[g, li] and int(r["divergent_comparators"]) == nc[g, li]
             assert r["comparators"] == "; ".join(R.taxa["names"][c] for c in R.comps(g, li))
             assert float(r["log10_bar"]) == pytest.approx(R.man["test"]["log10_bar"], abs=1e-3)
             if sd & 2:

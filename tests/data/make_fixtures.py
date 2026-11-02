@@ -158,6 +158,45 @@ def plant(rng, names, X, bounds, pat, cherries, spec, A):
         if pair is None: raise RuntimeError("no cherry free")
         d, r = pair; free.remove(d); free.remove(r); li = locus(d, r); a, b = bounds[li], bounds[li + 1]
         X[r, a:b] = X[d, a:b]; truth.append(dict(kind="sistercopy", donor=names[d], recipient=names[r], locus=f"locus{li + 1}", patristic=float(pat[d, r])))
+    for _ in range(spec.get("hiddencontam", 0)):                   # a contaminated stretch exactly where the near side of the
+        # tree has no coverage: the closest-relative tests compare on the clean remainder and see nothing, and the many
+        # clean near comparators anchor the sequence's own rate, so the covering far half leans high (the third test's
+        # red: an apparent old coalescence with the broad sample)
+        t = take(); near = [c for c in np.argsort(pat[t]) if c in free][:spec.get("hidden_blanked", 30)]
+        for c in near: free.remove(c)
+        li = locus(t, *near); reserved_loci.add(li); a, b = bounds[li], bounds[li + 1]
+        w0 = a + int((b - a) * 0.10); w1 = w0 + int((b - a) * 0.55)
+        for c in near: X[c, w0:w1] = -1
+        seg = X[t, w0:w1]; pres = seg >= 0
+        seg[pres] = rng.integers(0, A, int(pres.sum()))
+        truth.append(dict(kind="hiddencontam", taxon=names[t], locus=f"locus{li + 1}", relatives=[names[c] for c in near], window=int(w1 - w0)))
+    for _ in range(spec.get("cladecopy", 0)):                      # a distant donor's sequence over a whole small clade, each
+        # member with its own noise: the members move together, so each one's closest relatives moved with it and the
+        # closest-relative tests see nothing; the random comparators see the young coalescence with the donor's side
+        # (a far shortfall: the third test's blue). The noise keeps the members apart, so no pair is "too similar"
+        pair = next(((a_, b_) for a_, b_ in cherries if a_ in free and b_ in free), None)
+        if pair is None: raise RuntimeError("no cherry free for cladecopy")
+        near = [c for c in np.argsort(pat[pair[0]]) if c in free and c not in pair]
+        C = list(pair) + near[:3]                                    # the cherry and its three nearest free taxa: a small clade
+        d = max((c for c in free if c not in C), key=lambda c: float(min(pat[c, r] for r in C)))
+        for r in C: free.remove(r)
+        free.remove(d)
+        li = locus(d, *C); reserved_loci.add(li); a, b = bounds[li], bounds[li + 1]
+        for r in C:
+            seg = X[d, a:b].copy(); pres = seg >= 0
+            mm = (rng.random(b - a) < 0.06) & pres
+            seg[mm] = (seg[mm] + rng.integers(1, A, int(mm.sum()))) % A
+            X[r, a:b] = seg
+        truth.append(dict(kind="cladecopy", donor=names[d], recipients=[names[r] for r in C], locus=f"locus{li + 1}", patristic=float(min(pat[d, r] for r in C))))
+    for _ in range(spec.get("scramble", 0)):                       # the sequences of a set of scattered taxa at one locus permuted
+        # among themselves (a plate swap): each keeps a plausible sequence, just someone else's, so the row's residuals
+        # scatter both ways and half its far comparators lean high (the third test's excess side, red)
+        ks = spec.get("scramble_taxa", 12)
+        T = [take() for _ in range(ks)]; li = locus(*T); reserved_loci.add(li); a, b = bounds[li], bounds[li + 1]
+        perm = list(T[1:]) + [T[0]]                                  # a cycle: no one keeps their own
+        old_rows = {t: X[t, a:b].copy() for t in T}
+        for t, src in zip(T, perm): X[t, a:b] = old_rows[src]
+        truth.append(dict(kind="scramble", taxa=[names[t] for t in T], locus=f"locus{li + 1}"))
     for _ in range(spec.get("sliver", 0)):                         # a cell cut to 8-15 sites: the taxon needs fewer shared sites than fit-overlap there
         t = take(); li = locus(t); a, b = bounds[li], bounds[li + 1]; w = int(rng.integers(8, 16)); st = a + int(rng.integers(0, b - a - w))
         X[t, a:st] = -1; X[t, st + w:b] = -1
@@ -229,6 +268,11 @@ DATASETS = {
     "dna_clean": dict(seed=37, n=24, nloc=12, dtype="dna", depth=0.3, lens=(140, 300), pmiss=0.05, formats="fasta"),
     "aa_clean": dict(seed=41, n=20, nloc=11, dtype="aa", depth=0.5, lens=(120, 240), pmiss=0.0, formats="fasta"),
     "dna_dense": dict(seed=53, n=40, nloc=16, dtype="dna", depth=0.55, lens=(120, 260), pmiss=0.15, contam=3, nearcopy=3, farcopy=2, sistercopy=1, formats="fasta"),
+    # the random-comparator test's fixture: a clade moved wholesale (its members' closest relatives moved with it, so
+    # only the broad sample sees the young coalescence: blue) and a plate swap (sequences permuted among scattered
+    # taxa: residuals lean both ways, the far-half excess: red), beside ordinary contaminants
+    "dna_rc": dict(seed=83, n=100, nloc=14, dtype="dna", depth=0.5, lens=(280, 420), pmiss=0.08, contam=2, cladecopy=2, hiddencontam=1, hidden_blanked=60,
+                   event_min_sites=150, formats="fasta"),
     # the multi-block dataset of the large-data work: many taxa, clusters of identical genomes, a non-transitive identity
     # chain, slivers, whole-locus absences, taxa at few loci, thin taxa identical to tested ones (its patristic matrix is
     # 2,100 x 2,100 and is not written)

@@ -29,15 +29,16 @@
   "uncovered_sites": 0
  },
  "test": {
-  "tests": 2339,
+  "tests": 2693,
   "divergent_tests": 1167,
+  "random_tests": 354,
   "similar_comparator_tests": 1167,
   "similar_closest_tests": 5,
   "similar_candidates": 5,
   "comparisons": 1167,
-  "bonferroni_k": 4.0921,
-  "log_bar": -10.7532,
-  "log10_bar": -4.6701,
+  "bonferroni_k": 4.1246,
+  "log_bar": -10.8941,
+  "log10_bar": -4.7313,
   "phi_dataset": 0.002288,
   "half": 0.5
  },

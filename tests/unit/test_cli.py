@@ -208,8 +208,10 @@ class TestMemoryAndWorkers:
 
     def test_the_estimate_counts_the_pair_arrays(self):
         loci = [("a", np.arange(100)), ("b", np.arange(100, 200))]
-        need, x, lists, closest, mfull, slab = lo.memory_estimate(10, 200, loci)
-        assert x == 2 * 2000 and lists == 10 * 10 * 32 and closest == 10 * 2 * lo.BAND_SLOTS * 24 and mfull == 2 * 100 * 8 and slab == 2 * 2 * 100 * 2 and need == x + lists + closest + mfull + slab
+        need, x, lists, closest, mfull, slab, mrc = lo.memory_estimate(10, 200, loci)
+        assert x == 2 * 2000 and lists == 10 * 10 * 32 and closest == 10 * 2 * lo.BAND_SLOTS * 24 and mfull == 2 * 100 * 8 and slab == 2 * 2 * 100 * 2
+        assert mrc == 10 * 9 * 12 and need == x + lists + closest + mfull + slab + mrc                             # the pool wants 500 but only 9 other taxa exist
+        assert lo.memory_estimate(10, 200, loci, rc=False)[6] == 0
         assert lo.memory_estimate(10, 200, loci, C=3)[2] == 10 * 3 * 32 and lo.memory_estimate(10, 200, loci, full=False)[4] == 0
         big = [("a", np.arange(70000))]; assert lo.memory_estimate(10, 70000, big)[5] == 2 * 1 * 100 * 4           # uint32 counts above 65,535 sites
         with pytest.MonkeyPatch.context() as mp:

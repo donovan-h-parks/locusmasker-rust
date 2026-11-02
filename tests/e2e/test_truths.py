@@ -69,9 +69,14 @@ class TestPlanted:
         run = runs(name); ds = dataset(name)
         planted = {(e.get("taxon") or e.get("recipient"), e["locus"]) for e in ds.events if "locus" in e and (e.get("taxon") or e.get("recipient"))}
         planted |= {(e["donor"], e["locus"]) for e in ds.events if "donor" in e and "locus" in e}
-        planted |= {(r, e["locus"]) for e in ds.events if e["kind"] == "multicopy" for r in e["recipients"]}
+        planted |= {(r, e["locus"]) for e in ds.events if "recipients" in e for r in e["recipients"]}
         extra = [(r["taxon"], r["locus"], r["reason"]) for r in run.masked if (r["taxon"], r["locus"]) not in planted]
-        limit = 1 if ds.ntaxa <= 100 else max(1, int(0.002 * ds.ntaxa * ds.nloci))      # the multi-block dataset: a rate, not a count
+        if ds.ev("cladecopy"):                                                 # moving a whole clade orphans its sisters (their closest relatives
+            event_loci = {e["locus"] for e in ds.events if e["kind"] in ("cladecopy", "hiddencontam")}   # all moved), so collateral masks at the event loci are the method
+            assert all(l in event_loci for _, l, _ in extra), extra            # speaking, not noise; elsewhere the dataset must stay clean
+            limit = 15
+        else:
+            limit = 1 if ds.ntaxa <= 100 else max(1, int(0.002 * ds.ntaxa * ds.nloci))      # the multi-block dataset: a rate, not a count
         assert len(extra) <= limit, (len(extra), extra[:12])
 
 

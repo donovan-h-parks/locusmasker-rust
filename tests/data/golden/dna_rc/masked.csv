@@ -1,0 +1,18 @@
+locus,taxon,reason,residues_masked,divergent_fails,divergent_comparators,divergent_observed,divergent_expected,divergent_excess_m,divergent_log10p,similar_test,similar_partner,similar_role,similar_observed,similar_expected,similar_row_factor,similar_log10p,similar_relatives,partner_excess_m,comparators,log10_bar,random_side,random_log10p,random_partner
+locus2,t39,divergent,288,5,5,72.57,18.96,300.006,-57.160,closest,t29,,68.75,17.71,,0.000,t40; t35; t10; t73; t25,2.143,t40; t35; t10; t73; t25,-5.344,,,
+locus6,t37,both,359,4,5,33.98,10.74,71.385,-7.069,closest,t52,copy,6.96,30.08,,-5.731,t01; t28; t18; t42,-6.252,t38; t01; t28; t18; t42,-5.344,,,
+locus6,t38,divergent,359,3,5,33.43,8.68,74.270,-10.319,,,,,,,,,,t01; t37; t28; t36; t18,-5.344,,,
+locus8,t31,divergent,283,5,5,75.27,22.76,258.444,-35.913,closest,t04,,70.32,35.34,,0.000,t65; t66; t17; t34; t09,-2.608,t65; t66; t17; t34; t09,-5.344,,,
+locus13,t04,divergent,304,3,5,39.14,12.44,65.437,-11.137,,,,,,,,,,t10; t35; t20; t73; t72,-5.344,,,
+locus13,t10,divergent,304,4,5,43.09,7.41,88.251,-33.787,,,,,,,,,,t35; t73; t72; t20; t25,-5.344,,,
+locus13,t35,similar,304,2,5,9.87,8.53,2.394,-0.489,closest,t63,uncertain,3.95,25.00,,-9.687,t64; t57; t56; t18; t42,3.722,t10; t72; t73; t25; t20,-5.344,,,
+locus13,t39,divergent,304,3,5,44.08,15.57,76.842,-9.960,,,,,,,,,,t40; t35; t10; t73; t25,-5.344,,,
+locus13,t63,similar,304,0,5,23.36,21.69,3.722,-0.693,closest,t35,uncertain,3.95,25.00,,-9.687,t64; t57; t56; t18; t42,2.394,t64; t57; t56; t18; t42,-5.344,,,
+locus6,t28,similar,359,,,,,,,,,,,,,,,,,-5.344,close,-2.523,t59
+locus6,t36,similar,359,,,,,,,,,,,,,,,,,-5.344,close,-2.116,t58
+locus6,t43,similar,359,,,,,,,,,,,,,,,,,-5.344,close,-1.994,t58
+locus6,t44,similar,359,,,,,,,,,,,,,,,,,-5.344,close,-5.684,t52
+locus12,t65,divergent,345,,,,,,,,,,,,,,,,,-5.344,divergent,-44.219,t75
+locus13,t25,similar,304,,,,,,,,,,,,,,,,,-5.344,close,-6.183,t64
+locus13,t72,similar,304,,,,,,,,,,,,,,,,,-5.344,close,-6.687,t64
+locus13,t73,similar,304,,,,,,,,,,,,,,,,,-5.344,close,-6.500,t64

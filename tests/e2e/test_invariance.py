@@ -166,12 +166,12 @@ class TestSweep:
     """the pair sweep gives the same outputs whatever its block size, its list size (a taxon whose list runs out gets its
     full row) and whether the full m matrix is kept; above FULL_M_MAX_TAXA the trees are rooted at their midpoint
     (no outgroup search), the one difference allowed"""
-    @pytest.mark.parametrize("name,block", [("dna_small", 3), ("dna_small", 7), ("aa_small", 11), ("dna_dense", 64), ("dna_blocks", 64), ("dna_blocks", 300), ("aa_random_trees", 33)])
+    @pytest.mark.parametrize("name,block", [("dna_small", 3), ("dna_small", 7), ("aa_small", 11), ("dna_dense", 64), ("dna_rc", 17), ("dna_blocks", 64), ("dna_blocks", 300), ("aa_random_trees", 33)])
     def test_the_block_size_does_not_change_the_outputs(self, runs, tmp_out, name, block):
         ds = dataset(name); r = run_tool(ds.aln, tmp_out, ds.dtype, ds.parts, ["--block-taxa", str(block), "--threads", "4"]); assert r.rc == 0, r.log
         assert f"blocks of {min(block, ds.ntaxa):,} taxa" in r.log and outputs(r) == outputs(runs(name))
 
-    @pytest.mark.parametrize("name,cand", [("dna_small", 3), ("dna_small", 1), ("dna_blocks", 50), ("aa_random_trees", 2)])
+    @pytest.mark.parametrize("name,cand", [("dna_small", 3), ("dna_small", 1), ("dna_rc", 4), ("dna_blocks", 50), ("aa_random_trees", 2)])
     def test_a_short_candidate_list_does_not_change_the_outputs(self, runs, tmp_out, name, cand):
         ds = dataset(name); r = run_tool(ds.aln, tmp_out, ds.dtype, ds.parts, ["--candidates", str(cand)]); assert r.rc == 0, r.log
         assert "ran out of their" in r.log and outputs(r) == outputs(runs(name))
@@ -191,7 +191,7 @@ class TestSweep:
         ds = dataset("dna_blocks"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--block-taxa", "100", "--candidates", "20", "--threads", "8", "--no-numba"]); assert r.rc == 0, r.log
         assert outputs(r) == outputs(runs("dna_blocks"))
 
-    @pytest.mark.parametrize("name,threads", [("dna_small", 1), ("dna_small", 4), ("dna_blocks", 8)])
+    @pytest.mark.parametrize("name,threads", [("dna_small", 1), ("dna_small", 4), ("dna_rc", 4), ("dna_blocks", 8)])
     def test_without_the_full_matrix_only_the_trees_root_differently(self, runs, tmp_out, monkeypatch, name, threads):
         """the m of the best match's ties and of the trees computed pair by pair (threads 4 and 8: inside the test stage's
         worker processes, which must not fork again); dna_blocks: clone clusters, so ties that m breaks"""
