@@ -191,13 +191,14 @@ class TestSweep:
         ds = dataset("dna_blocks"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--block-taxa", "100", "--candidates", "20", "--threads", "8", "--no-numba"]); assert r.rc == 0, r.log
         assert outputs(r) == outputs(runs("dna_blocks"))
 
-    @pytest.mark.parametrize("threads", [1, 4])
-    def test_without_the_full_matrix_only_the_trees_root_differently(self, runs, tmp_out, monkeypatch, threads):
-        """threads 4: the rows of m asked for on demand inside the test stage's worker processes must not fork again"""
+    @pytest.mark.parametrize("name,threads", [("dna_small", 1), ("dna_small", 4), ("dna_blocks", 8)])
+    def test_without_the_full_matrix_only_the_trees_root_differently(self, runs, tmp_out, monkeypatch, name, threads):
+        """the m of the best match's ties and of the trees computed pair by pair (threads 4 and 8: inside the test stage's
+        worker processes, which must not fork again); dna_blocks: clone clusters, so ties that m breaks"""
         monkeypatch.setattr(lo, "FULL_M_MAX_TAXA", 5)
-        ds = dataset("dna_small"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--threads", str(threads)]); assert r.rc == 0, r.log
+        ds = dataset(name); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--threads", str(threads)]); assert r.rc == 0, r.log
         assert "full m matrix not kept" in r.log
-        base = outputs(runs("dna_small")); got = outputs(r); assert got[0] == base[0]
+        base = outputs(runs(name)); got = outputs(r); assert got[0] == base[0]
         diff = sorted(k for k in set(base[1]) | set(got[1]) if base[1].get(k) != got[1].get(k))
         assert all(k.startswith("trees/") for k in diff), diff
         for k in diff: assert all(e is None or e < 0 for e in r.report.js(k)["outgroup"]), k

@@ -100,6 +100,19 @@ class TestCompiledKernel:
         with np.errstate(divide="ignore", invalid="ignore"): ref, got = both_paths(monkeypatch, S, W, iu, rr, ok_r)   # a real run never has a zero or NaN rate with ok_r set
         assert same(ref, got)
 
+    def test_the_serial_kernel_is_its_own_compilation_with_the_same_bits(self, kernel):
+        """the worker processes' serial kernel and the parent's parallel one are compiled (and cached) apart: sharing
+        numba's cache file, whichever was compiled first was loaded for both. Same bits, odd rates included"""
+        par, ser = lo._pair_medians, lo._pair_medians_serial
+        assert par is not ser and par.targetoptions.get("parallel") and not ser.targetoptions.get("parallel")
+        assert ser.py_func.__qualname__ != par.py_func.__qualname__
+        rng = np.random.default_rng(8); nloc = 8; S, W, iu = slab(rng, nloc, 12); dg = iu[0] == iu[1]; P = len(iu[0])
+        for rr, ok_r in (rates(rng, nloc), (np.array([1.0, 0.0, np.inf, np.nan, 2.0, 0.5, 1e-300, 1e300]), np.ones(nloc, bool))):
+            with np.errstate(divide="ignore", invalid="ignore"):
+                a = par(S, W, 0, P, rr, ok_r, dg, lo.MIN_LOCI_FOR_M, 100.0 * lo.HALF, lo.PAIR_BLOCK)
+                b = ser(S, W, 0, P, rr, ok_r, dg, lo.MIN_LOCI_FOR_M, 100.0 * lo.HALF, lo.PAIR_BLOCK)
+            assert same(a, b)
+
     def test_pairs_below_min_loci_and_the_diagonal_are_nan(self, kernel, monkeypatch):
         rng = np.random.default_rng(9); nloc, n = 6, 8; S, W, iu = slab(rng, nloc, n, zero_frac=0.6); rr, ok_r = rates(rng, nloc, 0.0)
         ref, got = both_paths(monkeypatch, S, W, iu, rr, ok_r); assert same(ref, got)

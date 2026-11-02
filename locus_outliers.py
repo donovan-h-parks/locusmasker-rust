@@ -150,7 +150,7 @@ Options
   (constants in the code: HALF = 0.5 mismatch for the resolution floor and the rate
   pseudocount; dispersion from pairs with >= 10 expected mismatches, shrinkage weight 30)
 """
-import argparse, base64, collections, csv, gzip, hashlib, io, json, math, os, platform, re, shutil, subprocess, sys, threading, time, zipfile
+import argparse, base64, collections, csv, gzip, hashlib, io, json, math, os, platform, re, shutil, subprocess, sys, threading, time, types, zipfile
 for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):   # BLAS stays single-threaded (its matrices are
     os.environ.setdefault(_v, "1")                                          # small); --threads parallelises over loci and pairs
 import numpy as np
@@ -923,6 +923,13 @@ _pair_medians = _pair_medians_py
 _pair_medians_serial = _pair_medians_py
 
 
+def _renamed(f, name):
+    """f under another name. numba keeps one cache file per function name, whatever the options: the parallel and the
+    serial compilations of one function would share it, and whichever was compiled first would be loaded for both (the
+    sweep's worker processes each running a thread pool, or the parent's kernel running on one thread)"""
+    g = types.FunctionType(f.__code__.replace(co_name=name), f.__globals__, name, f.__defaults__, f.__closure__); g.__qualname__ = name; return g
+
+
 def _pair_kernel(max_threads=1):
     """the compiled pair kernel and a thread setter, built on first use: (kernel, set_threads), or None when numba is not
     installed or --no-numba was given. numba is imported here rather than at the top: it costs about half a second, which
@@ -939,7 +946,7 @@ def _pair_kernel(max_threads=1):
             prange = numba.prange
             _wmed_select = numba.njit(cache=True)(_wmed_select_py)
             _pair_medians = numba.njit(parallel=True, cache=True)(_pair_medians_py)
-            _pair_medians_serial = numba.njit(cache=True)(_pair_medians_py)      # for worker processes: the same bits, no thread pool
+            _pair_medians_serial = numba.njit(cache=True, error_model="numpy")(_renamed(_pair_medians_py, "_pair_medians_serial_py"))   # for worker processes: the same bits, no thread pool
             _closest_rows_nb = numba.njit(cache=True)(_closest_rows_py)         # the closest-match reduce of the sweep's block pairs
             def set_threads(t):
                 t = max(1, min(int(t), int(numba.config.NUMBA_NUM_THREADS))); numba.set_num_threads(t); return t
@@ -2113,6 +2120,23 @@ def pair_m_lists(P, gi, ci):
     return m_, f_
 
 
+def pair_m(P, gi, ci, step=2048):
+    """m and its floor for arbitrary pairs (gi[k], ci[k]): from the full matrix when it is kept, else by the sweep's own
+    counts and medians on the pairs' rows (the same bits; NaN for a taxon with itself, as in m_rows). Serial, with the
+    serial kernel: it runs inside the test stage's worker processes"""
+    gi = np.asarray(gi, np.int64); ci = np.asarray(ci, np.int64)
+    if P.m_full is not None: return P.m_full[gi, ci], P.mfl_full[gi, ci]
+    m_ = np.full(len(gi), np.nan); f_ = np.full(len(gi), np.nan); loci = P.sweep_args["loci"]; kern = P.sweep_args["kernel_serial"]
+    for k0 in range(0, len(gi), step):
+        g, c = gi[k0:k0 + step], ci[k0:k0 + step]; U, inv = np.unique(np.r_[g, c], return_inverse=True); XU = P.X[U]; kU = P.keep[U]
+        Wsl = np.empty((len(loci), len(g)), P.cdt); Ssl = np.empty((len(loci), len(g)), P.cdt)
+        for li, (_, st) in enumerate(loci):
+            o, s = pair_counts_at(XU, st, inv[:len(g)], inv[len(g):], kU); Wsl[li] = o; Ssl[li] = s
+        diag = g == c; mm, mf, _ = slab_medians(Ssl, Wsl, diag, P.rr, P.ok_r, 1, kern)
+        mm[diag] = np.nan; mf[diag] = np.nan; m_[k0:k0 + step] = mm; f_[k0:k0 + step] = mf
+    return m_, f_
+
+
 def m_rows(P, rows):
     """full rows of m for a few taxa: from the matrix when it is kept, else computed on demand by the sweep (their pairs
     against everyone, every finite m, identical pairs included)"""
@@ -2691,20 +2715,38 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
             okc = wrow >= BEST_MATCH_MIN_SITES; okc[np.arange(len(rows_bm)), rows_bm] = False
             with np.errstate(invalid="ignore", divide="ignore"):
                 dvg = np.where(okc, (wrow - srow) / np.maximum(wrow, 1.0), np.inf)
-            mm_ = m_rows(P, rows_bm); mmb = np.where(np.isfinite(mm_), mm_, np.inf)
+            mcache = {}
+            def mb(r_, cols):
+                """m between the r_-th row's taxon and the taxa cols, inf where there is none: asked for only where the
+                tie-breaks below reach it (above FULL_M_MAX_TAXA each is computed, and remembered)"""
+                g = int(rows_bm[r_]); cols = np.asarray(cols, np.int64)
+                if P.m_full is not None: v = P.m_full[g, cols]
+                else:
+                    miss = sorted({int(t) for t in cols.tolist() if (g, int(t)) not in mcache})
+                    if miss: mcache.update(zip(((g, t) for t in miss), pair_m(P, np.full(len(miss), g), np.array(miss, np.int64))[0].tolist()))
+                    v = np.array([mcache[(g, int(t))] for t in cols.tolist()], np.float64)
+                return np.where(np.isfinite(v), v, np.inf)
             wmax = np.where(okc, wrow, -1.0).max(1)
             dtier = np.where(okc & (wrow >= wmax[:, None]), dvg, np.inf); lo_t = dtier.min(1)
-            tied = dtier == lo_t[:, None]; tkey = np.where(tied, mmb, np.inf); champ = tkey.argmin(1)
-            champ = np.where(np.isfinite(tkey[np.arange(len(rows_bm)), champ]), champ, tied.argmax(1))   # none of the tied has an m: the first tied
+            tied = dtier == lo_t[:, None]; champ = tied.argmax(1)                              # the first tied; more than one: the closest by m
+            for r_ in np.flatnonzero(np.isfinite(lo_t) & (tied.sum(1) > 1)).tolist():
+                tc = np.flatnonzero(tied[r_]); tk = mb(r_, tc)
+                if np.isfinite(tk).any(): champ[r_] = tc[tk.argmin()]                          # none of the tied has an m: the first tied
             okb = np.isfinite(lo_t)
             Xs_ = Xs if Xs is not None else X[:, sites]
             for r_ in np.flatnonzero(okb & (dvg < lo_t[:, None]).any(1)).tolist():
                 g = int(rows_bm[r_]); fx = Xs_[g]; fp = fx >= 0; c = int(champ[r_])
-                T = np.array(sorted(np.flatnonzero(dvg[r_] < lo_t[r_]).tolist(), key=lambda t: (-wrow[r_, t], dvg[r_, t], mmb[r_, t])))   # broadest coverage first
+                T0 = np.flatnonzero(dvg[r_] < lo_t[r_]); kw = -wrow[r_, T0]; kd = dvg[r_, T0]; km = np.zeros(len(T0))
+                _, gid, gsz = np.unique(np.stack([kw, kd], 1), axis=0, return_inverse=True, return_counts=True); gid = gid.ravel()
+                tie = gsz[gid] > 1
+                if tie.any(): km[tie] = mb(r_, T0[tie])                                          # m only breaks ties of coverage and divergence
+                T = T0[np.lexsort((km, kd, kw))]                                                 # broadest coverage first (a stable sort, as sorted())
                 while len(T):                                                                  # every remaining challenger against the champion at once;
                     XT = Xs_[T]; common = fp[None, :] & (Xs_[c] >= 0)[None, :] & (XT >= 0)      # the first that wins takes over, and the rest face it
                     dt_ = ((XT != fx[None, :]) & common).sum(1); dc_ = ((Xs_[c] != fx)[None, :] & common).sum(1)
-                    wins = (common.sum(1) >= BEST_MATCH_MIN_SITES) & ((dt_ < dc_) | ((dt_ == dc_) & (mmb[r_, T] < mmb[r_, c])))
+                    eqd = dt_ == dc_; mt = np.full(len(T), np.inf); mc_ = np.inf
+                    if eqd.any(): mt[eqd] = mb(r_, T[eqd]); mc_ = mb(r_, [c])[0]
+                    wins = (common.sum(1) >= BEST_MATCH_MIN_SITES) & ((dt_ < dc_) | (eqd & (mt < mc_)))
                     if not wins.any(): break
                     k = int(wins.argmax()); c = int(T[k]); T = T[k + 1:]
                 champ[r_] = c
@@ -2756,7 +2798,7 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                 both = pres_t[:, None, :] & pres_t[None, :, :]; nb = both.sum(2)
                 with np.errstate(invalid="ignore", divide="ignore"):
                     Do = np.where(nb > 0, 100.0 * ((rows_t[:, None, :] != rows_t[None, :, :]) & both).sum(2) / np.maximum(nb, 1), np.nan)
-                    mv = m_rows(P, tarr)[:, tarr]; De = np.where(np.isfinite(mv), expect(np.where(np.isfinite(mv), mv, 1.0)), np.nan)
+                    mv = pair_m(P, np.repeat(tarr, nt), np.tile(tarr, nt))[0].reshape(nt, nt); De =np.where(np.isfinite(mv), expect(np.where(np.isfinite(mv), mv, 1.0)), np.nan)
                 np.fill_diagonal(De, 0.0); np.fill_diagonal(Do, 0.0)
                 if np.isnan(De).any(): De = np.where(np.isnan(De), np.nanmax(De) if np.isfinite(np.nanmax(De)) else 50.0, De)
                 if np.isnan(Do).any(): Do = np.where(np.isnan(Do), De, Do)

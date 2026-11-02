@@ -285,6 +285,21 @@ class TestOnDemandRows:
         finally: P.m_full = full
         assert np.array_equal(got, full[rows], equal_nan=True)
 
+    @pytest.mark.parametrize("kernel", [True, False])
+    def test_m_of_arbitrary_pairs_equals_the_matrix(self, prepared, kernel):
+        """the pairs the best match's ties and the trees ask for, computed from the residues: the same bits, by the
+        kernel and by the numpy chunks, self pairs NaN"""
+        P = prepared["P"]; n = P.X.shape[0]; rng = np.random.default_rng(5)
+        gi = np.r_[rng.integers(0, n, 300), 3]; ci = np.r_[rng.integers(0, n, 300), 3]
+        full, ffl, args = P.m_full, P.mfl_full, P.sweep_args; P.m_full = None
+        if kernel and lo._pair_kernel(1) is None: pytest.skip("numba is not installed")
+        P.sweep_args = {**args, "kernel_serial": lo._pair_medians_serial if kernel else None}
+        try: m, f = lo.pair_m(P, gi, ci, step=37)
+        finally: P.m_full, P.sweep_args = full, args
+        off = gi != ci
+        assert np.array_equal(m[off], full[gi[off], ci[off]], equal_nan=True) and np.array_equal(f[off], ffl[gi[off], ci[off]], equal_nan=True)
+        assert np.isnan(m[~off]).all() and np.isfinite(m[off]).any()
+
 
 class TestCountsProviders:
     """the counts kept from a one-block sweep (SlabCounts) and the counts computed from the residues (ResidueCounts)
