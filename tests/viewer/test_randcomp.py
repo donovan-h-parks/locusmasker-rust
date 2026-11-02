@@ -14,7 +14,6 @@ def rc_cells(R):
     for g, li in zip(*np.nonzero(s2 & (4 | 8 | 64))):
         v = int(s2[g, li]); sd = int(side[g, li])
         if v & 4 and (sd & 3) == 2 and "close" not in out: out["close"] = (int(g), int(li))
-        if v & 8 and (sd & 3) == 1 and "divergent" not in out: out["divergent"] = (int(g), int(li))
         if v & 64 and "label" not in out: out["label"] = (int(g), int(li))
     return out
 
@@ -22,10 +21,10 @@ def rc_cells(R):
 class TestRandomComparatorCells:
     def test_the_colours_follow_the_kind(self, page, report_of):
         html, R = report_of("dna_rc"); open_report(page, html)
-        cells = rc_cells(R); assert {"close", "divergent"} <= set(cells), cells
+        cells = rc_cells(R); assert "close" in cells, cells
         fam = {k: page.evaluate(f"() => LM.App.D.famOf(LM.App.D.state[{g} * LM.App.D.nloc + {li}])") for k, (g, li) in cells.items()}
         ST = page.evaluate("() => ({RED: 20, BLUE: 40, BOTH: 60})")
-        assert fam["close"] == ST["BLUE"] and fam["divergent"] == ST["RED"]
+        assert fam["close"] == ST["BLUE"]
 
     def test_the_labelled_divergent_cell_is_yellow(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html)                 # dna_small's far copy: masked divergent, the donor side named
@@ -34,8 +33,7 @@ class TestRandomComparatorCells:
         fam = page.evaluate(f"() => LM.App.D.famOf(LM.App.D.state[{g} * LM.App.D.nloc + {li}])")
         assert fam == 60
 
-    @pytest.mark.parametrize("kind,needle", [("close", "too close to the broad sample (random comparators)"),
-                                             ("divergent", "too divergent from the broad sample (random comparators)")])
+    @pytest.mark.parametrize("kind,needle", [("close", "too close to the broad sample (random comparators)")])
     def test_the_labels_name_the_test(self, page, report_of, kind, needle):
         html, R = report_of("dna_rc"); open_report(page, html)
         g, li = rc_cells(R)[kind]
@@ -67,4 +65,4 @@ class TestRandomComparatorCells:
 
     def test_a_clean_report_shows_no_random_rows(self, page, report_of):
         html, R = report_of("dna_clean"); open_report(page, html)
-        s2 = R.arr("cells/side2.npy"); assert not np.any(s2 & (4 | 8 | 64))
+        s2 = R.arr("cells/side2.npy"); assert not np.any(s2 & (4 | 64))

@@ -32,16 +32,16 @@ class TestOnThePlantedFixture:
         donors = {e["donor"] for e in events}
         assert any(row["random_partner"] in donors for row in hits)        # the strongest too-close comparator names the donor
 
-    def test_hidden_contamination_is_caught_too_divergent(self, rc_run):
-        """a contaminated stretch its whole near side does not cover: the closest-relative tests compare on the clean
-        remainder, the clean near comparators anchor rho, and the covering far half leans high: masked red"""
+    def test_hidden_contamination_is_the_designed_blind_spot(self, rc_run):
+        """a contaminated stretch that NO close relative covers: the closest-relative tests compare on the clean
+        remainder, and the broad-sample excess side was prototyped and not adopted (Rob, 3 Nov 2026) - the cell passes
+        the variance stage's bar but nothing masks it. This pins the limitation deliberately"""
         ds, r = rc_run; rows = masked_rows(r)
         (e,) = ds.ev("hiddencontam")
-        (row,) = [q for q in rows if (q["locus"], q["taxon"]) == (e["locus"], e["taxon"])]
-        assert row["reason"] == "divergent" and row["random_side"] == "divergent" and float(row["random_log10p"]) < -1.3
+        assert not [q for q in rows if (q["locus"], q["taxon"]) == (e["locus"], e["taxon"])]
         g = r.report.taxa["names"].index(e["taxon"]); li = r.report.loci["names"].index(e["locus"])
         s2 = int(r.report.arr("cells/side2.npy")[g, li])
-        assert s2 & 8 and s2 & 2 and s2 & 1                               # tested, past the bar, excess fired
+        assert (s2 & 3) == 3 and not (s2 & 4)                             # tested and past the bar; no mask
 
     def test_plain_contaminants_still_fall_to_the_main_test(self, rc_run):
         ds, r = rc_run; rows = masked_rows(r)
@@ -64,12 +64,12 @@ class TestOnThePlantedFixture:
         t = man["test"]
         assert t["random_tests"] > 0 and t["tests"] == 2 * t["divergent_tests"] + t["similar_closest_tests"] + t["random_tests"]
         assert man["random_comparators"]["tested"] > 0 and man["random_comparators"]["family"] == t["random_tests"]
-        assert man["side2_bits"]["random_close"] == 4 and man["side2_bits"]["random_divergent"] == 8
+        assert man["side2_bits"]["random_close"] == 4 and "random_divergent" not in man["side2_bits"]
 
     def test_report_carries_the_rc_members(self, rc_run):
         ds, r = rc_run
         for k in ("cells/side2.npy", "cells/rc_locus.npy", "cells/rc_taxon.npy", "cells/rc_lo_log10p.npy",
-                  "cells/rc_hi_log10p.npy", "cells/rc_partner.npy", "cells/rc_var_log10p.npy"):
+                  "cells/rc_partner.npy", "cells/rc_var_log10p.npy"):
             assert k in r.report.names, k
         rl = r.report.arr("cells/rc_locus.npy"); assert len(rl) >= 5
 

@@ -113,7 +113,7 @@ class TestDivergent:
         for g, li in cells_tested(R):
             sd = int(side[g, li]); k, f = int(nc[g, li]), int(nf[g, li])
             full = k == R.K and f >= R.M; amb = k < R.K and f >= k // 2 + 1
-            assert bool(sd & 1) == (full or amb or bool(s2[g, li] & 8)), (g, li, sd, k, f)   # or the random-comparator excess fired
+            assert bool(sd & 1) == (full or amb), (g, li, sd, k, f)
             assert bool(sd & 4) == amb
             assert not (sd & 16)                                                  # masking of divergent sequences was on
 

@@ -159,9 +159,9 @@ def plant(rng, names, X, bounds, pat, cherries, spec, A):
         d, r = pair; free.remove(d); free.remove(r); li = locus(d, r); a, b = bounds[li], bounds[li + 1]
         X[r, a:b] = X[d, a:b]; truth.append(dict(kind="sistercopy", donor=names[d], recipient=names[r], locus=f"locus{li + 1}", patristic=float(pat[d, r])))
     for _ in range(spec.get("hiddencontam", 0)):                   # a contaminated stretch exactly where the near side of the
-        # tree has no coverage: the closest-relative tests compare on the clean remainder and see nothing, and the many
-        # clean near comparators anchor the sequence's own rate, so the covering far half leans high (the third test's
-        # red: an apparent old coalescence with the broad sample)
+        # tree has no coverage: the closest-relative tests compare on the clean remainder and see nothing. The excess
+        # side that caught this was prototyped and NOT adopted (Rob, 3 Nov 2026: a rare corner, not worth an arm), so
+        # this plants the tool's DESIGNED BLIND SPOT: the cell passes the variance bar and nothing masks it
         t = take(); near = [c for c in np.argsort(pat[t]) if c in free][:spec.get("hidden_blanked", 30)]
         for c in near: free.remove(c)
         li = locus(t, *near); reserved_loci.add(li); a, b = bounds[li], bounds[li + 1]

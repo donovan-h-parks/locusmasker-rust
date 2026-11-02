@@ -4,8 +4,8 @@
   "loci": 14,
   "cells": 1400,
   "present": 1400,
-  "masked": 17,
-  "masked_divergent": 8,
+  "masked": 16,
+  "masked_divergent": 7,
   "masked_similar": 10,
   "masked_both": 1,
   "ambiguous": 0,
@@ -14,7 +14,7 @@
   "similar_sources": 1,
   "similar_uncertain": 2,
   "near_miss": {
-   "1": 11,
+   "1": 12,
    "2": 12
   },
   "excluded_taxa": 0,
