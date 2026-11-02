@@ -103,14 +103,15 @@ async function loadBundle(bytes) {
   D.dense = man.carried.numeric_columns === "dense";
   for (const k of numCols) D.cols[k] = (await npy(`cells/${k}.npy`)).data;
   for (const k of ["lam", "lam_p", "row_factor", "div_log10p", "sim_log10p", "dir_log10p", "depth_factor", "locus_closest", "locus_closest_log10p"]) if (zip.has(`cells/${k}.npy`)) D.cols[k] = (await npy(`cells/${k}.npy`)).data;   // not in every format; D.num gives null without them
-  for (const k of ["rc_log10p", "rc_rho"]) if (zip.has(`cells/${k}.npy`)) D.cols[k] = (await npy(`cells/${k}.npy`)).data;   // dense runs: the random-comparator stage-1 p and rho of every tested cell
-  D.s2 = i => D.cols.side2 ? D.cols.side2[i] : 0;                 // format 8: the random-comparator bits (1 tested, 2 past the bar, 4 close, 8 divergent, 16 excluded as comparator, 32 close not re-reported, 64 the divergent-cell label)
+  const bsp = zip.has("cells/bs_locus.npy") || zip.has("cells/bs_log10p.npy") ? "bs" : "rc";   // older format-8 bundles wrote the broad-sample members as cells/rc_*
+  for (const k of ["log10p", "rho"]) if (zip.has(`cells/${bsp}_${k}.npy`)) D.cols[`bs_${k}`] = (await npy(`cells/${bsp}_${k}.npy`)).data;   // dense runs: the broad-sample stage-1 p and rho of every tested cell
+  D.s2 = i => D.cols.side2 ? D.cols.side2[i] : 0;                 // format 8: the broad-sample bits (1 tested, 2 past the bar, 4 close, 8 divergent in older bundles, 16 excluded as comparator, 32 close not re-reported, 64 the divergent-cell label)
   D.rcRows = null;
-  if (zip.has("cells/rc_locus.npy")) {                             // the rows the verdict pass inspected, with their tail p's and partner
-    const rl = (await npy("cells/rc_locus.npy")).data, rt = (await npy("cells/rc_taxon.npy")).data, rv = {};
-    for (const k of ["rc_var_log10p", "rc_lo_log10p", "rc_hi_log10p", "rc_partner"]) rv[k] = zip.has(`cells/${k}.npy`) ? (await npy(`cells/${k}.npy`)).data : null;   // rc_hi only in older format-8 bundles
+  if (zip.has(`cells/${bsp}_locus.npy`)) {                         // the sequences the verdict pass inspected, with their tail p's and partner
+    const rl = (await npy(`cells/${bsp}_locus.npy`)).data, rt = (await npy(`cells/${bsp}_taxon.npy`)).data, rv = {};
+    for (const k of ["var_log10p", "lo_log10p", "hi_log10p", "partner"]) rv[k] = zip.has(`cells/${bsp}_${k}.npy`) ? (await npy(`cells/${bsp}_${k}.npy`)).data : null;   // hi only in older format-8 bundles
     D.rcRows = new Map();
-    for (let j = 0; j < rl.length; j++) D.rcRows.set(rt[j] * D.nloc + rl[j], { var_p: rv.rc_var_log10p ? rv.rc_var_log10p[j] : NaN, lo: rv.rc_lo_log10p ? rv.rc_lo_log10p[j] : NaN, hi: rv.rc_hi_log10p ? rv.rc_hi_log10p[j] : NaN, pt: rv.rc_partner ? rv.rc_partner[j] : -1 });
+    for (let j = 0; j < rl.length; j++) D.rcRows.set(rt[j] * D.nloc + rl[j], { var_p: rv.var_log10p ? rv.var_log10p[j] : NaN, lo: rv.lo_log10p ? rv.lo_log10p[j] : NaN, hi: rv.hi_log10p ? rv.hi_log10p[j] : NaN, pt: rv.partner ? rv.partner[j] : -1 });
   }
   D.rcAt = i => D.rcRows ? D.rcRows.get(i) : undefined;
   D.comparators = (await npy("cells/comparators.npy")).data;
@@ -176,7 +177,7 @@ function deriveStates(D) {
     if (nc[i] === 0) { st[i] = ST.UNTESTED; sev[i] = 1; continue; }
     const s = sd[i];
     const s2v = sd2 ? sd2[i] : 0;
-    if ((s & 3) === 3 || ((s & 1) && (s2v & 64))) { const k = clamp(ns[i], 1, 3); st[i] = ST.BOTH + k; sev[i] = 60 + k; }   // both kinds, or the divergent cell the random comparators also call too close
+    if ((s & 3) === 3 || ((s & 1) && (s2v & 64))) { const k = clamp(ns[i], 1, 3); st[i] = ST.BOTH + k; sev[i] = 60 + k; }   // both kinds, or the divergent cell the broad sample also calls too close
     else if (s & 1 || s & 16) { const f = clamp(nf[i], M, K); st[i] = ST.RED + f; sev[i] = 20 + f; }
     else if (s & 2) { const k = clamp(ns[i], 1, 3); st[i] = ST.BLUE + k; sev[i] = 40 + k; }
     else { st[i] = ST.GREY; sev[i] = 2; }
@@ -202,8 +203,8 @@ function deriveStates(D) {
   // one cell's label: the colour class, with the exact partner count where the class says "3+"
   D.cellLabel = (code, i) => {
     const ns = D.cols.n_similar[i], s2v = D.s2(i), sd_ = D.cols.side[i];
-    if (s2v & 64 && (sd_ & 3) === 1) return "masked, too divergent · also significantly too close to part of the broad sample (random comparators)";
-    if ((sd_ & 3) === 2 && (s2v & 4) && !ns) return "masked, too close to the broad sample (random comparators)";
+    if (s2v & 64 && (sd_ & 3) === 1) return "masked, too divergent · also significantly too close to part of the broad sample";
+    if ((sd_ & 3) === 2 && (s2v & 4) && !ns) return "masked, too close to the broad sample";
     return D.format >= 4 && code - ST.BLUE === 3 && ns >= 3 ? `masked, copied from another taxon · ${ns >= 255 ? "255+" : ns} too-similar partners` : D.labelOf(code); };
   const surf = hexToRgb(cssVar("--surface")), hatch = hexToRgb(cssVar("--surface-3"));
   const lut = new Uint8ClampedArray(64 * 4);
@@ -241,15 +242,17 @@ function stateReason(D, g, li) {
 // locus is tested: the identified recipient (the copy) is masked, its source (the donor) is not, and a pair with no
 // identified direction masks nothing; the partner reported is the source when the cell is a recipient, else its strongest
 // partner. Before format 4 only the comparators were tested. Null when the cell has no partner.
+const bsMan = D => D.man.broad_sample || D.man.random_comparators;   // older format-8 manifests use the old key
+
 function similarRole(D, g, li) {
   const i_ = g * D.nloc + li, s2v = D.s2 ? D.s2(i_) : 0, ns_ = D.cols.n_similar[i_];
   let pt = D.num("partner", g, li);
   if ((pt === null || pt < 0) && (s2v & 64)) { const rcr = D.rcAt && D.rcAt(i_); pt = rcr && rcr.pt >= 0 ? rcr.pt : null; }   // the labelled divergent cell: its donor-side comparator
   if (pt === null || pt < 0) return null;
   const sd = D.cols.side[g * D.nloc + li], P = D.taxa.names[pt];
-  if ((s2v & (4 | 64)) && !ns_) {                                   // masked or labelled by the random-comparator test: the partner is a comparator, not a pair member
-    if (s2v & 64) return { pt, role: "none", tag: "close random comparator", fired: true, rc: true, text: `${P}: a far random comparator this divergent sequence is significantly too CLOSE to — the donor side; the divergent mask stands, this names where it points`, note: "the most significantly too-close random comparator (the donor side)" };
-    if ((s2v & 4) && (sd & 2)) return { pt, role: "copy", tag: "close random comparator", fired: true, rc: true, text: `${P}: significantly too close to this sequence for their genome-wide divergence — a coalescence younger than the species split allows (the random-comparator test)`, note: "the most significantly too-close random comparator" };
+  if ((s2v & (4 | 64)) && !ns_) {                                   // masked or labelled by the broad-sample test: the partner is a broad comparator, not a pair member
+    if (s2v & 64) return { pt, role: "none", tag: "close broad comparator", fired: true, rc: true, text: `${P}: a far broad-sample comparator this divergent sequence is significantly too CLOSE to — the donor side; the divergent mask stands, this names where it points`, note: "the most significantly too-close broad-sample comparator (the donor side)" };
+    if ((s2v & 4) && (sd & 2)) return { pt, role: "copy", tag: "close broad comparator", fired: true, rc: true, text: `${P}: significantly too close to this sequence for their genome-wide divergence — a coalescence younger than the species split allows (the broad-sample test)`, note: "the most significantly too-close broad-sample comparator" };
   }
   if (D.format < 4) return { pt, role: sd & 8 ? "recipient" : "undetermined", tag: "partner", text: `${P}${sd & 8 ? " (identified as the recipient)" : " (direction not identified)"}`, note: "the partner of the too-similar pair" };
   if (D.format >= 5) {                                           // format 5: the partner of a too-similar pair, or the closest match that was tested and passed
@@ -274,8 +277,8 @@ function cellTests(D, g, li, sim, sr) {
   else if (sr && (sr.fired || sr.role === "recipient")) blue.set(sr.pt, { p: D.num("sim_log10p", g, li), test: null });
   if (comp && bar !== null) for (const [c, t] of comp) if (t.div < bar && !blue.has(c)) red.set(c, t.div);
   const s2v = D.s2 ? D.s2(g * D.nloc + li) : 0, rcr = D.rcAt && D.rcAt(g * D.nloc + li);
-  if (rcr && rcr.pt >= 0 && ((s2v & 4 && !(s2v & 32)) || s2v & 64)) {   // the random-comparator partner: blue for a mask or a donor-side label
-    if (!blue.has(rcr.pt)) blue.set(rcr.pt, { p: rcr.lo, test: "random" });
+  if (rcr && rcr.pt >= 0 && ((s2v & 4 && !(s2v & 32)) || s2v & 64)) {   // the broad-sample partner: blue for a mask or a donor-side label
+    if (!blue.has(rcr.pt)) blue.set(rcr.pt, { p: rcr.lo, test: "broad" });
   }
   const lc = D.num("locus_closest", g, li);
   if (lc !== null && lc >= 0) closest = { taxon: lc, p: D.num("locus_closest_log10p", g, li) };
@@ -308,7 +311,7 @@ const dirTxt = (D, g, li, lp) => { const d = D.num("dir_log10p", g, li); return 
 // comparisons and give the bar as a normal quantile k
 function testSummary(T) {
   if (T.tests == null) return `${fmtInt(T.comparisons)} distinct comparisons, Bonferroni k ${T.bonferroni_k}`;
-  if (T.similar_comparator_tests != null) return `${fmtInt(T.tests)} tests (${fmtInt(T.divergent_tests)} too divergent, ${fmtInt(T.similar_comparator_tests)} too similar against a comparator, ${fmtInt(T.similar_closest_tests)} against the closest match), one Bonferroni bar for all of them, log10 p < ${fmt2(T.log10_bar)}`;
+  if (T.comparator_tests != null) return `${fmtInt(T.tests)} tests (${fmtInt(T.divergent_tests)} too divergent, ${fmtInt(T.comparator_tests)} too similar against a comparator, ${fmtInt(T.closest_tests)} against the closest match), one Bonferroni bar for all of them, log10 p < ${fmt2(T.log10_bar)}`;
   return `${fmtInt(T.tests)} tests (${fmtInt(T.divergent_tests)} too divergent, ${fmtInt(T.similar_tests)} too similar, ${fmtInt(T.direction_tests)} direction), ` +
     (T.log10_bar != null ? `one Bonferroni bar for all of them, log10 p < ${fmt2(T.log10_bar)}` : `Bonferroni k ${T.bonferroni_k}`);
 }
@@ -469,10 +472,10 @@ const Overview = (() => {
       tile(fmtInt(c.masked_divergent), "too divergent" + (c.ambiguous ? ` · ${c.ambiguous} with fewer comparators` : "")),
       D.format >= 4 ? tile(fmtInt(c.masked_similar), "copied from another taxon" + (c.similar_uncertain ? ` · ${fmtInt(c.similar_uncertain)} in a pair of uncertain direction, both masked` : "") + (c.masked_both ? ` · ${c.masked_both} also too divergent` : ""), D.format >= 5 ? `masked as copies: of a too-similar pair, the member that fits its own relatives worse is masked, the other is its source${c.similar_pairs != null ? `. ${fmtInt(c.similar_pairs)} too-similar pairs; ${fmtInt(c.similar_tested)} sequences tested against their closest match at the locus` : ""}` : `masked as copies: the identified recipient of a too-similar pair is masked, its source is not${c.similar_pairs != null ? `. ${fmtInt(c.similar_pairs)} significant too-similar pairs, ${fmtInt(c.similar_pairs_with_recipient)} with an identified recipient` : ""}`)
         : tile(fmtInt(c.masked_similar), "too similar" + (c.masked_both ? ` · ${c.masked_both} both sides` : "")),
-      ...(D.man.random_comparators ? [tile(fmtInt((D.man.random_comparators.close || 0) + (D.man.random_comparators.divergent || 0) + (D.man.random_comparators.both_sides || 0)),
-        `too close to the broad sample (random comparators)`
-        + (D.man.random_comparators.divergent_labels ? ` · ${fmtInt(D.man.random_comparators.divergent_labels)} divergent cells labelled` : ""),
-        `the third test: ${fmtInt(D.man.random_comparators.per_cell)} random comparators per sequence per locus, drawn from each taxon's pool of ${fmtInt(D.man.random_comparators.pool)}; ${fmtInt(D.man.random_comparators.tested)} sequences tested, ${fmtInt(D.man.random_comparators.bar_passed)} past the run's bar; a transfer or contamination moves a whole clade, which the closest-relative tests cannot see`)] : []),
+      ...(bsMan(D) ? [tile(fmtInt((bsMan(D).close || 0) + (bsMan(D).divergent || 0) + (bsMan(D).both_sides || 0)),
+        `too close to the broad sample`
+        + (bsMan(D).divergent_labels ? ` · ${fmtInt(bsMan(D).divergent_labels)} divergent cells labelled` : ""),
+        `the broad-sample test: ${fmtInt(bsMan(D).per_cell)} comparators per sequence per locus, drawn from each taxon's pool of ${fmtInt(bsMan(D).pool)}; ${fmtInt(bsMan(D).tested)} sequences tested, ${fmtInt(bsMan(D).bar_passed)} past the run's bar; a transfer or contamination moves a whole clade, which the closest-relative tests cannot see`)] : []),
       tile(`${fmtInt(taxaWith)} / ${fmtInt(c.taxa)}`, "taxa with a masked sequence" + (c.excluded_taxa ? ` · ${c.excluded_taxa} excluded` : "")),
       tile(`${fmtInt(lociWith)} / ${fmtInt(c.loci)}`, "loci with a masked sequence" + (c.skipped_loci ? ` · ${c.skipped_loci} skipped` : "")));
   }
@@ -727,15 +730,15 @@ function cellHover(g, li, compact) {
     else if (sr) { const lam = D.num("lam", g, li), lp = D.num("lam_p", g, li), sp = D.num("sim_log10p", g, li); row("too similar to", sr.text); if (sp !== null) row("too-similar test", `log10 p = ${fmt2(sp)}${barNote(D)}`); if (lam !== null) row("direction LRT", v4 && lp !== null ? `|2 ln LR| = ${fmt1(lam)}, ${dirTxt(D, g, li, lp)} (approximate χ², 1 df${bar10(D) !== null ? `; bar ${bar10(D)}` : ""})` : `|2 ln LR| = ${fmt1(lam)}, p = ${lp < 1e-4 ? lp.toExponential(1) : fmt3(lp)} (χ², 1 df)`); const rf = D.num("row_factor", g, li); if (rf !== null && rf < 1) row("row factor", `${fmt3(rf)} (the pair was tested against ${fmt3(rf)} × its expectation: ${v4 ? "one of the two" : "the sequence"} sits below expectation against its other comparators too)`); const gf = D.num("depth_factor", g, li); if (gf !== null && gf < 1) row("depth factor", `${fmt3(gf)} (pairs this far apart sit at ${fmt3(gf)} × expectation at this locus; the pair was tested against row factor × depth factor × its expectation)`); }
     const s2v = D.s2 ? D.s2(i) : 0;
     if (s2v & 1) {
-      const rcr = D.rcAt && D.rcAt(i); const rcman = D.man.random_comparators;
+      const rcr = D.rcAt && D.rcAt(i); const rcman = bsMan(D);
       let vp = rcr && !Number.isNaN(rcr.var_p) ? rcr.var_p : null;
-      if (vp === null && D.cols.rc_log10p && !Number.isNaN(D.cols.rc_log10p[i])) vp = D.cols.rc_log10p[i];
-      if (!compact || s2v & (2 | 4 | 8 | 64)) row("random comparators", `${rcman ? rcman.per_cell : ""} drawn from the taxon's pool${vp !== null ? `; stage 1 log10 p = ${fmt2(vp)}` : ""}${s2v & 2 ? ` — past the run's bar${barNote(D)}` : ", nothing unusual"}`);
-      if (D.cols.rc_rho && !Number.isNaN(D.cols.rc_rho[i]) && !compact) row("own rate ρ", `${fmt3(D.cols.rc_rho[i])} × the locus rate (the median over its comparators)`);
-      if (s2v & 4 && rcr) row("random: too close", `the far shortfall, log10 p = ${fmt2(rcr.lo)} at α${s2v & 32 ? " — not re-reported: a too-similar mask already covers the cell" : ""}`);
-      if (s2v & 64 && rcr) row("random: the donor side", `the divergent mask stands; without ρ the far shortfall names the donor side, log10 p = ${fmt2(rcr.lo)}${barNote(D)}`);
+      if (vp === null && D.cols.bs_log10p && !Number.isNaN(D.cols.bs_log10p[i])) vp = D.cols.bs_log10p[i];
+      if (!compact || s2v & (2 | 4 | 8 | 64)) row("broad sample", `${rcman ? rcman.per_cell : ""} comparators drawn from the taxon's pool${vp !== null ? `; stage 1 log10 p = ${fmt2(vp)}` : ""}${s2v & 2 ? ` — past the run's bar${barNote(D)}` : ", nothing unusual"}`);
+      if (D.cols.bs_rho && !Number.isNaN(D.cols.bs_rho[i]) && !compact) row("own rate ρ", `${fmt3(D.cols.bs_rho[i])} × the locus rate (the median over its comparators)`);
+      if (s2v & 4 && rcr) row("broad: too close", `the far shortfall, log10 p = ${fmt2(rcr.lo)} at α${s2v & 32 ? " — not re-reported: a too-similar mask already covers the cell" : ""}`);
+      if (s2v & 64 && rcr) row("broad: the donor side", `the divergent mask stands; without ρ the far shortfall names the donor side, log10 p = ${fmt2(rcr.lo)}${barNote(D)}`);
     }
-    if (s2v & 16 && !compact) row("random comparator role", "excluded as a comparator at this locus (too divergent, or a masked copy)");
+    if (s2v & 16 && !compact) row("broad-sample role", "excluded as a comparator at this locus (too divergent, or a masked copy)");
     if (!compact) row("", el("span", { class: "more" }, "click: open the alignment"));
   }
   box.append(t); return box;
@@ -1156,7 +1159,7 @@ const Sequence = (() => {
     const Y = T.closest !== null ? T.closest.taxon : null, ord = ["closest", "2nd closest", "3rd closest", "4th closest", "5th closest"];
     const rows = [{ g, role: "focal", tag: "focal", tip: "the focal sequence" },
       { g: Y, role: "closest", tag: "closest", tip: Y === null ? (D.format >= 7 ? "no taxon shares enough sites with the focal at this locus" : "this report does not record the closest match of a sequence whose closest-match test did not run (it is carried from report format 7)") : `the focal's closest match at this locus${comps.includes(Y) ? ` (also relative ${comps.indexOf(Y) + 1})` : " (not one of its relatives)"}` }];
-    if (sr && sr.rc && sr.pt !== null && sr.pt >= 0 && sr.pt !== Y) rows.push({ g: sr.pt, role: "random", tag: "comparator", tip: sr.note });
+    if (sr && sr.rc && sr.pt !== null && sr.pt >= 0 && sr.pt !== Y) rows.push({ g: sr.pt, role: "broad", tag: "comparator", tip: sr.note });
     comps.forEach((c, r) => rows.push({ g: c, role: "comp", tag: `relative ${r + 1}`, tip: `relative ${r + 1}: the ${ord[r] || `${r + 1}th closest`} taxon genome-wide` }));
     const divAt = rows.findIndex(r => r.role === "comp");
     const seqRow = gg => { if (!S) return null; for (let k = 0; k < S.taxa.length; k++) if (S.taxa[k] === gg) return S.blk.subarray(k * S.len, (k + 1) * S.len); return null; };
@@ -1166,7 +1169,7 @@ const Sequence = (() => {
     for (const r of rows.slice(1)) { let n = 0, d = 0; if (r.bytes && focal) for (let s = 0; s < len; s++) { const a = focal[s], b = r.bytes[s]; if (isGap(a) || isGap(b)) continue; n++; if (a !== b) d++; } r.shared = n; r.diff = n ? d / n : NaN; }
     // each row's colour is its own test's: the closest row blue when significantly too similar to the focal, a relative red when
     // significantly too divergent from it (the trees colour a taxon by whichever test fired: blue, red or black)
-    for (const r of rows) r.st = r.role === "focal" ? "focal" : r.g === null ? null : r.role === "closest" ? (T.blue.has(r.g) ? "blue" : null) : r.role === "random" ? (T.blue.has(r.g) ? "blue" : T.red.has(r.g) ? "red" : null) : (T.red.has(r.g) ? "red" : null);
+    for (const r of rows) r.st = r.role === "focal" ? "focal" : r.g === null ? null : r.role === "closest" ? (T.blue.has(r.g) ? "blue" : null) : r.role === "broad" ? (T.blue.has(r.g) ? "blue" : T.red.has(r.g) ? "red" : null) : (T.red.has(r.g) ? "red" : null);
     // per site: n, the relatives present (the closest match is never counted), and d, those that differ from the focal. A red
     // site has n >= 3 and d >= half of n, rounded up; a blue site is a red site where the closest match agrees with the focal.
     // From the rows when they are carried, else roughly from the tool's site codes
@@ -1189,9 +1192,9 @@ const Sequence = (() => {
     const divMain = D.cols.n_comp[i] === D.K ? D.cols.n_fail[i] >= D.M : D.cols.n_fail[i] >= (D.cols.n_comp[i] >> 1) + 1;
     if (dv) says.push(withStars("significantly too divergent", divP));
     const donorTxt = D.format < 4 ? "" : sd & 8 ? " (donor uncertain: both masked)" : sd & (2 | 32) ? ` (${Pn} looks more likely to be the donor)` : sd & 128 ? ` (${D.taxa.names[g]} looks more likely to be the donor)` : "";
-    if (sr && sr.rc && Pn && sm) says.push(withStars(`significantly too close to ${Pn}, a random comparator`, rcr ? rcr.lo : null));
+    if (sr && sr.rc && Pn && sm) says.push(withStars(`significantly too close to ${Pn}, a broad-sample comparator`, rcr ? rcr.lo : null));
     else if (Pn && (D.format < 4 || sm)) says.push(withStars(`significantly too similar to ${Pn}`, simP) + donorTxt);
-    if ((s2v & 64) && Pn) says.push(withStars(`the random comparators also call it too close to ${Pn}'s side`, rcr ? rcr.lo : null));
+    if ((s2v & 64) && Pn) says.push(withStars(`the broad sample also calls it too close to ${Pn}'s side`, rcr ? rcr.lo : null));
     const verdict = D.cols.n_comp[i] === 0 ? `Not tested: ${stateReason(D, g, li) || "no comparators"}` : `${masked ? "Masked" : off ? "Not masked (masking was off)" : "Not masked"}${says.length ? ": " + says.join("; ") : ""}${sd & 4 ? " (fewer comparators than requested)" : ""}`;
     // the tests in words, for the hovers: the focal's own two, or a row's against the focal
     const lp = (what, p) => p === null || p === undefined || Number.isNaN(p) ? `${what}: not tested` : `${what}: log10 p ${fmt2(p)}${T.stars(p) ? " " + T.stars(p) : ""}`, barTxt = T.bar !== null ? ` · bar ${fmt2(T.bar)}` : "";
@@ -1200,7 +1203,7 @@ const Sequence = (() => {
       if (r.role === "focal") return focalNote ? focalNote + barTxt : "";
       if (r.g === null) return "";
       if (r.role === "closest") return lp("too similar to the focal", T.blue.has(r.g) ? T.blue.get(r.g).p : T.closest.p) + barTxt;
-      if (r.role === "random") return T.blue.has(r.g) ? lp("too close to the focal (the random-comparator test)", T.blue.get(r.g).p) + " · at α" : T.red.has(r.g) ? lp("the strongest lean of the far half (the random-comparator test)", T.red.get(r.g)) + " · at α" : "";
+      if (r.role === "broad") return T.blue.has(r.g) ? lp("too close to the focal (the broad-sample test)", T.blue.get(r.g).p) + " · at α" : T.red.has(r.g) ? lp("the strongest lean of the far half (the broad-sample test)", T.red.get(r.g)) + " · at α" : "";
       const t = T.comp && T.comp.get(r.g); if (!t) return T.blue.has(r.g) ? lp("too similar to the focal", T.blue.get(r.g).p) + barTxt : "";
       return `${lp("too divergent from the focal", t.div)} · ${lp("too similar to the focal", T.blue.has(r.g) ? T.blue.get(r.g).p : t.sim)}${barTxt}`;
     };
@@ -1240,14 +1243,14 @@ const Sequence = (() => {
       if (ri === divAt) for (const c of Object.values(cols)) c.append(el("div", { class: "rule", style: `height:${RULE_H}px` }));
       const note = testNote(r), nm = r.g === null ? (D.format >= 7 ? "none" : "not recorded") : D.taxa.names[r.g];
       const tip = `${r.g === null ? "" : nm + ": "}${r.tip}${r.role !== "focal" && r.shared ? `; differs from the focal at ${fmt1(100 * r.diff)}% of ${fmtInt(r.shared)} shared sites` : ""}${note ? "\n" + note : ""}`;
-      cols.gut.append(el("div", { class: "seqnm gut", style: `height:${ROW_H}px`, title: ri === 0 ? "the similarity test: is the focal closer to its closest match than its relatives are?" : ri === divAt ? "the divergence test: is the focal further from its relatives than expected?" : r.role === "random" ? "the random-comparator test: a broad sample of taxa against the focal; this row is its decisive comparator" : null }, ri === 0 ? "similarity" : ri === divAt ? "divergence" : r.role === "random" ? "random" : ""));
+      cols.gut.append(el("div", { class: "seqnm gut", style: `height:${ROW_H}px`, title: ri === 0 ? "the similarity test: is the focal closer to its closest match than its relatives are?" : ri === divAt ? "the divergence test: is the focal further from its relatives than expected?" : r.role === "broad" ? "the broad-sample test: a broad sample of taxa against the focal; this row is its decisive comparator" : null }, ri === 0 ? "similarity" : ri === divAt ? "divergence" : r.role === "broad" ? "broad" : ""));
       cols.role.append(el("div", { class: "seqnm role", style: `height:${ROW_H}px`, title: tip }, r.tag));
       cols.names.append(el("div", { class: "seqnm", style: `height:${ROW_H}px`, title: tip }, el("span", { class: "nm" + (r.st ? " st-" + r.st : "") + (r.g === null ? " none" : "") }, nm)));
       if (!T.pcol) return;
       let bg = D.col.passCell, txt = "–", ink = cssVar("--muted");
       if (r.role === "focal") { const fp = dv && sm ? Math.min(divP ?? Infinity, simP ?? Infinity) : dv ? divP : sm ? simP : null; bg = dv && sm ? D.col.both : dv ? D.col.red : sm ? D.col.blue : D.col.passCell; txt = dv || sm ? T.stars(fp) : "–"; if (dv || sm) ink = "#ffffff"; }
       else if (r.role === "closest") { if (r.g !== null && T.blue.has(r.g)) { bg = D.col.blue; txt = T.stars(T.blue.get(r.g).p); ink = "#ffffff"; } }
-      else if (r.role === "random") { if (r.g !== null && T.blue.has(r.g)) { bg = D.col.blue; txt = T.stars(T.blue.get(r.g).p); ink = "#ffffff"; } else if (r.g !== null && T.red.has(r.g)) { bg = D.col.red; txt = T.stars(T.red.get(r.g)); ink = "#ffffff"; } }
+      else if (r.role === "broad") { if (r.g !== null && T.blue.has(r.g)) { bg = D.col.blue; txt = T.stars(T.blue.get(r.g).p); ink = "#ffffff"; } else if (r.g !== null && T.red.has(r.g)) { bg = D.col.red; txt = T.stars(T.red.get(r.g)); ink = "#ffffff"; } }
       else if (r.st === "red") { bg = D.col.red; txt = T.stars(T.red.get(r.g)); ink = "#ffffff"; }
       cols.p.append(el("div", { class: "pcell", style: `height:${ROW_H}px`, title: note || "" }, el("span", { style: `background:${bg}; color:${ink}` }, txt)));
     });

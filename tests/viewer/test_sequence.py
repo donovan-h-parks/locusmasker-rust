@@ -109,9 +109,9 @@ class TestHeaderAndColours:
         # names: focal orange; the closest row blue when significantly too similar; a relative red when significantly too divergent
         cls = page.eval_on_selector_all(".seq-names .seqnm .nm", "els => els.map(e => e.className)")
         s2 = int(R.arr("cells/side2.npy")[g, li]) if R.has("cells/side2.npy") else 0
-        rc_y = bool(s2 & (4 | 64)) and R.has("cells/rc_partner.npy") and E.Y is not None and any(
-            int(rl) == li and int(rt) == g and int(rp) == E.Y for rl, rt, rp in zip(R.arr("cells/rc_locus.npy"), R.arr("cells/rc_taxon.npy"), R.arr("cells/rc_partner.npy")))
-        off = 1 if any("random comparator" in t for t in page.eval_on_selector_all(".seq-role .seqnm", "els => els.map(e => e.textContent)")) else 0
+        rc_y = bool(s2 & (4 | 64)) and R.has("cells/bs_partner.npy") and E.Y is not None and any(
+            int(rl) == li and int(rt) == g and int(rp) == E.Y for rl, rt, rp in zip(R.arr("cells/bs_locus.npy"), R.arr("cells/bs_taxon.npy"), R.arr("cells/bs_partner.npy")))
+        off = 1 if any("broad comparator" in t for t in page.eval_on_selector_all(".seq-role .seqnm", "els => els.map(e => e.textContent)")) else 0
         assert "st-focal" in cls[0] and (("st-blue" in cls[1]) == ((E.Y in E.pairs) or rc_y))   # the closest row is also blue when it is the labelled donor side
         for k, c in enumerate(E.comps): assert ("st-red" in cls[2 + off + k]) == (c in E.red), (kind, c)
         # the p column

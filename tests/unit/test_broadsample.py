@@ -1,6 +1,5 @@
-"""The random-comparator test's pieces: the numpy-only special functions against scipy, the scale null's calibration,
-the order-statistic bound, and the hash draws (deterministic, distinct, uniform enough, and free of numpy's generator
-algorithms)."""
+"""The broad-sample test's pieces: the numpy-only special functions against scipy, the scale null's calibration, and
+the hash draws (deterministic, distinct, uniform enough, and free of numpy's generator algorithms)."""
 import math
 import numpy as np
 import pytest
@@ -43,7 +42,7 @@ class TestScaleNull:
         s2 = np.exp(rng.normal(0.0, 0.4, n))
         x = s2 * rng.chisquare(nu) / nu
         x = x / np.median(x)
-        lp, tau = rng_lp = lo.rc_null(x, k)
+        lp, tau = rng_lp = lo.bs_null(x, k)
         assert 0.25 < tau < 0.6
         p = np.exp(lp)
         assert abs(float((p < 0.1).mean()) - 0.1) < 0.02
@@ -53,7 +52,7 @@ class TestScaleNull:
         rng = np.random.default_rng(3); n = 5_000
         k = np.full(n, 50); x = rng.chisquare(49, n) / 49
         x[0] = 8.0
-        lp, _ = lo.rc_null(x / np.median(x), k)
+        lp, _ = lo.bs_null(x / np.median(x), k)
         assert lp[0] < math.log(1e-12) and lp[1:].min() > math.log(1e-6)
 
 

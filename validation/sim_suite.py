@@ -30,10 +30,10 @@ them still work and the numbers compare across versions; two had to change, mark
 Appended, new in 0.11:
   contam_any, swap_any, chimera_any, misalign_any a/b   planted cells masked for any reason.
   nearcopy_named a/b   the true recipient is masked as a copy (reason similar or both) and
-          masked.csv names the donor as its source (similar_partner).
+          masked.csv names the donor as its source (the masking family's partner column).
   nearcopy_reversed n  the donor is masked as a copy naming the true recipient: the wrong direction.
   swap_named a/b, swap_named_ok n   of the b planted swap cells masked for any reason, a name a
-          source (similar_role copy), and n of those name the swap partner or one of its five
+          source (role copy in the masking family's columns), and n of those name the swap partner or one of its five
           closest taxa by m (report.npz taxa/closest.npy): the lineage the cell's sequence came from.
   chimera_named a/b, chimera_named_ok n   the same for chimeric cells; the right source is the donor.
   FPsim_cells  cells masked as a copy (similar or both) where neither the cell nor its named source
@@ -239,7 +239,9 @@ def score(scan, events):
     why = {c: r["reason"] for c, r in masked.items()}
     def source(c):                                  # the taxon a masked sequence is named a copy of, else None
         r = masked.get(c)
-        return r["similar_partner"] if r is not None and r["similar_role"] == "copy" else None
+        if r is None: return None
+        partner, role = (r["comparator_partner"], r["comparator_role"]) if r["comparator_role"] else (r["closest_partner"], r["closest_role"])
+        return partner if role == "copy" else None
     res = zero(); planted = set()
     def caught(kind, c, right=None):                # one planted cell: test 1, any reason, and the source it names
         res[kind][1] += 1; res[kind][0] += why.get(c) in DIV
@@ -271,7 +273,8 @@ def score(scan, events):
     res["fp_div"] = sum(1 for c, w in why.items() if w in DIV and c not in planted)
     res["fp_sim"] = sum(1 for (l, pr), rc in pairs.items() if rc is not None and not any((l, t) in planted for t in pr))
     res["fp_sim_cells"] = sum(1 for (l, t), r in masked.items()
-                              if r["reason"] in SIM and (l, t) not in planted and (l, r["similar_partner"]) not in planted)
+                              if r["reason"] in SIM and (l, t) not in planted
+                              and (l, r["comparator_partner"] or r["closest_partner"] or r["broad_partner"]) not in planted)
     res["fp_any"] = sum(1 for c in why if c not in planted)
     res["cells"] = int(man["counts"]["cells"])
     return res

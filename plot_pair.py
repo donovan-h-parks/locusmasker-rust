@@ -30,7 +30,7 @@ if Z is not None:                                                    # name a ta
     names = json.loads(Z.read("taxa.json"))["names"]
     for x in (a.a, a.b):
         if x not in names: raise SystemExit(f"{x} is not a taxon of the run in {a.dir}")
-# every test of the pair, by locus and test (divergent, similar_comparator, similar_closest; one row per direction
+# every test of the pair, by locus and test (divergent, comparator, closest; one row per direction
 # tested); the file is read as bytes and a line is split only when it holds the two names side by side, so a large
 # file streams quickly
 COLS = ("test", "locus", "taxon", "comparator", "overlap", "mismatches", "expected", "row_factor", "log10p", "fail")
@@ -50,18 +50,20 @@ if os.path.exists(f"{a.dir}/masked.csv"):
     with open(f"{a.dir}/masked.csv", newline="") as fh:
         for r in csv.DictReader(fh):
             if r["taxon"] == a.a: masked[r["locus"]] = r["reason"]
-            if r["taxon"] in (a.a, a.b) and r.get("similar_partner") in (a.a, a.b) and r.get("similar_role") in ("copy", "uncertain"):
-                copy[r["locus"]] = r["taxon"] if r["similar_role"] == "copy" else "?"
+            partner = r.get("comparator_partner") if r.get("comparator_role") else r.get("closest_partner")
+            role = r.get("comparator_role") or r.get("closest_role")
+            if r["taxon"] in (a.a, a.b) and partner in (a.a, a.b) and role in ("copy", "uncertain"):
+                copy[r["locus"]] = r["taxon"] if role == "copy" else "?"
 loci = sorted(rows); R = [rows[l] for l in loci]
 def test_row(d):
     """the row whose expectation the point shows: the too-similar comparator test (at m, before the row factor), else the
     too-divergent test, else the closest-match test"""
-    return (d.get("similar_comparator") or d.get("divergent") or d["similar_closest"])[0]
+    return (d.get("comparator") or d.get("divergent") or d["closest"])[0]
 num = lambda d, k: float(test_row(d)[c[k]])
 o = np.array([num(d, "overlap") for d in R]); obs = 100.0 * np.array([num(d, "mismatches") for d in R]) / o
 exp = 100.0 * np.array([num(d, "expected") for d in R]) / o
 failed = lambda d, k: any(f[c["fail"]] == "1" for f in d.get(k, []))
-hi = np.array([failed(d, "divergent") for d in R]); lo = np.array([failed(d, "similar_comparator") or failed(d, "similar_closest") for d in R])
+hi = np.array([failed(d, "divergent") for d in R]); lo = np.array([failed(d, "comparator") or failed(d, "closest") for d in R])
 copy_of = np.array([copy.get(l, "") for l in loci], dtype=object)
 ring = np.array([l in masked for l in loci])
 def pair_m(kind):
@@ -75,7 +77,7 @@ def pair_m(kind):
         f = d[kind][0]; P_, r_ = float(LJ["plateau"][at[l]]), float(LJ["test_rate"][at[l]]); p_ = 100.0 * float(f[c["expected"]]) / float(f[c["overlap"]])
         v.append(P_ * (1.0 - math.exp(P_ * math.log(1.0 - min(p_, 0.98 * P_) / P_) / (r_ * P_))))
     return float(np.median(v)) if v else None
-m, m_hi = pair_m("similar_comparator"), pair_m("divergent")
+m, m_hi = pair_m("comparator"), pair_m("divergent")
 mtxt = ("" if m is None and m_hi is None else f"pair divergence m = {m if m is not None else m_hi:.2f}%"
         + (f" (the too-divergent test at its floor, {m_hi:.2f}%)" if m is not None and m_hi is not None and m_hi > 1.005 * m else "") + " · ")
 ncopy = [int(((copy_of == x) & lo).sum()) for x in (a.a, a.b)]; nunc = int(((copy_of == "?") & lo).sum())

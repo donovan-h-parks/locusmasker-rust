@@ -110,28 +110,32 @@ Method:
 Outputs (in --out; <stem> is the alignment file's name without extension)
   <stem>.masked.<ext>  the alignment in its input format with every masked sequence blanked
   masked.csv           ONE row per masked sequence and why: reason (divergent, similar or both),
-                       residues_masked (its residues at the locus; the whole stretch is blanked), and
-                       the evidence of both tests. Test 1: divergent_fails of divergent_comparators,
-                       the observed and expected divergence (%; medians over the comparators),
-                       divergent_excess_m (the extra divergence beyond expectation, multiple-hit
-                       corrected and divided by the locus rate: % on the scale of m) and
-                       divergent_log10p, the p-value of the comparison that decides the majority.
-                       Test 2: similar_test (comparator or closest: the arm whose test fired lowest, or
-                       the closest-match test the sequence got when none fired), similar_partner (the
-                       other member of the pair, or the closest match) and similar_role (copy, source or
-                       uncertain: the direction is called when the larger of the two members' test-1
-                       excesses is more than --donor-threshold times the smaller, else both are masked;
-                       empty when no pair fired), the pair's observed and expected divergence (%; the
-                       expectation before the row factor), similar_row_factor (comparator arm),
-                       similar_log10p, similar_relatives (closest-match arm: the comparators whose rate
-                       to the match set the expectation) and partner_excess_m (the partner's test-1
-                       excess, next to this sequence's divergent_excess_m: the margin of the copy call).
-                       Then its comparators, closest first, and log10_bar, the bar every p-value was
-                       held to. p-values are floored at 1e-300 (log10 -300).
+                       residues_masked (its residues at the locus; the whole stretch is blanked), then
+                       one column family per test, each with its effect and its p where the test ran.
+                       DIVERGENCE: divergent_fails of divergent_comparators, the observed and expected
+                       divergence (%; medians over the comparators), divergent_excess_m (the extra
+                       divergence beyond expectation, multiple-hit corrected and divided by the locus
+                       rate: % on the scale of m) and divergent_log10p, the p of the comparison that
+                       decides the majority. COMPARATOR test: the fired pair when its arm fired
+                       (comparator_partner, comparator_role: copy, source or uncertain - the direction
+                       is called when the larger of the two members' divergence excesses is more than
+                       --donor-threshold times the smaller, else both are masked), else the sequence's
+                       most similar comparator comparison with an empty role; observed and expected
+                       divergence (%; before the row factor), comparator_row_factor, comparator_log10p
+                       and comparator_partner_excess_m (the partner's divergence excess, next to this
+                       sequence's divergent_excess_m: the margin of the copy call). CLOSEST-MATCH test
+                       (run when the locus's most similar sequence is not a comparator): closest_partner,
+                       closest_role, observed and expected (%), closest_log10p, closest_relatives (the
+                       comparators whose rate to the match set the expectation) and
+                       closest_partner_excess_m. BROAD-SAMPLE test: broad_partner (the decisive far
+                       member of the sample), observed and expected (%) against it and broad_log10p
+                       (on a divergent row these are the donor-side label). Then its comparators,
+                       closest first, and log10_bar, the bar every p was held to. p-values are floored
+                       at 1e-300 (log10 -300).
   tests.tsv.gz         with --all-tests only: one row per test performed, the focal sequence first.
-                       test (divergent, similar_comparator, similar_closest), locus, taxon, comparator,
+                       test (divergent, comparator, closest, one row per comparison), locus, taxon, comparator,
                        overlap (shared sites), mismatches, expected (expected mismatches; before the row
-                       factor), row_factor (similar_comparator rows), log10p (exact), fail (0 or 1).
+                       factor), row_factor (comparator rows), log10p (exact), fail (0 or 1).
                        Large (every comparison at every locus); tabs or line breaks in names are
                        written as spaces.
   report.html          the interactive report, one file with its data inside (report.npz holds the
@@ -167,12 +171,12 @@ PHI_N0 = 30.0           # shrinkage weight: a locus's dispersion is pulled towar
 MIN_LOCI_FOR_M = 5      # pairs overlapping in fewer loci have no m and are never compared
 MIN_LOCI_PER_TAXON = 10 # a taxon needs this many loci with >= fit-overlap residues to take part
 MIN_FIT_PAIRS = 8       # a locus needs this many fit pairs to be tested (or to get a rate)
-RC_PER_COMP = 10        # random comparators per cell: this many per requested comparator (50 at the default 5)
-RC_POOL = 100           # each taxon's pool of candidate random comparators: this many per requested comparator (500)
-RC_MIN = 5              # a cell with fewer valid random comparators than this is not tested
-RC_VAR_SCREEN = 4.0     # a comparator whose own row variance exceeds this times the locus median is dropped
-RC_SCREEN_LOGP = -6.907755278982137   # log 1e-3: a comparator whose own side p is below this is dropped from that side
-RC_SEED = 0x5eed1517    # the constant behind the pools and the per-cell draws (our own hashes: no library generator)
+BS_PER_COMP = 10        # broad sample per cell: this many per requested comparator (50 at the default 5)
+BS_POOL = 100           # each taxon's pool of candidate broad sample: this many per requested comparator (500)
+BS_MIN = 5              # a cell with fewer valid broad sample than this is not tested
+BS_VAR_SCREEN = 4.0     # a comparator whose own row variance exceeds this times the locus median is dropped
+BS_SCREEN_LOGP = -6.907755278982137   # log 1e-3: a comparator whose own side p is below this is dropped from that side
+BS_SEED = 0x5eed1517    # the constant behind the pools and the per-cell draws (our own hashes: no library generator)
 PASS1_LOCI_PER_WORKER = 64             # pass one with small loci: a worker process per this many loci
 PASS1_RETURN_MAX = 512 << 20           # ... when the pair counts the workers send back are at most this many bytes
 PAIR_CHUNK_MIN = 32 << 20              # the pair stage's chunks of pairs hold between these many bytes of temporaries
@@ -214,7 +218,7 @@ BAND_SLOTS = 4                    # per (taxon, locus) the closest-match band ke
                                   # minimum, up to this many (one is the rule; more needs two overlaps with 2 o1 o2 >= 1e9)
 LSET_ELEMENTS = 1 << 20           # a locus's closest matches are found in taxa x taxa slices of about this many elements (rows = this / taxa)
 __version__ = "0.13.1"
-REPORT_FORMAT = 8                 # bundle format version; the viewer refuses a newer one (3: tree branch lengths are F81-corrected; 4: the too-similar test over every pair; 7: every test of every cell, the closest match at the locus, the uncertain-direction pairs; 8: the random-comparator test, cells/side2 and cells/rc_*)
+REPORT_FORMAT = 8                 # bundle format version; the viewer refuses a newer one (3: tree branch lengths are F81-corrected; 4: the too-similar test over every pair; 7: every test of every cell, the closest match at the locus, the uncertain-direction pairs; 8: the broad-sample test, cells/side2 and cells/bs_*)
 DENSE_CELLS_MAX = 8_000_000       # per-cell numeric report columns are dense (taxa x loci) up to this many cells, sparse beyond
 BEST_MATCH_ALL_MAX_TAXA = 2000    # best matches for every tested cell up to this many taxa; beyond, only for cells with a fail
 BEST_MATCH_MIN_SITES = 30         # a best match needs this many sites shared with the focal (as plot_panels.best_matches)
@@ -828,7 +832,7 @@ def wmedian1(v, w):
     cw = np.cumsum(w); return float(v[min(int((cw < cw[-1] / 2).sum()), len(v) - 1)]) if cw[-1] > 0 else float(np.median(v))
 
 
-# ---------------------------------------------------------------- the random-comparator test's special functions
+# ---------------------------------------------------------------- the broad-sample test's special functions
 # (numpy is the only hard dependency, so the few pieces of scipy.special the scale null needs are implemented here;
 # the unit tests check each against scipy where scipy is installed)
 
@@ -896,7 +900,7 @@ def chi2_logsf_np(x, nu):
     return np.where(z <= 0.0, 0.0, np.minimum(out, 0.0))
 
 
-def rc_null(x, k, chunk=200_000, threads=1):
+def bs_null(x, k, chunk=200_000, threads=1):
     """log p of each row's variance ratio x (its residual variance over the locus median, k comparators) under the
     scale null: rows differ in scale, x = sigma2 chi2_(k-1)/(k-1) with log sigma2 ~ Normal(mu, tau2), mu and tau2 from
     the bulk of all rows dataset-wide (robust location and spread of log x less the chi-square's own part), the
@@ -922,7 +926,7 @@ def rc_null(x, k, chunk=200_000, threads=1):
     return np.minimum(out, 0.0), math.sqrt(tau2)
 
 
-# ---------------------------------------------------------------- the random-comparator draws
+# ---------------------------------------------------------------- the broad-sample draws
 # (our own arithmetic end to end: the pools and draws depend only on the taxon and locus indices and these constants,
 # never on numpy's generator algorithms, threads or block sizes, so the same input gives the same comparators anywhere)
 
@@ -964,7 +968,7 @@ def _hash_draw(keys, m, need, start=0):
         got, ok = _first_distinct(vals, need)
         out[todo[ok]] = got[ok]
         todo = todo[~ok]; start += S; S *= 2                                 # the unlucky rows draw further slots; same answer whatever the batch
-        if start > (1 << 20): raise RuntimeError(f"random-comparator draw could not find {need} distinct of {m}")
+        if start > (1 << 20): raise RuntimeError(f"broad-sample draw could not find {need} distinct of {m}")
     return out
 
 
@@ -1154,13 +1158,13 @@ def memory_estimate(n, L, loci, C=None, full=None, K_eff=5, rc=True):
     """bytes the run holds resident, from the alignment's shape: the alignment twice (the raw rows and the residue
     codes), each taxon's candidate list (C entries of 32 bytes), the closest-match band entries of every cell (24
     bytes per slot), up to FULL_M_MAX_TAXA taxa the full m matrix and its floor, up to SWEEP_BLOCK_MIN taxa the
-    counts of every pair at every locus (the one block pair's slab, kept for the run), and the random-comparator
-    pools with their pair divergences (RC_POOL x K_eff per taxon, 12 bytes each). The sweep's per-worker slabs
+    counts of every pair at every locus (the one block pair's slab, kept for the run), and the broad-sample
+    pools with their pair divergences (BS_POOL x K_eff per taxon, 12 bytes each). The sweep's per-worker slabs
     and the stages' other temporaries are sized to the room left and are not counted. Returns the total and the six parts."""
     nloc = len(loci); C = min(C or CANDIDATES, n); full = n <= FULL_M_MAX_TAXA if full is None else full
     longest = max((len(st) for _, st in loci), default=0); slab = 2 * nloc * n * n * (2 if longest < 65536 else 4) if n <= SWEEP_BLOCK_MIN else 0
     x = 2 * n * L; lists = n * C * 32; closest = n * nloc * BAND_SLOTS * 24; mfull = 2 * n * n * 8 if full else 0
-    mrc = n * min(RC_POOL * K_eff, max(n - 1, 0)) * 12 if rc else 0
+    mrc = n * min(BS_POOL * K_eff, max(n - 1, 0)) * 12 if rc else 0
     return x + lists + closest + mfull + slab + mrc, x, lists, closest, mfull, slab, mrc
 
 
@@ -1375,7 +1379,7 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
         for k in ("n_comp", "n_fail", "n_similar", "side", "focal_sites"): put(f"cells/{k}.npy", rep[k])
         if "side2" in rep:
             put("cells/side2.npy", rep["side2"])
-            for k in ("rc_locus", "rc_taxon", "rc_var_log10p", "rc_lo_log10p", "rc_partner", "rc_log10p", "rc_rho"):
+            for k in ("bs_locus", "bs_taxon", "bs_var_log10p", "bs_lo_log10p", "bs_partner", "bs_log10p", "bs_rho"):
                 if k in rep: put(f"cells/{k}.npy", rep[k])
         numcols = ("med_identity", "med_expected", "excess_m", "closest", "closest_overlap", "closest_identity", "closest_expected",
                    "best_match", "best_match_identity", "partner", "div_log10p", "sim_log10p", "locus_closest", "locus_closest_log10p")
@@ -1386,7 +1390,7 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
             put(f"codes/{li}.npy", blk); put(f"codes/{li}_cells.npy", cells_)
         for li, tr in rep["trees"].items(): put_json(f"trees/{li}.json", tr, compact=True)         # machine-read only: no indentation
         for li, ev in rep["similar"].items(): put_json(f"similar/{li}.json", ev, compact=True)
-        for li, ev in rep.get("rc_records", {}).items(): put_json(f"random/{li}.json", ev, compact=True)
+        for li, ev in rep.get("bs_records", {}).items(): put_json(f"broadsample/{li}.json", ev, compact=True)
         for li, (rows_, blk) in rep["seqs"].items():
             put(f"seq/{li}.npy", blk); put(f"seq/{li}_taxa.npy", rows_)
         put("taxa/closest.npy", rep["taxa_closest"])
@@ -1423,8 +1427,8 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
                        partitions=os.path.basename(a.partitions) if a.partitions else None),
             dataset=a.name or (os.path.basename(os.path.dirname(os.path.abspath(a.aln))) if os.path.splitext(os.path.basename(a.aln))[0].lower() == "alignment" and os.path.basename(os.path.dirname(os.path.abspath(a.aln))) not in ("", ".", "work") else os.path.splitext(os.path.basename(a.aln))[0]),
             counts=counts, test=dict(tests=int(rep["tests"]["total"]), divergent_tests=int(rep["tests"]["divergent"]),
-                                     random_tests=int(rep["tests"].get("random", 0)),
-                                     similar_comparator_tests=int(rep["tests"]["similar_comparator"]), similar_closest_tests=int(rep["tests"]["similar_closest"]),
+                                     broad_sample_tests=int(rep["tests"].get("broad_sample", 0)),
+                                     comparator_tests=int(rep["tests"]["comparator"]), closest_tests=int(rep["tests"]["closest"]),
                                      similar_candidates=int(rep["tests"]["locus_sets"]), comparisons=int(rep["tests"]["divergent"]),
                                      bonferroni_k=round(float(rep["kq"]), 4), log_bar=round(float(rep["logbar"]), 4), log10_bar=round(float(rep["logbar"]) / LN10, 4),
                                      phi_dataset=round(float(rep["phi_bar"]), 6), half=HALF),
@@ -1434,8 +1438,8 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
                          best_match_cells="all" if n <= BEST_MATCH_ALL_MAX_TAXA else "fails"),
             code_map=dict(mismatch_count_max=K_eff, similar_base=CODE_SIMILAR, tick=CODE_TICK, absent=CODE_ABSENT),
             side_bits=dict(masked_divergent=1, masked_similar=2, ambiguous=4, similar_uncertain=8, flagged_not_masked=16, similar_not_masked=32, similar_tested=64, similar_source=128),
-            side2_bits=dict(random_tested=1, random_past_bar=2, random_close=4, random_excluded_comparator=16, random_close_not_reported=32, divergent_also_close_label=64),
-            random_comparators=rep.get("rc_summary"),
+            side2_bits=dict(broad_tested=1, broad_past_bar=2, broad_close=4, broad_excluded_sample=16, broad_close_not_reported=32, divergent_also_close_label=64),
+            broad_sample=rep.get("bs_summary"),
             restart=rep.get("restart"), lists_extended=rep.get("lists_extended"),
             timings=dict(PROG.durations, total=round(time.time() - t0, 2)))
         put_json("manifest.json", manifest)
@@ -2305,36 +2309,36 @@ def m_rows(P, rows):
     return out
 
 
-def rc_keys_taxa(n):
+def bs_keys_taxa(n):
     """each taxon's hash key for its pool draw"""
-    return _sm64(np.arange(1, n + 1, dtype=np.uint64) ^ np.uint64(RC_SEED))
+    return _sm64(np.arange(1, n + 1, dtype=np.uint64) ^ np.uint64(BS_SEED))
 
 
-def rc_keys_cells(gidx, li):
+def bs_keys_cells(gidx, li):
     """each cell's hash key for its comparator draw at locus li"""
     with np.errstate(over="ignore"):                                   # uint64 wraparound is the point of the mix
         mix = np.uint64(li + 1) * np.uint64(0x9E3779B97F4A7C15)
-    return _sm64(_sm64(np.asarray(gidx, np.int64).astype(np.uint64) + np.uint64(1)) ^ mix ^ np.uint64(RC_SEED))
+    return _sm64(_sm64(np.asarray(gidx, np.int64).astype(np.uint64) + np.uint64(1)) ^ mix ^ np.uint64(BS_SEED))
 
 
-def rc_prepare(P, K_eff, threads, progress=None):
-    """the random-comparator pools: per taxon min(RC_POOL x K_eff, n-1) candidates drawn by hash (self excluded), and
+def bs_prepare(P, K_eff, threads, progress=None):
+    """the broad-sample pools: per taxon min(BS_POOL x K_eff, n-1) candidates drawn by hash (self excluded), and
     the genome-wide m* of every (taxon, pool member) pair, from the kept matrix or computed per pair above
     FULL_M_MAX_TAXA. Everything downstream reads mv by pool slot, so no other pair's m is ever needed"""
     n = P.X.shape[0]
-    k = min(RC_PER_COMP * K_eff, n - 1); Pn = min(RC_POOL * K_eff, n - 1)
-    if k < RC_MIN: return None
+    k = min(BS_PER_COMP * K_eff, n - 1); Pn = min(BS_POOL * K_eff, n - 1)
+    if k < BS_MIN: return None
     if Pn >= n - 1:
         pool = np.tile(np.arange(n - 1, dtype=np.int64), (n, 1))              # every other taxon (few taxa: n - 1 <= the pool)
     else:
-        pool = _hash_draw(rc_keys_taxa(n), n - 1, Pn)
+        pool = _hash_draw(bs_keys_taxa(n), n - 1, Pn)
     pool += (pool >= np.arange(n)[:, None]).astype(np.int64)                  # values in [0, n) skipping self
     if P.m_full is not None:
         g = np.repeat(np.arange(n), Pn); c = pool.ravel()
         m_ = P.m_full[g, c]; f_ = P.mfl_full[g, c]
         ms = np.where(np.isfinite(f_), np.fmax(m_, f_), m_).reshape(n, Pn)
     else:                                                                     # per-pair m for the pool pairs, forked by taxon slices
-        if progress: progress.start("random-comparator pool m", n)
+        if progress: progress.start("broad-sample pool m", n)
         def rows_ms(sl):
             out = np.empty((len(sl), Pn))
             for i, g_ in enumerate(sl):
@@ -2376,7 +2380,7 @@ def main():
     ap.add_argument("--donor-threshold", type=float, default=2.0, help="the direction of a too-similar pair is called (the copy masked, its source not) when the larger of the "
                     "two members' test-1 excesses, in absolute value, is more than this many times the smaller; otherwise the direction is uncertain and both members are masked (default 2)")
     ap.add_argument("--mask-similar-only", action="store_true"); ap.add_argument("--mask-different-only", action="store_true")
-    ap.add_argument("--no-random-comparators", action="store_true", help="skip the random-comparator test (the third test: a broad sample of taxa against each sequence, catching transfers "
+    ap.add_argument("--no-broad-sample", action="store_true", help="skip the broad-sample test (the third test: a broad sample of taxa against each sequence, catching transfers "
                     "and contamination that moved a whole clade, which the closest-relative tests cannot see); this is for comparison runs")
     ap.add_argument("--threads", type=int, default=1, help="at most this many threads or worker processes (0: every CPU this process may use); each stage takes as many as pay off")
     ap.add_argument("--candidates", type=int, help=f"the closest genomes each taxon keeps as its candidate comparators (default {CANDIDATES}); a taxon whose list runs out at a locus gets its full row computed afterwards, so any value gives the same results")
@@ -2445,11 +2449,11 @@ def main():
         LOG(f"report.html is likely to exceed the one-file ceiling ({fmem(REPORT_ONE_FILE_MAX)} of bundle: this run's per-cell members alone come to about {fmem(floor)} "
             f"compressed): report.npz and the tables (taxa.tsv, loci.tsv, summary.json) will be written, and the page only if the bundle fits")
     global MEM_RESIDENT_EST
-    need, mx, mlists, mclosest, mfull, mslab, mrc = memory_estimate(n, L, loci, a.candidates, K_eff=K_eff, rc=not a.no_random_comparators); MEM_RESIDENT_EST = need
+    need, mx, mlists, mclosest, mfull, mslab, mrc = memory_estimate(n, L, loci, a.candidates, K_eff=K_eff, rc=not a.no_broad_sample); MEM_RESIDENT_EST = need
     parts = (f"{fmem(mx)} of alignment (the rows and the residue codes), {fmem(mlists)} of candidate lists for {n:,} taxa, {fmem(mclosest)} of closest matches for "
              f"{n:,} taxa x {len(loci):,} loci" + (f", {fmem(mfull)} of the full m matrix (kept up to {FULL_M_MAX_TAXA:,} taxa)" if mfull else "")
              + (f", {fmem(mslab)} of pair counts at every locus (kept up to {SWEEP_BLOCK_MIN:,} taxa)" if mslab else "")
-             + (f", {fmem(mrc)} of random-comparator pools" if mrc else ""))
+             + (f", {fmem(mrc)} of broad-sample pools" if mrc else ""))
     if MEM_BUDGET is None: LOG(f"memory: about {fmem(need)} resident ({parts}); no budget (--memory 0)")
     else:
         LOG(f"memory: about {fmem(need)} resident ({parts}); budget {fmem(MEM_BUDGET)}" + ("" if a.memory else " (half of the memory available now; --memory sets it)"))
@@ -2507,10 +2511,11 @@ def fork_map(fn, items, workers, chunksize=1):
 
 
 MASKED_COLUMNS = ["locus", "taxon", "reason", "residues_masked",
-                  "divergent_fails", "divergent_comparators", "divergent_observed", "divergent_expected", "divergent_excess_m",
-                  "divergent_log10p", "similar_test", "similar_partner", "similar_role", "similar_observed", "similar_expected",
-                  "similar_row_factor", "similar_log10p", "similar_relatives", "partner_excess_m", "comparators", "log10_bar",
-                  "random_side", "random_log10p", "random_partner"]
+                  "divergent_fails", "divergent_comparators", "divergent_observed", "divergent_expected", "divergent_excess_m", "divergent_log10p",
+                  "comparator_partner", "comparator_role", "comparator_observed", "comparator_expected", "comparator_row_factor", "comparator_log10p", "comparator_partner_excess_m",
+                  "closest_partner", "closest_role", "closest_observed", "closest_expected", "closest_log10p", "closest_relatives", "closest_partner_excess_m",
+                  "broad_partner", "broad_observed", "broad_expected", "broad_log10p",
+                  "comparators", "log10_bar"]
 
 
 def fnum(v, nd):
@@ -2525,9 +2530,9 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
     mask_hi = not a.mask_similar_only
     mask_lo = not a.mask_different_only
     views = [np.frombuffer(mb, dtype=np.uint8) for mb in masked]        # writable views for blanking
-    rc = None if getattr(a, "no_random_comparators", False) else rc_prepare(P, K_eff, a.threads, PROG)
-    if rc is not None: LOG(f"random comparators: {rc.k} per sequence per locus, drawn from each taxon's pool of {rc.Pn}"
-                           + ("" if P.m_full is not None else f" (the pools' pair divergences computed: {n * rc.Pn:,} pairs)"))
+    bs = None if getattr(a, "no_broad_sample", False) else bs_prepare(P, K_eff, a.threads, PROG)
+    if bs is not None: LOG(f"broad sample: {bs.k} per sequence per locus, drawn from each taxon's pool of {bs.Pn}"
+                           + ("" if P.m_full is not None else f" (the pools' pair divergences computed: {n * bs.Pn:,} pairs)"))
 
     # each taxon's candidates in order of pair divergence are its list from the sweep (the tie-break makes every row a
     # strict order): a locus's comparators are the first K candidates that share enough sites with the taxon at that
@@ -2682,15 +2687,15 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
     # the Bonferroni family is every test the run performs: one too-divergent and one too-similar test per distinct
     # comparator pair, and one too-similar test per sequence tested against its closest match
     D_tests = int(ndist_l.sum()); S_tests = int(npt_l.sum())
-    RC_tests = int(((P.focal_sites > 0) & keep[:, None]).sum()) if rc is not None else 0    # one per present sequence of a kept taxon, frozen before any test
-    N_tests = 2 * D_tests + S_tests + RC_tests
+    BS_tests = int(((P.focal_sites > 0) & keep[:, None]).sum()) if bs is not None else 0    # one per present sequence of a kept taxon, frozen before any test
+    N_tests = 2 * D_tests + S_tests + BS_tests
     logbar = math.log(a.alpha / max(N_tests, 1))
     kq = norm_quantile(1 - a.alpha / max(N_tests, 1))
     lbar10 = logbar / LN10
     nfork = int(sum(int(sel_[5].sum()) for sel_ in sel))
     LOG(f"tests: {D_tests:,} too-divergent comparisons + {D_tests:,} too-similar comparisons + {S_tests:,} closest-match tests "
         f"({nfork:,} sequences whose closest match at the locus is not among their comparators, {S_tests:,} of them with three relatives "
-        f"to set the expectation)" + (f" + {RC_tests:,} random-comparator tests (one per present sequence)" if rc is not None else "")
+        f"to set the expectation)" + (f" + {BS_tests:,} broad-sample tests (one per present sequence)" if bs is not None else "")
         + f" = N {N_tests:,}; every test is held to alpha / N = {a.alpha / max(N_tests, 1):.3g} (log10 {lbar10:.2f})")
 
     # ---- the report's per-cell columns: dense taxa x loci while the grid is small enough, else rows for cells with a fail
@@ -2700,8 +2705,8 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                ("best_match", np.int32, -1), ("best_match_identity", np.float32, np.nan), ("partner", np.int32, -1),
                ("div_log10p", np.float32, np.nan), ("sim_log10p", np.float32, np.nan), ("locus_closest", np.int32, -1), ("locus_closest_log10p", np.float32, np.nan))
     for k in ("n_comp", "n_fail", "n_similar", "side"): rep[k] = np.zeros((n, nloc), np.uint8)
-    rep["side2"] = np.zeros((n, nloc), np.uint8)       # the random-comparator test per cell: 1 tested, 2 past the bar, 4 shortfall at
-    rcL = [None] * nloc                                # alpha, 8 excess at alpha, 16 excluded as a comparator here, 32 the shortfall is
+    rep["side2"] = np.zeros((n, nloc), np.uint8)       # the broad-sample test per cell: 1 tested, 2 past the bar, 4 shortfall at
+    bsL = [None] * nloc                                # alpha, 8 excess at alpha, 16 excluded as a comparator here, 32 the shortfall is
                                                        # not reported (a too-similar mask covers the cell), 64 the divergent-cell label
     for k, dt, fill in NUMCOLS: rep[k] = np.full((n, nloc), fill, dt) if dense else []
     rep["comparators"] = np.full((n, nloc, K_eff), -1, np.int32) if dense else []
@@ -2892,15 +2897,29 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
         eq = top[idx] == lclos_[:, None]; has = hasy & ~viaarm & eq.any(1)
         lclos_p[has] = comp_sim_[np.flatnonzero(has), eq.argmax(1)[has]]
 
-        def sim_cols(q):
-            """the too-similar columns of a cell: its pair's numbers from the test that fired, else its own closest-match test"""
-            if q in pair_of:
-                rec, other, _ = pair_of[q]
-            elif tested2[q]: rec, other = dict(arm="closest", o=o2[q], mis=mis2[q], E=float(E2[q]), f=1.0, lnp=float(lp_lo[q]), rel=rel2[q]), int(Y[q])
-            else: return ["", "", "", "", "", "", "", "", ""]
-            qo = cpos.get(other); px = fnum(exm[qo], 3) if qo is not None else ""
-            return [rec["arm"], names[other], role_.get(q, ""), fnum(100 * rec["mis"] / rec["o"], 2), fnum(100 * rec["E"] / rec["o"], 2),
-                    fnum(rec["f"], 3) if rec["arm"] == "comparator" else "", fnum(rec["lnp"] / LN10, 3), "; ".join(names[c] for c in rec["rel"]), px]
+        def pex_of(other):
+            qo = cpos.get(other); return fnum(exm[qo], 3) if qo is not None else ""
+        def comp_cols(q):
+            """the comparator test's columns: the cell's fired comparator-arm pair, else its most similar comparator comparison"""
+            if q in pair_of and pair_of[q][0]["arm"] == "comparator":
+                rec, other, role = pair_of[q]
+                return [names[other], role, fnum(100 * rec["mis"] / rec["o"], 2), fnum(100 * rec["E"] / rec["o"], 2),
+                        fnum(rec["f"], 3), fnum(rec["lnp"] / LN10, 3), pex_of(other)]
+            s_, k_ = int(starts[q]), int(kc[q])
+            if k_ == 0: return [""] * 7
+            j = s_ + int(np.argmin(lp_in[s_:s_ + k_]))
+            return [names[int(ci[j])], "", fnum(100 * mis[j] / o[j], 2), fnum(100 * E_lo[j] / o[j], 2),
+                    fnum(ff[j], 3), fnum(lp_in[j] / LN10, 3), pex_of(int(ci[j]))]
+        def clos_cols(q):
+            """the closest-match test's columns: its fired pair, else the test it got; empty when it did not run"""
+            if q in pair_of and pair_of[q][0]["arm"] == "closest":
+                rec, other, role = pair_of[q]
+                return [names[other], role, fnum(100 * rec["mis"] / rec["o"], 2), fnum(100 * rec["E"] / rec["o"], 2),
+                        fnum(rec["lnp"] / LN10, 3), "; ".join(names[c] for c in rec["rel"]), pex_of(other)]
+            if tested2[q]:
+                return [names[int(Y[q])], "", fnum(100 * mis2[q] / o2[q], 2), fnum(100 * float(E2[q]) / o2[q], 2),
+                        fnum(float(lp_lo[q]) / LN10, 3), "; ".join(names[c] for c in rel2[q]), pex_of(int(Y[q]))]
+            return [""] * 7
 
         mrows_out = []
         for q in np.flatnonzero(masked_q).tolist():
@@ -2908,7 +2927,7 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
             reason = "both" if dv and sm else ("divergent" if dv else "similar")
             s = int(starts[q]); comps = [names[int(c)] for c in ci[s:s + kc[q]]]
             row_ = [name, names[g], reason, int(nres[g]), int(nf[q]), int(kc[q]), fnum(100 - med_i[q], 2), fnum(100 - med_e[q], 2),
-                    fnum(exm[q], 3), fnum(div_lp[q] / LN10, 3)] + sim_cols(q) + ["; ".join(comps), fnum(lbar10, 3), "", "", ""]
+                    fnum(exm[q], 3), fnum(div_lp[q] / LN10, 3)] + comp_cols(q) + clos_cols(q) + ["", "", "", ""] + ["; ".join(comps), fnum(lbar10, 3)]
             mrows_out.append((g, reason, row_))
 
         # ---- the report's view of this locus: cell columns, best matches, site codes, sequence rows, trees, pairs
@@ -2916,29 +2935,29 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
         side_ |= np.where(dflag, 1 if mask_hi else 16, 0).astype(np.uint8); side_ |= (amb.astype(np.uint8) << 2)
         side_ |= np.where(sflag, 2 if mask_lo else 32, 0).astype(np.uint8); side_ |= np.where(tested2, 64, 0).astype(np.uint8)
         side_ |= np.where(src_q, 128, 0).astype(np.uint8); side_ |= np.where(unc_q, 8, 0).astype(np.uint8)
-        # ---- the random-comparator test's stage 1 (the third test): every present cell of a kept taxon except the
-        # divergent-masked, against rc.k comparators drawn by hash from the taxon's pool; expected counts through the
+        # ---- the broad-sample test's stage 1 (the third test): every present cell of a kept taxon except the
+        # divergent-masked, against bs.k comparators drawn by hash from the taxon's pool; expected counts through the
         # sequence's own rate rho; the statistic is the row's standardised-residual variance over the locus median.
-        # The dataset-wide scale null, the bar and both stage-2 sides run in the parent (rc_stage) once every locus
+        # The dataset-wide scale null, the bar and both stage-2 sides run in the parent once every locus
         # has reported. Divergent cells and masked copies are never comparators; a comparator whose own row variance
         # is extreme is dropped from every cell that drew it
-        rc_blk = None
-        if rc is not None:
+        bs_blk = None
+        if bs is not None:
             dmask = np.zeros(n, bool); cpmask = np.zeros(n, bool)
             if mask_hi: dmask[idx[dflag]] = True
             if mask_lo:
                 for q_, role in role_.items():
                     if role == "copy" and sflag[q_]: cpmask[int(idx[q_])] = True
-            rows_rc = np.flatnonzero(keep & (P.focal_sites[:, li] > 0) & ~dmask)
-            if len(rows_rc):
+            rows_bs = np.flatnonzero(keep & (P.focal_sites[:, li] > 0) & ~dmask)
+            if len(rows_bs):
                 P_ = plateaus[li]
-                pos_rc = _hash_draw(rc_keys_cells(rows_rc, li), rc.Pn, rc.k)
-                comp = rc.pool[rows_rc[:, None], pos_rc].astype(np.int64); mv0 = rc.mstar[rows_rc[:, None], pos_rc]
+                pos_bs = _hash_draw(bs_keys_cells(rows_bs, li), bs.Pn, bs.k)
+                comp = bs.pool[rows_bs[:, None], pos_bs].astype(np.int64); mv0 = bs.mstar[rows_bs[:, None], pos_bs]
                 mv = np.maximum(mv0, 1e-4)
-                O_ = np.empty((len(rows_rc), rc.k)); W_ = np.empty_like(O_)
-                for r0 in range(0, len(rows_rc), 512):
-                    sl_ = slice(r0, min(r0 + 512, len(rows_rc)))
-                    XG = Xs[rows_rc[sl_]]; XA = Xs[comp[sl_]]
+                O_ = np.empty((len(rows_bs), bs.k)); W_ = np.empty_like(O_)
+                for r0 in range(0, len(rows_bs), 512):
+                    sl_ = slice(r0, min(r0 + 512, len(rows_bs)))
+                    XG = Xs[rows_bs[sl_]]; XA = Xs[comp[sl_]]
                     both_ = (XG[:, None, :] >= 0) & (XA >= 0)
                     W_[sl_] = both_.sum(2); O_[sl_] = ((XG[:, None, :] != XA) & both_).sum(2)
                 ok0 = (W_ >= a.fit_overlap) & np.isfinite(mv0) & keep[comp] & ~dmask[comp] & ~cpmask[comp]
@@ -2947,7 +2966,7 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                     out_ = np.full(v.shape[0], np.nan); some = ok_.any(1)
                     if some.any(): out_[some] = np.nanmedian(np.where(ok_, v, np.nan)[some], axis=1)
                     return out_
-                def rc_var(ok_):
+                def bs_var(ok_):
                     with np.errstate(invalid="ignore", divide="ignore"):
                         ratio = corr(100.0 * (O_ + HALF) / np.maximum(W_, 1.0)) / cexp
                         rho_ = nmed(ratio, ok_)
@@ -2956,23 +2975,23 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                     E_ = np.clip(W_ * dhat_ / 100.0, 1e-9, W_ * (1.0 - 1e-9))
                     with np.errstate(invalid="ignore", divide="ignore"):
                         z_ = np.where(ok_, (O_ - E_) / np.sqrt(E_ * (1.0 - dhat_ / 100.0) + phi * E_ * E_), np.nan)
-                    kc_ = ok_.sum(1); s2 = np.full(len(rows_rc), np.nan)
+                    kc_ = ok_.sum(1); s2 = np.full(len(rows_bs), np.nan)
                     two = kc_ >= 2
                     if two.any(): s2[two] = np.nanvar(z_[two], axis=1, ddof=1)
-                    t_ = (kc_ >= RC_MIN) & np.isfinite(s2)
+                    t_ = (kc_ >= BS_MIN) & np.isfinite(s2)
                     ref = float(np.median(s2[t_])) if t_.sum() >= 5 else np.nan
-                    x_ = np.where(t_, s2 / ref, np.nan) if np.isfinite(ref) and ref > 0 else np.full(len(rows_rc), np.nan)
+                    x_ = np.where(t_, s2 / ref, np.nan) if np.isfinite(ref) and ref > 0 else np.full(len(rows_bs), np.nan)
                     return x_, kc_, rho_
-                x_rc, k_rc, rho_rc = rc_var(ok0)
-                fin_rc = np.isfinite(x_rc); badt = np.zeros(n, bool)
-                if fin_rc.sum() >= 5:
-                    medx = float(np.median(x_rc[fin_rc]))
-                    badt[rows_rc[fin_rc & (x_rc > RC_VAR_SCREEN * medx)]] = True
-                    if badt.any(): x_rc, k_rc, rho_rc = rc_var(ok0 & ~badt[comp])
-                fin_rc = np.isfinite(x_rc)
-                if fin_rc.any():
-                    rc_blk = dict(rows=rows_rc[fin_rc].astype(np.int32), x=x_rc[fin_rc], k=np.minimum(k_rc[fin_rc], 32767).astype(np.int16),
-                                  rho=rho_rc[fin_rc].astype(np.float32), excl=np.flatnonzero(dmask | cpmask).astype(np.int32),
+                x_bs, k_bs, rho_bs = bs_var(ok0)
+                fin_bs = np.isfinite(x_bs); badt = np.zeros(n, bool)
+                if fin_bs.sum() >= 5:
+                    medx = float(np.median(x_bs[fin_bs]))
+                    badt[rows_bs[fin_bs & (x_bs > BS_VAR_SCREEN * medx)]] = True
+                    if badt.any(): x_bs, k_bs, rho_bs = bs_var(ok0 & ~badt[comp])
+                fin_bs = np.isfinite(x_bs)
+                if fin_bs.any():
+                    bs_blk = dict(rows=rows_bs[fin_bs].astype(np.int32), x=x_bs[fin_bs], k=np.minimum(k_bs[fin_bs], 32767).astype(np.int16),
+                                  rho=rho_bs[fin_bs].astype(np.float32), excl=np.flatnonzero(dmask | cpmask).astype(np.int32),
                                   varbad=np.flatnonzero(badt).astype(np.int32))
         simlp_ = np.full(ncell, np.nan, np.float32); simlp_[tested2] = lp_lo[tested2] / LN10
         for q, (rec, _, _) in pair_of.items(): simlp_[q] = rec["lnp"] / LN10
@@ -3126,18 +3145,18 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
             tests_block = ("divergent\t" + lname + "\t%s\t%s\t%d\t%d\t%.3f\t\t%.3f\t%d\n") * len(gi) % tuple(chain.from_iterable(zip(
                 [tnames[x] for x in gi.tolist()], [tnames[x] for x in ci.tolist()], o.astype(np.int64).tolist(), mis.astype(np.int64).tolist(),
                 r3(E), r3(lp_hi / LN10), fail_hi.astype(np.int64).tolist())))
-            tests_block += ("similar_comparator\t" + lname + "\t%s\t%s\t%d\t%d\t%.3f\t%.4f\t%.3f\t%d\n") * len(gi) % tuple(chain.from_iterable(zip(
+            tests_block += ("comparator\t" + lname + "\t%s\t%s\t%d\t%d\t%.3f\t%.4f\t%.3f\t%d\n") * len(gi) % tuple(chain.from_iterable(zip(
                 [tnames[x] for x in gi.tolist()], [tnames[x] for x in ci.tolist()], o.astype(np.int64).tolist(), mis.astype(np.int64).tolist(),
                 r3(E_lo), ff.tolist(), r3(lp_in / LN10), fail_in.astype(np.int64).tolist())))
             tq_ = np.flatnonzero(tested2)
             if len(tq_):
-                tests_block += ("similar_closest\t" + lname + "\t%s\t%s\t%d\t%d\t%.3f\t\t%.3f\t%d\n") * len(tq_) % tuple(chain.from_iterable(zip(
+                tests_block += ("closest\t" + lname + "\t%s\t%s\t%d\t%d\t%.3f\t\t%.3f\t%d\n") * len(tq_) % tuple(chain.from_iterable(zip(
                     [tnames[int(idx[q])] for q in tq_.tolist()], [tnames[int(Y[q])] for q in tq_.tolist()], o2[tq_].astype(np.int64).tolist(),
                     mis2[tq_].astype(np.int64).tolist(), r3(E2[tq_]), r3(lp_lo[tq_] / LN10), fail2[tq_].astype(np.int64).tolist())))
 
         log = (f"{name}: {ncell} cells, {len(gi)} comparator slots, {int(tested2.sum())} closest-match tests; too divergent {int(flag.sum())}"
                f" (+{int(amb.sum())} with fewer comparators), too-similar pairs {len(pairs)} ({sum(1 for r in pairs.values() if r['arm'] == 'closest')} by the closest match)")
-        return dict(skipped=False, mrows=mrows_out, tests=tests_block, log=log, rep=repblk, phi=phi, rate_c=rate_c, rc=rc_blk)
+        return dict(skipped=False, mrows=mrows_out, tests=tests_block, log=log, rep=repblk, phi=phi, rate_c=rate_c, rc=bs_blk)
 
     mrows = []; tally = collections.Counter()
     def consume(li, R):
@@ -3150,7 +3169,7 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
         if tests_fh is not None: tests_fh.write(R["tests"])
         LOG.detail(R["log"])
         if R.get("rc") is not None:
-            b = R["rc"]; rcL[li] = b
+            b = R["rc"]; bsL[li] = b
             rep["side2"][b["rows"], li] |= 1; rep["side2"][b["excl"], li] |= 16
         r = R["rep"]; idx_ = r["idx"]; rep["phi"][li] = R["phi"]; rep["test_rate"][li] = R["rate_c"]
         for k in ("n_comp", "n_fail", "n_similar", "side"): rep[k][idx_, li] = r[k]
@@ -3211,25 +3230,25 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
     PROG.finish()
     if tests_fh is not None: tests_fh.close()
 
-    # ---- the random-comparator verdicts: the scale null over every tested row dataset-wide, the run's single bar,
+    # ---- the broad-sample verdicts: the scale null over every tested row dataset-wide, the run's single bar,
     # then stage 2 for the rows past it (and the divergent-cell labels) in a second forked pass over only the loci
     # involved. A mask is a far shortfall: a coalescence younger than the species split allows (a transfer or
     # contamination: too close, the viewer's blue); a divergent cell with the shortfall gets a label (yellow)
-    rc_summary = None
-    if rc is not None and any(b is not None for b in rcL):
-        loc_a = np.concatenate([np.full(len(b["rows"]), li, np.int64) for li, b in enumerate(rcL) if b is not None])
-        tax_a = np.concatenate([b["rows"] for b in rcL if b is not None]).astype(np.int64)
-        x_a = np.concatenate([b["x"] for b in rcL if b is not None])
-        k_a = np.concatenate([b["k"] for b in rcL if b is not None])
-        rho_a = np.concatenate([b["rho"] for b in rcL if b is not None])
-        PROG.start("random null", 1)
-        lp1, rc_tau = rc_null(x_a, k_a, threads=a.threads)
+    bs_summary = None
+    if bs is not None and any(b is not None for b in bsL):
+        loc_a = np.concatenate([np.full(len(b["rows"]), li, np.int64) for li, b in enumerate(bsL) if b is not None])
+        tax_a = np.concatenate([b["rows"] for b in bsL if b is not None]).astype(np.int64)
+        x_a = np.concatenate([b["x"] for b in bsL if b is not None])
+        k_a = np.concatenate([b["k"] for b in bsL if b is not None])
+        rho_a = np.concatenate([b["rho"] for b in bsL if b is not None])
+        PROG.start("broad-sample null", 1)
+        lp1, bs_tau = bs_null(x_a, k_a, threads=a.threads)
         PROG.tick(); PROG.finish()
         past = lp1 < logbar
         rep["side2"][tax_a[past], loc_a[past]] |= 2
         if dense:
-            rep["rc_log10p"] = np.full((n, nloc), np.nan, np.float32); rep["rc_log10p"][tax_a, loc_a] = (lp1 / LN10).astype(np.float32)
-            rep["rc_rho"] = np.full((n, nloc), np.nan, np.float32); rep["rc_rho"][tax_a, loc_a] = rho_a
+            rep["bs_log10p"] = np.full((n, nloc), np.nan, np.float32); rep["bs_log10p"][tax_a, loc_a] = (lp1 / LN10).astype(np.float32)
+            rep["bs_rho"] = np.full((n, nloc), np.nan, np.float32); rep["bs_rho"][tax_a, loc_a] = rho_a
         key_a = np.sort(loc_a * np.int64(n) + tax_a)                           # stage-1 p lookup for the report's sparse rows
         lp1_by = lp1[np.argsort(loc_a * np.int64(n) + tax_a, kind="stable")]
         flag_by_loc = {int(li): tax_a[past & (loc_a == li)] for li in np.unique(loc_a[past])}
@@ -3240,9 +3259,9 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                     dv = np.flatnonzero((rep["side"][:, li] & 1) > 0)
                     if len(dv): div_by_loc[li] = dv
         todo = sorted(set(flag_by_loc) | set(div_by_loc))
-        la_rc = math.log(a.alpha)
+        la_bs = math.log(a.alpha)
 
-        def rc_locus_b(li):
+        def bs_locus_b(li):
             """stage 2 at one locus, for the rows past the bar and the divergent-masked cells: the far shortfall with
             the comparator screen, exactly the per-locus pass's draws and fit. The fork also decides what is reported
             and masked here, and builds the masked cells' viewer artifacts (the codes row, the face-to-face tree with
@@ -3254,12 +3273,12 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
             corr = lambda p: -P_ * np.log(1.0 - np.minimum(np.asarray(p, float), 0.98 * P_) / P_)
             expect_ = lambda mv_: np.maximum(P_ * (1.0 - np.exp(-rate_c * corr(np.maximum(np.asarray(mv_, float), 1e-4)) / P_)), 1e-4)
             excl16 = (rep["side2"][:, li] & 16) > 0
-            vb = np.zeros(n, bool); b_ = rcL[li]
+            vb = np.zeros(n, bool); b_ = bsL[li]
             if b_ is not None: vb[b_["varbad"]] = True
             def draw(rows_):
-                pos = _hash_draw(rc_keys_cells(rows_, li), rc.Pn, rc.k)
-                comp = rc.pool[rows_[:, None], pos].astype(np.int64); mv0 = rc.mstar[rows_[:, None], pos]
-                O_ = np.empty((len(rows_), rc.k)); W_ = np.empty_like(O_)
+                pos = _hash_draw(bs_keys_cells(rows_, li), bs.Pn, bs.k)
+                comp = bs.pool[rows_[:, None], pos].astype(np.int64); mv0 = bs.mstar[rows_[:, None], pos]
+                O_ = np.empty((len(rows_), bs.k)); W_ = np.empty_like(O_)
                 for r0 in range(0, len(rows_), 512):
                     sl_ = slice(r0, min(r0 + 512, len(rows_)))
                     XG = Xs[rows_[sl_]]; XA = Xs[comp[sl_]]
@@ -3289,14 +3308,14 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                 return np.where(d["nf"] > 0, np.minimum(d["lp"].min(1) + np.log(np.maximum(d["nf"], 1)), 0.0), 0.0)
             badS = np.zeros(n, bool)
             if len(rows_f):                                                    # the flagged rows' comparators, screened by their own rows
-                pos_f = _hash_draw(rc_keys_cells(rows_f, li), rc.Pn, rc.k)
-                anc = np.unique(rc.pool[rows_f[:, None], pos_f].astype(np.int64).ravel())
+                pos_f = _hash_draw(bs_keys_cells(rows_f, li), bs.Pn, bs.k)
+                anc = np.unique(bs.pool[rows_f[:, None], pos_f].astype(np.int64).ravel())
                 anc = anc[keep[anc] & ~excl16[anc] & ~vb[anc]]
                 if len(anc):
                     _, _, _, alo = far_tails(anc, True, None)
-                    badS[anc[min_stat(alo) < RC_SCREEN_LOGP]] = True
+                    badS[anc[min_stat(alo) < BS_SCREEN_LOGP]] = True
             top = sel[li][0]
-            out = dict(mask=[], note=[], label=[], codes=None, trees=None, random=[])
+            out = dict(mask=[], note=[], label=[], codes=None, trees=None, broad=[])
             tree_cells = []
             if len(rows_f):
                 comp2, O2, W2, LO = far_tails(rows_f, True, badS)
@@ -3304,26 +3323,27 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                 jlo = np.where(np.isfinite(LO["lp"]), LO["lp"], np.inf).argmin(1)
                 plo = np.where(LO["nf"] > 0, comp2[ar_, jlo], -1)
                 for i, g in enumerate(rows_f.tolist()):
-                    if not sp[i] < la_rc: continue
+                    if not sp[i] < la_bs: continue
                     sd0 = int(rep["side"][g, li]); sim_masked = bool(sd0 & 2)
-                    if sim_masked or (sd0 & 3):                                 # a too-similar mask already covers the cell: computed, not re-reported
-                        out["note"].append((g, 4 | 32, "", 0.0, -1)); continue
-                    if not mask_lo:
-                        out["note"].append((g, 4, "", 0.0, -1)); continue
-                    partner = int(plo[i]); lp_use = float(sp[i])
-                    out["mask"].append((g, lp_use, partner))
+                    j_ = int(jlo[i]); partner = int(plo[i]); lp_use = float(sp[i])
+                    obs_ = 100.0 * O2[i, j_] / max(W2[i, j_], 1.0); exp_ = 100.0 * float(LO["E"][i, j_]) / max(W2[i, j_], 1.0)
+                    rec_ = dict(side="close", taxon=int(g), partner=partner, overlap=int(W2[i, j_]), mismatches=int(O2[i, j_]),
+                                expected=round(float(LO["E"][i, j_]), 3), rho=round(float(LO["rho"][i]), 4), lo_log10p=round(lp_use / LN10, 3))
+                    if sim_masked or (sd0 & 3) or not mask_lo:                  # a mask already covers the cell (or similar masking is off): the
+                        out["note"].append((g, 4 | (32 if sim_masked or (sd0 & 3) else 0), lp_use, partner, obs_, exp_))   # firing is reported in its columns, nothing re-masked
+                        out["broad"].append(rec_); continue
+                    out["mask"].append((g, lp_use, partner, obs_, exp_))
                     tree_cells.append((g, partner))
-                    j_ = int(jlo[i])                                            # the record behind the mask: the decisive comparator
-                    out["random"].append(dict(side="close", taxon=int(g), partner=int(partner), overlap=int(W2[i, j_]), mismatches=int(O2[i, j_]),
-                                              expected=round(float(LO["E"][i, j_]), 3), rho=round(float(LO["rho"][i]), 4),
-                                              lo_log10p=round(lp_use / LN10, 3)))
+                    out["broad"].append(rec_)
             if len(rows_d):                                                    # the divergent cells' label: no rho, held at the bar
-                comp3, _, _, DLO = far_tails(rows_d, False, badS)
+                comp3, Od, Wd, DLO = far_tails(rows_d, False, badS)
                 dp = min_stat(DLO)
                 jd = np.where(np.isfinite(DLO["lp"]), DLO["lp"], np.inf).argmin(1)
                 pld = np.where(DLO["nf"] > 0, comp3[np.arange(len(rows_d)), jd], -1)
                 for i, g in enumerate(rows_d.tolist()):
-                    if dp[i] < logbar: out["label"].append((g, float(dp[i]), int(pld[i])))
+                    if dp[i] < logbar:
+                        jd_ = int(np.where(np.isfinite(DLO["lp"][i]), DLO["lp"][i], np.inf).argmin())
+                        out["label"].append((g, float(dp[i]), int(pld[i]), 100.0 * Od[i, jd_] / max(Wd[i, jd_], 1.0), 100.0 * float(DLO["E"][i, jd_]) / max(Wd[i, jd_], 1.0)))
             # the masked cells' artifacts, exactly the per-locus pass's constructions
             if tree_cells:
                 qs = np.array([g for g, _ in tree_cells], np.int64)
@@ -3387,24 +3407,29 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
         if not dense:
             for piece_l, piece_t in zip(sparse_loc, sparse_tax):
                 for l_, t_ in zip(piece_l.tolist(), piece_t.tolist()): sparse_at.setdefault(l_, set()).add(t_)
-        rc_rows_rep = []; tally_rc = collections.Counter()
+        bs_rows_rep = []; tally_bs = collections.Counter()
         if todo:
-            rcw = min(workers, len(todo)) if a.threads > 1 else 1
-            PROG.start("random comparators", len(todo))
-            for li, out in fork_map(rc_locus_b, todo, rcw):
+            bsw = min(workers, len(todo)) if a.threads > 1 else 1
+            PROG.start("broad sample", len(todo))
+            for li, out in fork_map(bs_locus_b, todo, bsw):
                 PROG.tick()
                 if out is None: continue
                 name, sites = loci[li]
-                for g, b2, side_txt, lp_use, partner in out["note"]:
-                    rep["side2"][g, li] |= b2; tally_rc["noted"] += 1
-                for g, lp_use, partner in out["mask"]:
+                for g, b2, lp_use, partner, obs_, exp_ in out["note"]:
+                    rep["side2"][g, li] |= b2; tally_bs["noted"] += 1
+                    j = mrow_at.get((name, names[g]))
+                    if j is not None:
+                        mrows[j][24] = names[partner] if partner >= 0 else ""; mrows[j][25] = fnum(obs_, 2); mrows[j][26] = fnum(exp_, 2); mrows[j][27] = fnum(lp_use / LN10, 3)
+                    bs_rows_rep.append((li, g, lp_use, np.nan, partner))
+                for g, lp_use, partner, obs_, exp_ in out["mask"]:
                     rep["side2"][g, li] |= 4; rep["side"][g, li] |= 2
                     views[g][sites] = 45
-                    tally["similar"] += 1; tally_rc["close"] += 1
-                    mrows.append([name, names[g], "similar", int(P.focal_sites[g, li])] + [""] * 6 + [""] * 9 + ["", fnum(lbar10, 3),
-                                 "close", fnum(lp_use / LN10, 3), names[partner] if partner >= 0 else ""])
+                    tally["similar"] += 1; tally_bs["close"] += 1
+                    mrows.append([name, names[g], "similar", int(P.focal_sites[g, li])] + [""] * 6 + [""] * 14
+                                 + [names[partner] if partner >= 0 else "", fnum(obs_, 2), fnum(exp_, 2), fnum(lp_use / LN10, 3)]
+                                 + ["", fnum(lbar10, 3)])
                     mrow_at[(name, names[g])] = len(mrows) - 1
-                    rc_rows_rep.append((li, g, lp_use, np.nan, partner))
+                    bs_rows_rep.append((li, g, lp_use, np.nan, partner))
                     if dense:
                         rep["partner"][g, li] = partner
                     elif g not in sparse_at.get(li, ()):                        # the masked cell joins the sparse rows with its partner
@@ -3416,15 +3441,15 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                         rep["comparators"].append(sel[li][0][g:g + 1].astype(np.int32))
                         for k_ in ("comp_div_log10p", "comp_sim_log10p"): rep[k_].append(np.full((1, K_eff), np.nan, np.float32))
                         sparse_at.setdefault(li, set()).add(g)
-                for g, dp_i, partner in out["label"]:
+                for g, dp_i, partner, obs_, exp_ in out["label"]:
                     rep["side2"][g, li] |= 64
-                    rc_rows_rep.append((li, g, dp_i, np.nan, partner))
+                    bs_rows_rep.append((li, g, dp_i, np.nan, partner))
                     j = mrow_at.get((name, names[g]))
                     if j is not None:                                           # a label on the divergent row: the mask and its reason unchanged
-                        mrows[j][21] = "close"; mrows[j][22] = fnum(dp_i / LN10, 3); mrows[j][23] = names[partner] if partner >= 0 else ""
-                        tally_rc["labels"] += 1
-                if out["random"]:
-                    rep.setdefault("rc_records", {}).setdefault(li, []).extend(out["random"])
+                        mrows[j][24] = names[partner] if partner >= 0 else ""; mrows[j][25] = fnum(obs_, 2); mrows[j][26] = fnum(exp_, 2); mrows[j][27] = fnum(dp_i / LN10, 3)
+                        tally_bs["labels"] += 1
+                if out["broad"]:
+                    rep.setdefault("bs_records", {}).setdefault(li, []).extend(out["broad"])
                 if out["codes"] is not None:
                     qs_, blk_ = out["codes"]
                     if li in rep["codes"]:                                      # a cell the single pass carried (a stray failing comparator) is replaced: its row now knows the partner
@@ -3446,22 +3471,22 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                         rep["trees"][li] = {k_: [ (T0[k_] + T_[k_])[o_] for o_ in order.tolist() ] for k_ in ("cells", "expected", "observed", "tips", "outgroup", "closest")}
                     else: rep["trees"][li] = T_
             PROG.finish()
-        if rc_rows_rep:
-            rc_rows_rep.sort()
-            rl = np.array([r[0] for r in rc_rows_rep], np.int32); rt = np.array([r[1] for r in rc_rows_rep], np.int32)
+        if bs_rows_rep:
+            bs_rows_rep.sort()
+            rl = np.array([r[0] for r in bs_rows_rep], np.int32); rt = np.array([r[1] for r in bs_rows_rep], np.int32)
             pos_ = np.searchsorted(key_a, rl.astype(np.int64) * np.int64(n) + rt.astype(np.int64))
             hit_ = (pos_ < len(key_a)) & (key_a[np.minimum(pos_, len(key_a) - 1)] == rl.astype(np.int64) * np.int64(n) + rt.astype(np.int64))
-            rep["rc_locus"] = rl; rep["rc_taxon"] = rt
-            rep["rc_var_log10p"] = np.where(hit_, lp1_by[np.minimum(pos_, len(lp1_by) - 1)] / LN10, np.nan).astype(np.float32)
-            rep["rc_lo_log10p"] = np.array([r[2] / LN10 for r in rc_rows_rep], np.float32)
-            rep["rc_partner"] = np.array([r[4] for r in rc_rows_rep], np.int32)
-        rc_summary = dict(tested=int(len(x_a)), bar_passed=int(past.sum()), scale_sd=round(float(rc_tau), 4),
-                          per_cell=int(rc.k), pool=int(rc.Pn), family=RC_tests,
-                          close=int(tally_rc["close"]), suppressed=int(tally_rc["noted"]), divergent_labels=int(tally_rc["labels"]))
-        LOG(f"random comparators: {len(x_a):,} sequences tested (scale SD {rc_tau:.3f}), {int(past.sum()):,} past the bar; "
-            f"{tally_rc['close']} masked too close; {tally_rc['noted']} fired on cells a too-similar mask already covers, "
-            f"{tally_rc['labels']} divergent cells labelled also-too-close")
-    rep["rc_summary"] = rc_summary
+            rep["bs_locus"] = rl; rep["bs_taxon"] = rt
+            rep["bs_var_log10p"] = np.where(hit_, lp1_by[np.minimum(pos_, len(lp1_by) - 1)] / LN10, np.nan).astype(np.float32)
+            rep["bs_lo_log10p"] = np.array([r[2] / LN10 for r in bs_rows_rep], np.float32)
+            rep["bs_partner"] = np.array([r[4] for r in bs_rows_rep], np.int32)
+        bs_summary = dict(tested=int(len(x_a)), bar_passed=int(past.sum()), scale_sd=round(float(bs_tau), 4),
+                          per_cell=int(bs.k), pool=int(bs.Pn), family=BS_tests,
+                          close=int(tally_bs["close"]), noted=int(tally_bs["noted"]), divergent_labels=int(tally_bs["labels"]))
+        LOG(f"broad sample: {len(x_a):,} sequences tested (scale SD {bs_tau:.3f}), {int(past.sum()):,} past the bar; "
+            f"{tally_bs['close']} masked too close; {tally_bs['noted']} fired on cells a too-similar mask already covers, "
+            f"{tally_bs['labels']} divergent cells labelled also-too-close")
+    rep["bs_summary"] = bs_summary
 
     # the report's remaining pieces: sparse rows stacked, the closest taxa by m, the test's constants
     if not dense:
@@ -3473,7 +3498,7 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
     cl = np.full((n, min(5, n)), -1, np.int32); cl[:, :min(5, lists["cand"].shape[1])] = lists["cand"][:, :5]      # the closest non-identical relatives
     for g, (cand, _, _, _) in P.ext.items(): cl[g] = -1; cl[g, :min(5, len(cand))] = cand[:5]
     rep.update(taxa_closest=cl, rate=rate, plateaus=plateaus, kq=kq, logbar=logbar, phi_bar=phi_bar,
-               tests=dict(divergent=D_tests, similar_comparator=D_tests, similar_closest=S_tests, random=RC_tests, total=N_tests, locus_sets=nfork))
+               tests=dict(divergent=D_tests, comparator=D_tests, closest=S_tests, broad_sample=BS_tests, total=N_tests, locus_sets=nfork))
     with open(f"{a.out}/masked.csv", "w", newline="") as fh:
         mw = csv.writer(fh); mw.writerow(MASKED_COLUMNS); mw.writerows(mrows)
     skipped = [(loci[i][0], st) for i, st in enumerate(rep["loc_status"]) if st != "tested"]

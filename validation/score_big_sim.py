@@ -14,7 +14,10 @@ def main(data, run):
     truth = json.load(open(os.path.join(data, "truth.json"))); masked, pairs, closest, man = read_scan(run)
     why = {c: r["reason"] for c, r in masked.items()}
     def source(c):
-        r = masked.get(c); return r["similar_partner"] if r is not None and r["similar_role"] == "copy" else None
+        r = masked.get(c)
+        if r is None: return None
+        partner, role = (r["comparator_partner"], r["comparator_role"]) if r["comparator_role"] else (r["closest_partner"], r["closest_role"])
+        return partner if role == "copy" else None
     planted = set(); out = {}
     def tally(kind, hit):
         a = out.setdefault(kind, [0, 0]); a[1] += 1; a[0] += bool(hit)

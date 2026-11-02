@@ -31,9 +31,9 @@
  "test": {
   "tests": 11037,
   "divergent_tests": 4802,
-  "random_tests": 1400,
-  "similar_comparator_tests": 4802,
-  "similar_closest_tests": 33,
+  "broad_sample_tests": 1400,
+  "comparator_tests": 4802,
+  "closest_tests": 33,
   "similar_candidates": 33,
   "comparisons": 4802,
   "bonferroni_k": 4.4385,

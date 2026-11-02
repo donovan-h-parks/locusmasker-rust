@@ -172,7 +172,7 @@ def plant(rng, names, X, bounds, pat, cherries, spec, A):
         truth.append(dict(kind="hiddencontam", taxon=names[t], locus=f"locus{li + 1}", relatives=[names[c] for c in near], window=int(w1 - w0)))
     for _ in range(spec.get("cladecopy", 0)):                      # a distant donor's sequence over a whole small clade, each
         # member with its own noise: the members move together, so each one's closest relatives moved with it and the
-        # closest-relative tests see nothing; the random comparators see the young coalescence with the donor's side
+        # closest-relative tests see nothing; the broad sample sees the young coalescence with the donor's side
         # (a far shortfall: the third test's blue). The noise keeps the members apart, so no pair is "too similar"
         pair = next(((a_, b_) for a_, b_ in cherries if a_ in free and b_ in free), None)
         if pair is None: raise RuntimeError("no cherry free for cladecopy")
@@ -268,7 +268,7 @@ DATASETS = {
     "dna_clean": dict(seed=37, n=24, nloc=12, dtype="dna", depth=0.3, lens=(140, 300), pmiss=0.05, formats="fasta"),
     "aa_clean": dict(seed=41, n=20, nloc=11, dtype="aa", depth=0.5, lens=(120, 240), pmiss=0.0, formats="fasta"),
     "dna_dense": dict(seed=53, n=40, nloc=16, dtype="dna", depth=0.55, lens=(120, 260), pmiss=0.15, contam=3, nearcopy=3, farcopy=2, sistercopy=1, formats="fasta"),
-    # the random-comparator test's fixture: a clade moved wholesale (its members' closest relatives moved with it, so
+    # the broad-sample test's fixture: a clade moved wholesale (its members' closest relatives moved with it, so
     # only the broad sample sees the young coalescence: blue) and a plate swap (sequences permuted among scattered
     # taxa: residuals lean both ways, the far-half excess: red), beside ordinary contaminants
     "dna_rc": dict(seed=83, n=100, nloc=14, dtype="dna", depth=0.5, lens=(280, 420), pmiss=0.08, contam=2, cladecopy=2, hiddencontam=1, hidden_blanked=60,

@@ -80,7 +80,7 @@ class TestOptions:
     def test_donor_threshold_one_always_calls_a_direction(self, tmp_out):
         ds = dataset("dna_small"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--donor-threshold", "1"])
         assert r.report.man["counts"]["similar_uncertain"] == 0 and r.report.man["options"]["donor_threshold"] == 1.0
-        assert all(row["similar_role"] != "uncertain" for row in r.masked)
+        assert all("uncertain" not in (row["comparator_role"], row["closest_role"]) for row in r.masked)
 
     def test_huge_donor_threshold_masks_both_members_of_every_pair(self, tmp_out):
         ds = dataset("dna_small"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--donor-threshold", "1e9"]); R = r.report; side = R.arr("cells/side.npy")
@@ -115,9 +115,9 @@ class TestOptions:
         ds = dataset("dna_small"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--all-tests"]); R = r.report
         rows = list(csv.DictReader(gzip.open(r.file("tests.tsv.gz"), "rt"), delimiter="\t"))
         assert list(rows[0].keys()) == lo.TESTS_COLUMNS
-        kinds = {k: sum(1 for x in rows if x["test"] == k) for k in ("divergent", "similar_comparator", "similar_closest")}
-        nslots = int(R.arr("cells/n_comp.npy").sum()); assert kinds["divergent"] == nslots and kinds["similar_comparator"] == nslots
-        assert kinds["similar_closest"] == R.man["test"]["similar_closest_tests"]
+        kinds = {k: sum(1 for x in rows if x["test"] == k) for k in ("divergent", "comparator", "closest")}
+        nslots = int(R.arr("cells/n_comp.npy").sum()); assert kinds["divergent"] == nslots and kinds["comparator"] == nslots
+        assert kinds["closest"] == R.man["test"]["closest_tests"]
         bar = R.man["test"]["log10_bar"]
         for x in rows: assert (float(x["log10p"]) < bar) == (x["fail"] == "1"), x
         names = set(R.taxa["names"]); assert all(x["taxon"] in names and x["comparator"] in names for x in rows)

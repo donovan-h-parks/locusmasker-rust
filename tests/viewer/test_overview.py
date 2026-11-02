@@ -18,9 +18,9 @@ class TestSummary:
         html, R = report_of("dna_small"); open_report(page, html); c = R.man["counts"]
         v = page.eval_on_selector_all(".tile .v", "els => els.map(e => e.textContent)"); k = page.eval_on_selector_all(".tile .k", "els => els.map(e => e.textContent)")
         share, per_locus, masked = masked_share(R)
-        rc = R.man.get("random_comparators"); off = 1 if rc else 0                     # format 8 adds the random-comparator tile
+        rc = R.man.get("broad_sample"); off = 1 if rc else 0                           # format 8 adds the broad-sample tile
         assert v[0] == str(c["masked"]) and v[1] == str(c["masked_divergent"]) and v[2] == str(c["masked_similar"])
-        if rc: assert v[3] == str((rc.get("close") or 0) + (rc.get("divergent") or 0) + (rc.get("both_sides") or 0)) and "random comparators" in k[3]
+        if rc: assert v[3] == str((rc.get("close") or 0) + (rc.get("divergent") or 0) + (rc.get("both_sides") or 0)) and "broad sample" in k[3]
         assert v[3 + off] == f"{int((masked.sum(1) > 0).sum())} / {c['taxa']}" and v[4 + off] == f"{int((per_locus > 0).sum())} / {c['loci']}"
         assert f"of {c['cells']} tested" in k[0] and f"{c['ambiguous']} with fewer comparators" in k[1] and f"{c['similar_uncertain']} in a pair of uncertain direction" in k[2]
         assert f"{c['excluded_taxa']} excluded" in k[3 + off] and f"{c['skipped_loci']} skipped" in k[4 + off]

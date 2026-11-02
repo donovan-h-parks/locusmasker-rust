@@ -1,6 +1,8 @@
 {
  "cells/best_match.npy": "7ab4017f2530f9fcb876a814d4edf2efa2d97ee07af1ffcfaabbedb49b0c0c3b",
  "cells/best_match_identity.npy": "4d38c9c110371faeeca58ffeeebd7f45e725f25f871a3d8e3edbe94a8dbd6d95",
+ "cells/bs_log10p.npy": "ed776d7340971f9248578d2c6a83e11fae7b898db1830c8cf3b7fbdc1b5834b2",
+ "cells/bs_rho.npy": "f79e858df76e2293df9ec7bf86a4cd3ee85e2fedbe9b4a93736b5e82948e6fd0",
  "cells/closest.npy": "603f73a4e392169bcb44bd2e4e625900fd7040716aecc688ecd3a223ce10205a",
  "cells/closest_expected.npy": "4754e3a52b1d785b0fe8e34b19a08580709aa6db9449eec4406bc5c533f4545c",
  "cells/closest_identity.npy": "9b2ba01a0893c24c85ec00cd6c73ba27d7b909caf39efc3a972bb1fb1dd16cdd",
@@ -19,8 +21,6 @@
  "cells/n_fail.npy": "b597ef6b23762c9d037bb0c598f86a058bae8d08d2a5019716d40d1411c68b02",
  "cells/n_similar.npy": "323bc7e787c1a8543606e48a45946af217284df82e8e2e034c5afbe3596e8364",
  "cells/partner.npy": "07fa65d67e896e7523131621a713d1d9112d4487b3da14a948b4fe29332775e7",
- "cells/rc_log10p.npy": "ed776d7340971f9248578d2c6a83e11fae7b898db1830c8cf3b7fbdc1b5834b2",
- "cells/rc_rho.npy": "f79e858df76e2293df9ec7bf86a4cd3ee85e2fedbe9b4a93736b5e82948e6fd0",
  "cells/side.npy": "acd31c3d0b5b5278a6b493268a1f1b6b5f8962ecb7476cd8af34e47f770cbbf6",
  "cells/side2.npy": "602e4b1ddab10e095c60bcdf53894fccd60177ff957028291b95f634d21e2e6f",
  "cells/sim_log10p.npy": "128d98208c4ad404c2244e011b728549895e363e9bac86d36941b7b0af8a78fc",

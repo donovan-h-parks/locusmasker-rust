@@ -148,7 +148,7 @@ class TestSimilar:
         s2 = R.arr("cells/side2.npy") if R.has("cells/side2.npy") else np.zeros_like(side)
         for g, li in cells_tested(R):
             sd = int(side[g, li])
-            if (sd & (2 | 128)) and not (int(s2[g, li]) & 4):                   # a random-comparator mask names a comparator (random/<locus>.json), not a pair
+            if (sd & (2 | 128)) and not (int(s2[g, li]) & 4):                   # a broad-sample mask names a comparator (broadsample/<locus>.json), not a pair
                 p = int(pt[g, li]); assert p >= 0 and (li, min(g, p), max(g, p)) in pairs, (g, li)
             assert not (sd & 32)
 
@@ -194,8 +194,7 @@ class TestSimilar:
     def test_failing_pairs_are_below_the_bar_and_reported_once(self, ctx):
         R, bar = ctx["R"], ctx["bar"]
         for (li, a, b), e in self.pairs(R).items():
-            if e["test"] == "random": assert e["log10p"] < math.log10(R.man["options"]["alpha"]) + 1e-3   # stage 2 of the random-comparator test is held at alpha, after its stage 1 passed the bar
-            else: assert e["log10p"] < bar + 1e-3 and e["test"] in ("comparator", "closest")
+            assert e["log10p"] < bar + 1e-3 and e["test"] in ("comparator", "closest")
         for li in range(R.nloc):
             keys = [(min(e["taxon"], e["partner"]), max(e["taxon"], e["partner"])) for e in R.similar(li) if e["fail"]]
             assert len(keys) == len(set(keys))
@@ -258,12 +257,12 @@ class TestFamily:
                 for c in R.comps(g, li): prs.add((min(g, c), max(g, c)))
             D += len(prs)
         S = int(((side & 64) > 0).sum())
-        assert t["divergent_tests"] == D and t["similar_comparator_tests"] == D and t["similar_closest_tests"] == S
-        assert t["tests"] == 2 * D + S + t["random_tests"]                  # one random-comparator test per present sequence of a kept taxon
+        assert t["divergent_tests"] == D and t["comparator_tests"] == D and t["closest_tests"] == S
+        assert t["tests"] == 2 * D + S + t["broad_sample_tests"]                  # one broad-sample test per present sequence of a kept taxon
         pres = (ctx["R"].arr("cells/focal_sites.npy") > 0); thin = set(ctx["R"].man["counts"].get("excluded_taxa") and [] or [])
-        assert t["random_tests"] in (0, int(pres.sum()) - int(pres[[i for i, st in enumerate(ctx["R"].taxa["status"]) if st != "tested"]].sum()))
-        assert np.isclose(t["log10_bar"], math.log10(R.man["options"]["alpha"] / (2 * D + S + t["random_tests"])), atol=1e-4)
-        assert t["log_bar"] == pytest.approx(math.log(R.man["options"]["alpha"] / (2 * D + S + t["random_tests"])), abs=1e-4)
+        assert t["broad_sample_tests"] in (0, int(pres.sum()) - int(pres[[i for i, st in enumerate(ctx["R"].taxa["status"]) if st != "tested"]].sum()))
+        assert np.isclose(t["log10_bar"], math.log10(R.man["options"]["alpha"] / (2 * D + S + t["broad_sample_tests"])), atol=1e-4)
+        assert t["log_bar"] == pytest.approx(math.log(R.man["options"]["alpha"] / (2 * D + S + t["broad_sample_tests"])), abs=1e-4)
 
     def test_counts_match_the_side_bits(self, ctx):
         R = ctx["R"]; side = R.arr("cells/side.npy"); nc = R.arr("cells/n_comp.npy"); c = R.man["counts"]
@@ -292,15 +291,16 @@ class TestOutputs:
             g, li = R.tx(r["taxon"]), R.lx(r["locus"]); sd = int(side[g, li])
             assert r["reason"] == ("both" if (sd & 3) == 3 else "divergent" if sd & 1 else "similar")
             assert int(r["residues_masked"]) == fs[g, li]
-            if r["divergent_fails"] == "":                                       # masked by the random-comparator test alone: its own columns carry the evidence
-                assert r["random_side"] != "" and float(r["random_log10p"]) < 0; continue
+            if r["divergent_fails"] == "":                                       # masked by the broad-sample test alone: its own columns carry the evidence
+                assert r["broad_partner"] != "" and float(r["broad_log10p"]) < 0; continue
             assert int(r["divergent_fails"]) == nf[g, li] and int(r["divergent_comparators"]) == nc[g, li]
             assert r["comparators"] == "; ".join(R.taxa["names"][c] for c in R.comps(g, li))
             assert float(r["log10_bar"]) == pytest.approx(R.man["test"]["log10_bar"], abs=1e-3)
             if sd & 2:
-                assert (r["similar_role"] in ("copy", "uncertain") or int(R.cell("n_similar", g, li)) > 1) and r["similar_partner"] == R.taxa["names"][int(R.cell("partner", g, li))] and r["similar_test"] in ("comparator", "closest")   # a cell masked as the copy of one pair may be the source of a stronger one
-                assert (r["similar_role"] == "uncertain") == bool(sd & 8)
-            else: assert r["similar_role"] in ("", "source")
+                role = r["comparator_role"] or r["closest_role"]; partner = r["comparator_partner"] if r["comparator_role"] else r["closest_partner"]
+                assert (role in ("copy", "uncertain") or int(R.cell("n_similar", g, li)) > 1) and partner == R.taxa["names"][int(R.cell("partner", g, li))]   # a cell masked as the copy of one pair may be the source of a stronger one
+                assert (role == "uncertain") == bool(sd & 8)
+            else: assert (r["comparator_role"] or r["closest_role"]) in ("", "source")
 
     def test_masked_alignment_blanks_exactly_the_masked_stretches(self, ctx):
         R, run, X, loci, ds = ctx["R"], ctx["run"], ctx["X"], ctx["loci"], ctx["ds"]; side = R.arr("cells/side.npy")
