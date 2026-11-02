@@ -46,12 +46,12 @@ def shared(X, sites, i, j):
 
 # ------------------------------------------------------------------ the shape of the report
 class TestShape:
-    def test_every_format_7_member_is_present(self, ctx):
+    def test_every_format_8_member_is_present(self, ctx):
         R = ctx["R"]
-        for k in ("n_comp", "n_fail", "n_similar", "side", "focal_sites", "med_identity", "med_expected", "excess_m", "closest", "closest_overlap", "closest_identity", "closest_expected",
+        for k in ("n_comp", "n_fail", "n_similar", "side", "side2", "focal_sites", "med_identity", "med_expected", "excess_m", "closest", "closest_overlap", "closest_identity", "closest_expected",
                   "best_match", "best_match_identity", "partner", "div_log10p", "sim_log10p", "locus_closest", "locus_closest_log10p", "comparators", "comp_div_log10p", "comp_sim_log10p"):
             assert R.has(f"cells/{k}.npy"), k
-        assert R.has("taxa/closest.npy") and R.man["format_version"] == 7 and R.dense
+        assert R.has("taxa/closest.npy") and R.man["format_version"] == 8 and R.dense
 
     def test_cell_arrays_have_the_grid_shape(self, ctx):
         R = ctx["R"]; n, nloc, K = R.n, R.nloc, R.K

@@ -214,7 +214,7 @@ BAND_SLOTS = 4                    # per (taxon, locus) the closest-match band ke
                                   # minimum, up to this many (one is the rule; more needs two overlaps with 2 o1 o2 >= 1e9)
 LSET_ELEMENTS = 1 << 20           # a locus's closest matches are found in taxa x taxa slices of about this many elements (rows = this / taxa)
 __version__ = "0.13.1"
-REPORT_FORMAT = 7                 # bundle format version; the viewer refuses a newer one (3: tree branch lengths are F81-corrected; 4: the too-similar test over every pair; 7: every test of every cell, the closest match at the locus, the uncertain-direction pairs)
+REPORT_FORMAT = 8                 # bundle format version; the viewer refuses a newer one (3: tree branch lengths are F81-corrected; 4: the too-similar test over every pair; 7: every test of every cell, the closest match at the locus, the uncertain-direction pairs; 8: the random-comparator test, cells/side2 and cells/rc_*)
 DENSE_CELLS_MAX = 8_000_000       # per-cell numeric report columns are dense (taxa x loci) up to this many cells, sparse beyond
 BEST_MATCH_ALL_MAX_TAXA = 2000    # best matches for every tested cell up to this many taxa; beyond, only for cells with a fail
 BEST_MATCH_MIN_SITES = 30         # a best match needs this many sites shared with the focal (as plot_panels.best_matches)

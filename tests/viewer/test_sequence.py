@@ -108,15 +108,19 @@ class TestHeaderAndColours:
         if E.side & 4: assert "fewer comparators" in verdict
         # names: focal orange; the closest row blue when significantly too similar; a relative red when significantly too divergent
         cls = page.eval_on_selector_all(".seq-names .seqnm .nm", "els => els.map(e => e.className)")
-        assert "st-focal" in cls[0] and (("st-blue" in cls[1]) == (E.Y in E.pairs))
-        for k, c in enumerate(E.comps): assert ("st-red" in cls[2 + k]) == (c in E.red), (kind, c)
+        s2 = int(R.arr("cells/side2.npy")[g, li]) if R.has("cells/side2.npy") else 0
+        rc_y = bool(s2 & (4 | 64)) and R.has("cells/rc_partner.npy") and E.Y is not None and any(
+            int(rl) == li and int(rt) == g and int(rp) == E.Y for rl, rt, rp in zip(R.arr("cells/rc_locus.npy"), R.arr("cells/rc_taxon.npy"), R.arr("cells/rc_partner.npy")))
+        off = 1 if any("random comparator" in t for t in page.eval_on_selector_all(".seq-role .seqnm", "els => els.map(e => e.textContent)")) else 0
+        assert "st-focal" in cls[0] and (("st-blue" in cls[1]) == ((E.Y in E.pairs) or rc_y))   # the closest row is also blue when it is the labelled donor side
+        for k, c in enumerate(E.comps): assert ("st-red" in cls[2 + off + k]) == (c in E.red), (kind, c)
         # the p column
         p = page.eval_on_selector_all(".seq-p .pcell span", "els => els.map(e => [e.textContent, e.style.background])")
         assert p[0][0] == E.focal_stars()
         bg = p[0][1].replace(" ", ""); want = ("rgb(233,202,0)" if E.dv and E.sm else "rgb(181,23,46)" if E.dv else "rgb(47,107,216)" if E.sm else "rgb(222,220,215)")
         assert bg == want, (kind, bg, want)
-        assert p[1][0] == (stars(E.pairs[E.Y], E.bar) if E.Y in E.pairs else "–")
-        for k, c in enumerate(E.comps): assert p[2 + k][0] == (stars(E.div[c], E.bar) if c in E.red else "–"), (kind, c)
+        if not rc_y: assert p[1][0] == (stars(E.pairs[E.Y], E.bar) if E.Y in E.pairs else "–")
+        for k, c in enumerate(E.comps): assert p[2 + off + k][0] == (stars(E.div[c], E.bar) if c in E.red else "–"), (kind, c)
 
     def test_hovers_carry_the_numbers(self, page, ctx):
         R = ctx["R"]; g, li = ctx["kinds"]["divergent"]; E = Expect(R, g, li); open_report(page, ctx["html"]); open_cell(page, g, li)

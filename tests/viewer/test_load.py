@@ -24,7 +24,7 @@ class TestLoads:
     def test_the_api_the_tests_use_is_exposed(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html)
         assert page.evaluate("() => Object.keys(window.LM).sort()") == ["App", "openCell", "openUnit", "setView", "start"]
-        assert page.evaluate("() => [LM.App.D.n, LM.App.D.nloc, LM.App.D.format, LM.App.D.K, LM.App.D.M]") == [R.n, R.nloc, 7, R.K, R.M]
+        assert page.evaluate("() => [LM.App.D.n, LM.App.D.nloc, LM.App.D.format, LM.App.D.K, LM.App.D.M]") == [R.n, R.nloc, 8, R.K, R.M]
 
     def test_the_loading_placeholder_is_gone(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html)
@@ -55,8 +55,8 @@ class TestLoads:
 class TestRefusals:
     @pytest.mark.allow_errors
     def test_a_newer_format_is_refused_with_the_version(self, page, report_of):
-        html, R = report_of("dna_small", "format8"); page.goto("file://" + html); page.wait_for_selector(".error", timeout=30000)
-        txt = page.text_content(".error"); assert "format 8" in txt and "9.9.9" in txt and "formats 1 to 7" in txt
+        html, R = report_of("dna_small", "format9"); page.goto("file://" + html); page.wait_for_selector(".error", timeout=30000)
+        txt = page.text_content(".error"); assert "format 9" in txt and "9.9.9" in txt and "formats 1 to 8" in txt
 
     @pytest.mark.allow_errors
     def test_corrupted_data_shows_an_error_not_a_blank_page(self, page, report_of, tmp_path):
