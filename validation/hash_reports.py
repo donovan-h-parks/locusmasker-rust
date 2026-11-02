@@ -23,6 +23,7 @@ def main():
     for run_dir in sorted(glob.glob(os.path.join(a.dir, "*", "t*", "run"))):
         ds, t = run_dir.split(os.sep)[-3:-1]; runs[f"{ds}/{t}"] = hashes(run_dir)
     if a.compare:
+        if not runs: raise SystemExit(f"no runs found under {a.dir} (looked for */t*/run): nothing was compared")
         base = json.load(open(os.path.join(a.compare, "hashes.json"))); bad = 0
         for key, h in runs.items():
             if key not in base: print(f"{key}: not in the baseline"); continue
