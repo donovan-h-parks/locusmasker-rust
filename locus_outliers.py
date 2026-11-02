@@ -896,7 +896,7 @@ def chi2_logsf_np(x, nu):
     return np.where(z <= 0.0, 0.0, np.minimum(out, 0.0))
 
 
-def rc_null(x, k, chunk=200_000):
+def rc_null(x, k, chunk=200_000, threads=1):
     """log p of each row's variance ratio x (its residual variance over the locus median, k comparators) under the
     scale null: rows differ in scale, x = sigma2 chi2_(k-1)/(k-1) with log sigma2 ~ Normal(mu, tau2), mu and tau2 from
     the bulk of all rows dataset-wide (robust location and spread of log x less the chi-square's own part), the
@@ -908,11 +908,17 @@ def rc_null(x, k, chunk=200_000):
     t, w = np.polynomial.hermite.hermgauss(40); s_ = mu + math.sqrt(2.0 * tau2) * t
     logw = np.log(w) - 0.5 * math.log(math.pi); es = np.exp(-s_)
     out = np.empty(len(x))
-    for i0 in range(0, len(x), chunk):
+    def do(i0):
         sl = slice(i0, min(i0 + chunk, len(x)))
         terms = logw[None, :] + chi2_logsf_np(nu[sl, None] * x[sl, None] * es[None, :], nu[sl, None] * np.ones((1, len(s_))))
         m_ = terms.max(1)
-        out[sl] = m_ + np.log(np.exp(terms - m_[:, None]).sum(1))
+        return i0, m_ + np.log(np.exp(terms - m_[:, None]).sum(1))
+    starts = list(range(0, len(x), chunk))
+    if threads > 1 and len(starts) > 1 and _can_fork():                    # rows are independent, so any split gives the same bits
+        chunk = max(20_000, min(chunk, -(-len(x) // (4 * threads)))); starts = list(range(0, len(x), chunk))
+        for i0, v in fork_map(do, starts, min(threads, len(starts))): out[i0:i0 + len(v)] = v
+    else:
+        for i0 in starts: _, v = do(i0); out[i0:i0 + len(v)] = v
     return np.minimum(out, 0.0), math.sqrt(tau2)
 
 
@@ -3225,7 +3231,9 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
         x_a = np.concatenate([b["x"] for b in rcL if b is not None])
         k_a = np.concatenate([b["k"] for b in rcL if b is not None])
         rho_a = np.concatenate([b["rho"] for b in rcL if b is not None])
-        lp1, rc_tau = rc_null(x_a, k_a)
+        PROG.start("random null", 1)
+        lp1, rc_tau = rc_null(x_a, k_a, threads=a.threads)
+        PROG.tick(); PROG.finish()
         past = lp1 < logbar
         rep["side2"][tax_a[past], loc_a[past]] |= 2
         if dense:
