@@ -30,10 +30,10 @@
  },
  "test": {
   "tests": 250,
-  "divergent_tests": 100,
+  "close_relative_tests": 100,
   "broad_sample_tests": 50,
-  "comparator_tests": 100,
-  "closest_tests": 0,
+  "closest_match_relative_tests": 100,
+  "closest_match_outside_tests": 0,
   "similar_candidates": 0,
   "comparisons": 100,
   "bonferroni_k": 3.5401,
@@ -42,6 +42,6 @@
   "phi_dataset": 0.0,
   "half": 0.5
  },
- "format_version": 8,
+ "format_version": 9,
  "version": "0.13.1"
 }

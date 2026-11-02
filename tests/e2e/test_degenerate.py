@@ -175,7 +175,7 @@ class TestRandom:
         for dtype in ("dna", "aa"):
             for seed in (1, 2, 3):
                 d = tmp_path / f"{dtype}{seed}"; d.mkdir(); aln, parts = self.random_alignment(d, dtype, seed); r = run_tool(aln, str(d / "out"), dtype, parts); assert r.rc == 0
-                found += [(dtype, seed, x["taxon"], x["locus"], x["reason"], x["comparator_role"] or x["closest_role"]) for x in r.masked]
+                found += [(dtype, seed, x["taxon"], x["locus"], x["reason"], x["closest_match_role"]) for x in r.masked]
         assert found == [], found
 
 
@@ -200,10 +200,10 @@ class TestRandomTrees:
         that locus's own tree (96% the closest, 99.9% within the closest three, none beyond the fifth when the fixture was made)"""
         ds = dataset("aa_random_trees"); masked = run.masked; c = run.report.man["counts"]
         assert c["masked_similar"] >= 1000 and len({x["locus"] for x in masked}) >= 90
-        assert sum(x["closest_role"] != "" for x in masked) > 0.8 * len(masked)
+        assert sum(x["closest_match_role"] != "" and x["closest_match_arm"] == "outside" for x in masked) > 0.8 * len(masked)
         ranks = []
         for locus, newick in ds.truth["trees"].items():
-            cells = [x for x in masked if x["locus"] == locus and (x["comparator_role"] or x["closest_role"]) != "source"]
+            cells = [x for x in masked if x["locus"] == locus and x["closest_match_role"] != "source"]
             if not cells: continue
             tree = Phylo.read(io.StringIO(newick), "newick"); paths = {t.name: tree.get_path(t) for t in tree.get_terminals()}
             pref = {k: np.concatenate([[0.0], np.cumsum([n.branch_length for n in p])]) for k, p in paths.items()}
@@ -212,5 +212,5 @@ class TestRandomTrees:
                 while k < min(len(pa), len(pb)) and pa[k] is pb[k]: k += 1
                 return pref[a][-1] + pref[b][-1] - 2 * pref[a][k]
             for x in cells:
-                d = {o: dist(x["taxon"], o) for o in paths if o != x["taxon"]}; partner = x["comparator_partner"] if x["comparator_role"] else x["closest_partner"]; ranks.append(sorted(d, key=d.get).index(partner) + 1)
+                d = {o: dist(x["taxon"], o) for o in paths if o != x["taxon"]}; ranks.append(sorted(d, key=d.get).index(x["closest_match_partner"]) + 1)
         ranks = np.array(ranks); assert len(ranks) > 1000 and (ranks == 1).mean() >= 0.9 and (ranks <= 5).all(), np.bincount(ranks)[:8]

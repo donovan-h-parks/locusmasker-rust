@@ -153,8 +153,8 @@ class TestOtherScripts:
 
     def test_plot_pair_on_a_too_similar_pair(self, tmp_path):
         ds = dataset("dna_small"); run = run_tool(ds.aln, str(tmp_path / "o"), "dna", ds.parts, ["--all-tests"])
-        row = next(x for x in run.masked if x["comparator_role"] or x["closest_role"])
-        partner = row["comparator_partner"] if row["comparator_role"] else row["closest_partner"]
+        row = next(x for x in run.masked if x["closest_match_role"])
+        partner = row["closest_match_partner"]
         r = script("plot_pair.py", [run.out, row["taxon"], partner, "--out", str(tmp_path / "p.png")], str(tmp_path)); assert r.returncode == 0, r.stderr
         assert (tmp_path / "p.png").exists()
 

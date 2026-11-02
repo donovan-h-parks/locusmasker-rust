@@ -46,12 +46,12 @@ def shared(X, sites, i, j):
 
 # ------------------------------------------------------------------ the shape of the report
 class TestShape:
-    def test_every_format_8_member_is_present(self, ctx):
+    def test_every_format_9_member_is_present(self, ctx):
         R = ctx["R"]
         for k in ("n_comp", "n_fail", "n_similar", "side", "side2", "focal_sites", "med_identity", "med_expected", "excess_m", "closest", "closest_overlap", "closest_identity", "closest_expected",
                   "best_match", "best_match_identity", "partner", "div_log10p", "sim_log10p", "locus_closest", "locus_closest_log10p", "comparators", "comp_div_log10p", "comp_sim_log10p"):
             assert R.has(f"cells/{k}.npy"), k
-        assert R.has("taxa/closest.npy") and R.man["format_version"] == 8 and R.dense
+        assert R.has("taxa/closest.npy") and R.man["format_version"] == 9 and R.dense
 
     def test_cell_arrays_have_the_grid_shape(self, ctx):
         R = ctx["R"]; n, nloc, K = R.n, R.nloc, R.K
@@ -113,7 +113,8 @@ class TestDivergent:
         for g, li in cells_tested(R):
             sd = int(side[g, li]); k, f = int(nc[g, li]), int(nf[g, li])
             full = k == R.K and f >= R.M; amb = k < R.K and f >= k // 2 + 1
-            assert bool(sd & 1) == (full or amb), (g, li, sd, k, f)
+            broad_red = bool(int(s2[g, li]) & 8)                                  # the broad-sample excess arm also masks divergent
+            assert bool(sd & 1) == (full or amb or broad_red), (g, li, sd, k, f)
             assert bool(sd & 4) == amb
             assert not (sd & 16)                                                  # masking of divergent sequences was on
 
@@ -194,7 +195,7 @@ class TestSimilar:
     def test_failing_pairs_are_below_the_bar_and_reported_once(self, ctx):
         R, bar = ctx["R"], ctx["bar"]
         for (li, a, b), e in self.pairs(R).items():
-            assert e["log10p"] < bar + 1e-3 and e["test"] in ("comparator", "closest")
+            assert e["log10p"] < bar + 1e-3 and e["test"] in ("relative", "outside")
         for li in range(R.nloc):
             keys = [(min(e["taxon"], e["partner"]), max(e["taxon"], e["partner"])) for e in R.similar(li) if e["fail"]]
             assert len(keys) == len(set(keys))
@@ -257,7 +258,7 @@ class TestFamily:
                 for c in R.comps(g, li): prs.add((min(g, c), max(g, c)))
             D += len(prs)
         S = int(((side & 64) > 0).sum())
-        assert t["divergent_tests"] == D and t["comparator_tests"] == D and t["closest_tests"] == S
+        assert t["close_relative_tests"] == D and t["closest_match_relative_tests"] == D and t["closest_match_outside_tests"] == S
         assert t["tests"] == 2 * D + S + t["broad_sample_tests"]                  # one broad-sample test per present sequence of a kept taxon
         pres = (ctx["R"].arr("cells/focal_sites.npy") > 0); thin = set(ctx["R"].man["counts"].get("excluded_taxa") and [] or [])
         assert t["broad_sample_tests"] in (0, int(pres.sum()) - int(pres[[i for i, st in enumerate(ctx["R"].taxa["status"]) if st != "tested"]].sum()))
@@ -291,16 +292,16 @@ class TestOutputs:
             g, li = R.tx(r["taxon"]), R.lx(r["locus"]); sd = int(side[g, li])
             assert r["reason"] == ("both" if (sd & 3) == 3 else "divergent" if sd & 1 else "similar")
             assert int(r["residues_masked"]) == fs[g, li]
-            if r["divergent_fails"] == "":                                       # masked by the broad-sample test alone: its own columns carry the evidence
-                assert r["broad_partner"] != "" and float(r["broad_log10p"]) < 0; continue
-            assert int(r["divergent_fails"]) == nf[g, li] and int(r["divergent_comparators"]) == nc[g, li]
+            if r["close_relative_fails"] == "":                                  # masked by the broad-sample test alone: its own columns carry the evidence
+                assert r["broad_sample_partner"] != "" and r["broad_sample_side"] != "" and float(r["broad_sample_log10p"]) < 0; continue
+            assert int(r["close_relative_fails"]) == nf[g, li] and int(r["close_relative_comparators"]) == nc[g, li]
             assert r["comparators"] == "; ".join(R.taxa["names"][c] for c in R.comps(g, li))
             assert float(r["log10_bar"]) == pytest.approx(R.man["test"]["log10_bar"], abs=1e-3)
             if sd & 2:
-                role = r["comparator_role"] or r["closest_role"]; partner = r["comparator_partner"] if r["comparator_role"] else r["closest_partner"]
+                role = r["closest_match_role"]; partner = r["closest_match_partner"]
                 assert (role in ("copy", "uncertain") or int(R.cell("n_similar", g, li)) > 1) and partner == R.taxa["names"][int(R.cell("partner", g, li))]   # a cell masked as the copy of one pair may be the source of a stronger one
                 assert (role == "uncertain") == bool(sd & 8)
-            else: assert (r["comparator_role"] or r["closest_role"]) in ("", "source")
+            else: assert r["closest_match_role"] in ("", "source")
 
     def test_masked_alignment_blanks_exactly_the_masked_stretches(self, ctx):
         R, run, X, loci, ds = ctx["R"], ctx["run"], ctx["X"], ctx["loci"], ctx["ds"]; side = R.arr("cells/side.npy")
@@ -316,7 +317,7 @@ class TestOutputs:
     def test_log_names_the_counts(self, ctx):
         run, R = ctx["run"], ctx["R"]; c = R.man["counts"]
         assert f"masked {c['masked']} sequences" in run.log and f"{c['masked_divergent'] - c['masked_both']} too divergent" in run.log
-        assert re.search(r"tests: [\d,]+ too-divergent comparisons", run.log) and "done" in run.log
+        assert re.search(r"tests: [\d,]+ close-relative comparisons", run.log) and "done" in run.log
 
 
 # ------------------------------------------------------------------ what the report carries for the viewer

@@ -4,8 +4,8 @@
   "loci": 14,
   "cells": 1400,
   "present": 1400,
-  "masked": 16,
-  "masked_divergent": 7,
+  "masked": 17,
+  "masked_divergent": 8,
   "masked_similar": 10,
   "masked_both": 1,
   "ambiguous": 0,
@@ -14,7 +14,7 @@
   "similar_sources": 1,
   "similar_uncertain": 2,
   "near_miss": {
-   "1": 12,
+   "1": 11,
    "2": 12
   },
   "excluded_taxa": 0,
@@ -30,10 +30,10 @@
  },
  "test": {
   "tests": 11037,
-  "divergent_tests": 4802,
+  "close_relative_tests": 4802,
   "broad_sample_tests": 1400,
-  "comparator_tests": 4802,
-  "closest_tests": 33,
+  "closest_match_relative_tests": 4802,
+  "closest_match_outside_tests": 33,
   "similar_candidates": 33,
   "comparisons": 4802,
   "bonferroni_k": 4.4385,
@@ -42,6 +42,6 @@
   "phi_dataset": 0.003329,
   "half": 0.5
  },
- "format_version": 8,
+ "format_version": 9,
  "version": "0.13.1"
 }

@@ -7,8 +7,8 @@ pytestmark = pytest.mark.e2e
 
 
 def sim_cols(r):
-    """the family that carried the row's too-similar mask: (partner, role)"""
-    return (r["comparator_partner"], r["comparator_role"]) if r["comparator_role"] else (r["closest_partner"], r["closest_role"])
+    """the closest-match family's mask columns: (partner, role)"""
+    return r["closest_match_partner"], r["closest_match_role"]
 
 
 def failing_pairs(R):
@@ -25,13 +25,13 @@ class TestPlanted:
         run = runs(name); ds = dataset(name)
         for e in ds.ev("contam"):
             r = run.masked_at(e["taxon"], e["locus"]); assert r is not None and r["reason"] in ("divergent", "both"), e
-            assert int(r["divergent_comparators"]) == run.report.K and int(r["divergent_fails"]) >= run.report.M and float(r["divergent_log10p"]) < run.report.man["test"]["log10_bar"]
+            assert int(r["close_relative_comparators"]) == run.report.K and int(r["close_relative_fails"]) >= run.report.M and float(r["close_relative_log10p"]) < run.report.man["test"]["log10_bar"]
 
     def test_far_copies_are_masked_by_both_tests_with_the_donor_named(self, runs, name):
         run = runs(name); ds = dataset(name)
         for e in ds.ev("farcopy"):
             r = run.masked_at(e["recipient"], e["locus"]); assert r is not None and r["reason"] in ("both", "similar"), e
-            assert r["closest_partner"] == e["donor"] and r["closest_role"] == "copy", e
+            assert r["closest_match_partner"] == e["donor"] and r["closest_match_role"] == "copy" and r["closest_match_arm"] == "outside", e
             assert run.masked_at(e["donor"], e["locus"]) is None, e
 
     def test_near_copies_are_reported_as_too_similar_pairs(self, runs, name):
@@ -69,7 +69,7 @@ class TestPlanted:
         for e in ds.ev("ambiguous"):
             g, li = R.tx(e["taxon"]), R.lx(e["locus"]); sd = R.side(g, li)
             assert sd & 1 and sd & 4 and R.cell("n_comp", g, li) == 3 == len(e["comparators"]) and set(R.comps(g, li)) == {R.tx(c) for c in e["comparators"]}
-            r = run.masked_at(e["taxon"], e["locus"]); assert r["reason"] in ("divergent", "both") and int(r["divergent_comparators"]) == 3
+            r = run.masked_at(e["taxon"], e["locus"]); assert r["reason"] in ("divergent", "both") and int(r["close_relative_comparators"]) == 3
 
     def test_few_masks_beyond_the_planted_ones(self, runs, name):
         run = runs(name); ds = dataset(name)

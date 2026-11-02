@@ -159,9 +159,9 @@ def plant(rng, names, X, bounds, pat, cherries, spec, A):
         d, r = pair; free.remove(d); free.remove(r); li = locus(d, r); a, b = bounds[li], bounds[li + 1]
         X[r, a:b] = X[d, a:b]; truth.append(dict(kind="sistercopy", donor=names[d], recipient=names[r], locus=f"locus{li + 1}", patristic=float(pat[d, r])))
     for _ in range(spec.get("hiddencontam", 0)):                   # a contaminated stretch exactly where the near side of the
-        # tree has no coverage: the closest-relative tests compare on the clean remainder and see nothing. The excess
-        # side that caught this was prototyped and NOT adopted (Rob, 3 Nov 2026: a rare corner, not worth an arm), so
-        # this plants the tool's DESIGNED BLIND SPOT: the cell passes the variance bar and nothing masks it
+        # tree has no coverage: the close-relative test compares on the clean remainder and sees nothing, but half
+        # the broad sample's far members lean too divergent - the excess arm masks it red (removed 3 Nov 2026,
+        # reinstated the same day under the one-direction call)
         t = take(); near = [c for c in np.argsort(pat[t]) if c in free][:spec.get("hidden_blanked", 30)]
         for c in near: free.remove(c)
         li = locus(t, *near); reserved_loci.add(li); a, b = bounds[li], bounds[li + 1]
@@ -269,8 +269,8 @@ DATASETS = {
     "aa_clean": dict(seed=41, n=20, nloc=11, dtype="aa", depth=0.5, lens=(120, 240), pmiss=0.0, formats="fasta"),
     "dna_dense": dict(seed=53, n=40, nloc=16, dtype="dna", depth=0.55, lens=(120, 260), pmiss=0.15, contam=3, nearcopy=3, farcopy=2, sistercopy=1, formats="fasta"),
     # the broad-sample test's fixture: a clade moved wholesale (its members' closest relatives moved with it, so
-    # only the broad sample sees the young coalescence: blue) and a plate swap (sequences permuted among scattered
-    # taxa: residuals lean both ways, the far-half excess: red), beside ordinary contaminants
+    # only the broad sample sees the young coalescence: blue) and contamination hidden where no close relative
+    # covers (the far-half excess: red), beside ordinary contaminants
     "dna_rc": dict(seed=83, n=100, nloc=14, dtype="dna", depth=0.5, lens=(280, 420), pmiss=0.08, contam=2, cladecopy=2, hiddencontam=1, hidden_blanked=60,
                    event_min_sites=150, formats="fasta"),
     # the multi-block dataset of the large-data work: many taxa, clusters of identical genomes, a non-transitive identity

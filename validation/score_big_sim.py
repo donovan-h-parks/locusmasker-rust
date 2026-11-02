@@ -16,8 +16,7 @@ def main(data, run):
     def source(c):
         r = masked.get(c)
         if r is None: return None
-        partner, role = (r["comparator_partner"], r["comparator_role"]) if r["comparator_role"] else (r["closest_partner"], r["closest_role"])
-        return partner if role == "copy" else None
+        return r["closest_match_partner"] if r["closest_match_role"] == "copy" else None
     planted = set(); out = {}
     def tally(kind, hit):
         a = out.setdefault(kind, [0, 0]); a[1] += 1; a[0] += bool(hit)

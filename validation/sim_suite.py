@@ -240,8 +240,7 @@ def score(scan, events):
     def source(c):                                  # the taxon a masked sequence is named a copy of, else None
         r = masked.get(c)
         if r is None: return None
-        partner, role = (r["comparator_partner"], r["comparator_role"]) if r["comparator_role"] else (r["closest_partner"], r["closest_role"])
-        return partner if role == "copy" else None
+        return r["closest_match_partner"] if r["closest_match_role"] == "copy" else None
     res = zero(); planted = set()
     def caught(kind, c, right=None):                # one planted cell: test 1, any reason, and the source it names
         res[kind][1] += 1; res[kind][0] += why.get(c) in DIV
@@ -274,7 +273,7 @@ def score(scan, events):
     res["fp_sim"] = sum(1 for (l, pr), rc in pairs.items() if rc is not None and not any((l, t) in planted for t in pr))
     res["fp_sim_cells"] = sum(1 for (l, t), r in masked.items()
                               if r["reason"] in SIM and (l, t) not in planted
-                              and (l, r["comparator_partner"] or r["closest_partner"] or r["broad_partner"]) not in planted)
+                              and (l, r["closest_match_partner"] or r["broad_sample_partner"]) not in planted)
     res["fp_any"] = sum(1 for c in why if c not in planted)
     res["cells"] = int(man["counts"]["cells"])
     return res

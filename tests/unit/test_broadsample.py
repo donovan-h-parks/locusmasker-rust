@@ -79,3 +79,28 @@ class TestHashDraws:
         vals = np.array([[3, 7, 3, 1, 7, 2]])
         got, ok = lo._first_distinct(vals, 4)
         assert ok[0] and got.tolist() == [[3, 7, 1, 2]]
+
+
+class TestOrderStatBound:
+    def test_k1_is_the_bonferroni_bound(self):
+        lp = np.log(np.array([1e-4, 0.02])); nf = np.array([20, 30])
+        got = lo.order_stat_bound(lp, nf, np.ones(2))
+        np.testing.assert_allclose(got, np.minimum(lp + np.log(nf), 0.0))
+
+    def test_bound_holds_by_simulation(self):
+        """P(bound < log alpha under uniform p's) <= alpha, for k = 1, 2 and half"""
+        rng = np.random.default_rng(5); trials = 20_000; nf = 24
+        p = rng.uniform(0, 1, (trials, nf)); sp = np.sort(np.log(p), 1)
+        for k in (1, 2, 12):
+            b = lo.order_stat_bound(sp[:, k - 1], np.full(trials, nf), np.full(trials, k))
+            assert float((b < math.log(0.05)).mean()) <= 0.05 + 0.004, k
+
+    def test_a_shifted_half_fires_and_one_spike_does_not(self):
+        nf = 24; half = np.full(nf, 0.5); half[:12] = 1e-3
+        sp = np.sort(np.log(half))
+        assert lo.order_stat_bound(sp[11:12], np.array([nf]), np.array([12]))[0] < math.log(1e-6)
+        spike = np.full(nf, 0.5); spike[0] = 1e-30; sp2 = np.sort(np.log(spike))
+        assert lo.order_stat_bound(sp2[11:12], np.array([nf]), np.array([12]))[0] == 0.0
+
+    def test_fewer_far_comparators_than_k_gives_log1(self):
+        assert lo.order_stat_bound(np.array([-30.0]), np.array([3]), np.array([5]))[0] == 0.0

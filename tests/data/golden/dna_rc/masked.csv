@@ -1,17 +1,18 @@
-locus,taxon,reason,residues_masked,divergent_fails,divergent_comparators,divergent_observed,divergent_expected,divergent_excess_m,divergent_log10p,comparator_partner,comparator_role,comparator_observed,comparator_expected,comparator_row_factor,comparator_log10p,comparator_partner_excess_m,closest_partner,closest_role,closest_observed,closest_expected,closest_log10p,closest_relatives,closest_partner_excess_m,broad_partner,broad_observed,broad_expected,broad_log10p,comparators,log10_bar
-locus2,t39,divergent,288,5,5,72.57,18.96,300.006,-57.160,t40,,72.92,10.19,0.936,0.000,3.776,t29,,68.75,17.71,0.000,t40; t35; t10; t73; t25,2.143,,,,,t40; t35; t10; t73; t25,-5.344
-locus6,t37,both,359,4,5,33.98,10.74,71.385,-7.069,t38,,34.82,5.12,1.000,0.000,74.270,t52,copy,6.96,30.08,-5.731,t01; t28; t18; t42,-6.252,,,,,t38; t01; t28; t18; t42,-5.344
-locus6,t38,divergent,359,3,5,33.43,8.68,74.270,-10.319,t18,,9.75,10.96,1.000,-0.437,-1.965,,,,,,,,,,,,t01; t37; t28; t36; t18,-5.344
-locus8,t31,divergent,283,5,5,75.27,22.76,258.444,-35.913,t65,,75.27,16.64,1.000,0.000,8.380,t04,,70.32,35.34,0.000,t65; t66; t17; t34; t09,-2.608,,,,,t65; t66; t17; t34; t09,-5.344
-locus13,t04,divergent,304,3,5,39.14,12.44,65.437,-11.137,t20,,9.54,12.44,0.955,-0.699,-0.338,,,,,,,,,,,,t10; t35; t20; t73; t72,-5.344
-locus13,t10,divergent,304,4,5,43.09,7.41,88.251,-33.787,t20,,5.92,8.01,1.000,-0.788,-0.338,,,,,,,,,,,,t35; t73; t72; t20; t25,-5.344
-locus13,t35,similar,304,2,5,9.87,8.53,2.394,-0.489,t72,,7.89,8.39,1.000,-0.343,5.638,t63,uncertain,3.95,25.00,-9.687,t64; t57; t56; t18; t42,3.722,t57,22.04,43.54,-1.903,t10; t72; t73; t25; t20,-5.344
-locus13,t39,divergent,304,3,5,44.08,15.57,76.842,-9.960,t40,,7.89,8.25,1.000,-0.317,1.569,,,,,,,,,,,,t40; t35; t10; t73; t25,-5.344
-locus13,t63,similar,304,0,5,23.36,21.69,3.722,-0.693,t64,,5.92,7.40,1.000,-0.607,1.623,t35,uncertain,3.95,25.00,-9.687,t64; t57; t56; t18; t42,2.394,,,,,t64; t57; t56; t18; t42,-5.344
-locus6,t28,similar,359,,,,,,,,,,,,,,,,,,,,,t59,9.27,33.94,-2.523,,-5.344
-locus6,t36,similar,359,,,,,,,,,,,,,,,,,,,,,t58,12.53,32.94,-2.116,,-5.344
-locus6,t43,similar,359,,,,,,,,,,,,,,,,,,,,,t58,13.09,33.46,-1.994,,-5.344
-locus6,t44,similar,359,,,,,,,,,,,,,,,,,,,,,t52,6.13,34.90,-5.684,,-5.344
-locus13,t25,similar,304,,,,,,,,,,,,,,,,,,,,,t64,11.84,46.08,-6.183,,-5.344
-locus13,t72,similar,304,,,,,,,,,,,,,,,,,,,,,t64,10.86,45.56,-6.687,,-5.344
-locus13,t73,similar,304,,,,,,,,,,,,,,,,,,,,,t64,11.18,45.79,-6.500,,-5.344
+locus,taxon,reason,residues_masked,close_relative_fails,close_relative_comparators,close_relative_observed,close_relative_expected,close_relative_excess_m,close_relative_log10p,closest_match_partner,closest_match_arm,closest_match_role,closest_match_observed,closest_match_expected,closest_match_row_factor,closest_match_log10p,closest_match_relatives,closest_match_partner_excess_m,broad_sample_partner,broad_sample_side,broad_sample_observed,broad_sample_expected,broad_sample_log10p,comparators,log10_bar
+locus2,t39,divergent,288,5,5,72.57,18.96,300.006,-57.160,t29,outside,,68.75,17.71,,0.000,t40; t35; t10; t73; t25,2.143,,,,,,t40; t35; t10; t73; t25,-5.344
+locus6,t37,both,359,4,5,33.98,10.74,71.385,-7.069,t52,outside,copy,6.96,30.08,,-5.731,t01; t28; t18; t42,-6.252,,,,,,t38; t01; t28; t18; t42,-5.344
+locus6,t38,divergent,359,3,5,33.43,8.68,74.270,-10.319,t18,relative,,9.75,10.96,1.000,-0.437,,-1.965,,,,,,t01; t37; t28; t36; t18,-5.344
+locus8,t31,divergent,283,5,5,75.27,22.76,258.444,-35.913,t04,outside,,70.32,35.34,,0.000,t65; t66; t17; t34; t09,-2.608,,,,,,t65; t66; t17; t34; t09,-5.344
+locus13,t04,divergent,304,3,5,39.14,12.44,65.437,-11.137,t20,relative,,9.54,12.44,0.955,-0.699,,-0.338,,,,,,t10; t35; t20; t73; t72,-5.344
+locus13,t10,divergent,304,4,5,43.09,7.41,88.251,-33.787,t20,relative,,5.92,8.01,1.000,-0.788,,-0.338,,,,,,t35; t73; t72; t20; t25,-5.344
+locus13,t35,similar,304,2,5,9.87,8.53,2.394,-0.489,t63,outside,uncertain,3.95,25.00,,-9.687,t64; t57; t56; t18; t42,3.722,t57,close,22.04,43.54,-1.903,t10; t72; t73; t25; t20,-5.344
+locus13,t39,divergent,304,3,5,44.08,15.57,76.842,-9.960,t40,relative,,7.89,8.25,1.000,-0.317,,1.569,,,,,,t40; t35; t10; t73; t25,-5.344
+locus13,t63,similar,304,0,5,23.36,21.69,3.722,-0.693,t35,outside,uncertain,3.95,25.00,,-9.687,t64; t57; t56; t18; t42,2.394,,,,,,t64; t57; t56; t18; t42,-5.344
+locus6,t28,similar,359,,,,,,,,,,,,,,,,t59,close,9.27,33.94,-2.523,,-5.344
+locus6,t36,similar,359,,,,,,,,,,,,,,,,t59,close,10.60,33.49,-2.116,,-5.344
+locus6,t43,similar,359,,,,,,,,,,,,,,,,t58,close,13.09,33.46,-1.994,,-5.344
+locus6,t44,similar,359,,,,,,,,,,,,,,,,t52,close,6.13,34.90,-5.684,,-5.344
+locus12,t65,divergent,345,,,,,,,,,,,,,,,,t75,divergent,60.29,37.85,-44.219,,-5.344
+locus13,t25,similar,304,,,,,,,,,,,,,,,,t64,close,11.84,46.08,-6.183,,-5.344
+locus13,t72,similar,304,,,,,,,,,,,,,,,,t64,close,10.86,45.56,-6.687,,-5.344
+locus13,t73,similar,304,,,,,,,,,,,,,,,,t64,close,11.18,45.79,-6.500,,-5.344

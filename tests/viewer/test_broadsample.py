@@ -1,5 +1,6 @@
-"""The broad-sample test in the viewer (format 8): a close-side mask is blue, a labelled divergent cell yellow, the
-hover names the test and its p, and the alignment panel shows the partner under a broad-comparator tag."""
+"""The broad-sample test in the viewer (format 9): a close-side mask is blue, an excess-side mask red, a labelled
+divergent cell yellow, the hover names the test and its p, and the alignment panel shows the partner under a
+broad-comparator tag."""
 import json
 import numpy as np
 import pytest
@@ -13,6 +14,7 @@ def bs_cells(R):
     for g, li in zip(*np.nonzero(s2 & (4 | 8 | 64))):
         v = int(s2[g, li]); sd = int(side[g, li])
         if v & 4 and (sd & 3) == 2 and "close" not in out: out["close"] = (int(g), int(li))
+        if v & 8 and (sd & 3) == 1 and "red" not in out: out["red"] = (int(g), int(li))
         if v & 64 and "label" not in out: out["label"] = (int(g), int(li))
     return out
 
@@ -24,6 +26,7 @@ class TestBroadSampleCells:
         fam = {k: page.evaluate(f"() => LM.App.D.famOf(LM.App.D.state[{g} * LM.App.D.nloc + {li}])") for k, (g, li) in cells.items()}
         ST = page.evaluate("() => ({RED: 20, BLUE: 40, BOTH: 60})")
         assert fam["close"] == ST["BLUE"]
+        assert "red" in cells and fam["red"] == ST["RED"]                        # the excess arm: the hidden contamination is red
 
     def test_the_labelled_divergent_cell_is_yellow(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html)                 # dna_small's far copy: masked divergent, the donor side named
@@ -32,7 +35,7 @@ class TestBroadSampleCells:
         fam = page.evaluate(f"() => LM.App.D.famOf(LM.App.D.state[{g} * LM.App.D.nloc + {li}])")
         assert fam == 60
 
-    @pytest.mark.parametrize("kind,needle", [("close", "too close to the broad sample")])
+    @pytest.mark.parametrize("kind,needle", [("close", "too close to the broad sample"), ("red", "too divergent from the broad sample")])
     def test_the_labels_name_the_test(self, page, report_of, kind, needle):
         html, R = report_of("dna_rc"); open_report(page, html)
         g, li = bs_cells(R)[kind]

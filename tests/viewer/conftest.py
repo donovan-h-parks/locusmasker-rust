@@ -80,7 +80,7 @@ def report_of(runs, shared_tmp):
                         def m3(m): m["format_version"] = 3; m["options"].pop("donor_threshold", None)
                         variant_npz(src, npz, drop=("cells/locus_closest", "cells/comp_div_log10p", "cells/comp_sim_log10p", "similar/"), manifest=m3)
                     elif variant == "format9":
-                        variant_npz(src, npz, manifest=lambda m: m.update(format_version=9, version="9.9.9"))
+                        variant_npz(src, npz, manifest=lambda m: m.update(format_version=10, version="9.9.9"))
                     else: raise ValueError(variant)
                     inline_viewer(base64.b64encode(open(npz, "rb").read()).decode("ascii"), html + ".part"); os.replace(html + ".part", html)
             finally: fcntl.flock(lk, fcntl.LOCK_UN)
