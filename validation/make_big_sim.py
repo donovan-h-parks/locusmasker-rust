@@ -147,6 +147,7 @@ SPECS = {25000: dict(seed=1, pabsent=0.05, excluded=60, clones=[300, 100, 50, 20
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--taxa", type=int, required=True); ap.add_argument("--loci", type=int, default=120); ap.add_argument("--out", required=True)
     ap.add_argument("--scale", type=float); ap.add_argument("--pilot", action="store_true"); ap.add_argument("--jobs", type=int, default=16); ap.add_argument("--iqtree", default="iqtree3"); ap.add_argument("--seed", type=int)
+    ap.add_argument("--locus-sites", type=int, nargs=2, default=[40, 60], metavar=("LO", "HI"), help="locus lengths drawn uniformly from [LO, HI] (default 40 60, the 25K pin; M3 uses 200 400: 50-site loci give the copy tests no room)")
     a = ap.parse_args(); os.makedirs(a.out, exist_ok=True); spec = dict(SPECS[min(SPECS, key=lambda k: abs(k - a.taxa))]); seed = a.seed if a.seed is not None else spec["seed"]
     if shutil.which(a.iqtree) is None: sys.exit(f"{a.iqtree} not found")
     tree_path = os.path.join(a.out, "tree.nwk")
@@ -162,7 +163,7 @@ def main():
             print(f"scale {sc:5.2f}: nearest-neighbour patristic p10 {np.percentile(nn * sc, 10):.4f} median {np.median(nn * sc):.4f} p90 {np.percentile(nn * sc, 90):.4f}   (tree depth median {np.median(list(tree.depth.values())) * sc:.3f})")
         return
     if a.scale is None: sys.exit("--scale is needed (run --pilot first)")
-    t0 = time.time(); files, lens, rates = simulate_loci(a.iqtree, a.out, tree_path, a.loci, a.scale, seed, a.jobs); print(f"{a.loci} loci simulated ({time.time() - t0:.0f} s)")
+    t0 = time.time(); files, lens, rates = simulate_loci(a.iqtree, a.out, tree_path, a.loci, a.scale, seed, a.jobs, a.locus_sites[0], a.locus_sites[1]); print(f"{a.loci} loci simulated ({time.time() - t0:.0f} s)")
     names = None; cols = []
     for f in files:
         nm, sq = read_fasta_bytes(f)
@@ -179,7 +180,7 @@ def main():
                 locus_lengths=[int(x) for x in lens], locus_rates=[round(float(r), 4) for r in rates], event_counts=dict(collections.Counter(e["kind"] for e in truth)))
     json.dump(meta, open(f"{a.out}/truth.json", "w"), indent=1)
     open(f"{a.out}/README.yaml", "w").write(f'''study:
-    reference: "simulated by validation/make_big_sim.py (AliSim, IQ-TREE 3) on {time.strftime('%Y-%m-%d')}: one random Yule-Harding tree of {len(names):,} tips, {a.loci} loci of 40-60 residues under {MODEL} with log-normal locus rates, branch scale {a.scale}, planted events in truth.json"
+    reference: "simulated by validation/make_big_sim.py (AliSim, IQ-TREE 3) on {time.strftime('%Y-%m-%d')}: one random Yule-Harding tree of {len(names):,} tips, {a.loci} loci of {a.locus_sites[0]}-{a.locus_sites[1]} residues under {MODEL} with log-normal locus rates, branch scale {a.scale}, planted events in truth.json"
     year: 2026
 data:
     datatype: protein
