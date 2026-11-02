@@ -7,12 +7,27 @@
 <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png">
 <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
 <link rel="stylesheet" href="viewer.css">
+<script>/* the watchdog: the viewer script is the last thing in this (large) file, so if the page stalls on the static
+"Loading" line, either the file has not finished arriving or the host never runs its scripts. Say so, instead of
+sitting silent, and say how far the page got. The viewer script clears the flag the moment it runs. */
+(() => {
+  const t0 = Date.now(); window.__lmBooted = false;
+  const iv = setInterval(() => {
+    if (window.__lmBooted) { clearInterval(iv); return; }
+    const box = document.querySelector("#app .loading"); if (!box) return;
+    const s = Math.round((Date.now() - t0) / 1000); if (s < 5) return;
+    box.textContent = window.LM
+      ? `Loading the report… ${s}s. The whole report lives inside this one file and it is still arriving. A regular browser reads even the largest report in a few seconds; an embedded preview (an IDE pane, a markdown preview, a remote viewer) may stall on a file this size — open report.html in a regular browser (Chrome or Firefox).`
+      : `Loading the report… ${s}s. The viewer inside this page has not run: scripts are blocked here, or the page was cut short very early. Open report.html in a regular browser (Chrome or Firefox).`;
+  }, 1000);
+})();
+</script>
 <script src="vendor/d3.v7.min.js"></script>
 </head>
 <body>
 <template id="lm-logo"><img class="logo" alt="" src="icons/logo.svg"></template>
 <div id="app"><div class="loading">Loading the report…</div></div>
-<script type="application/octet-stream" id="lm-bundle">@@BUNDLE@@</script>
 <script src="viewer.js"></script>
+<script type="application/octet-stream" id="lm-bundle">@@BUNDLE@@</script>
 </body>
 </html>

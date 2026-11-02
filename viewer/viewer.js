@@ -323,11 +323,22 @@ function testSummary(T) {
 const App = { D: null, panels: {}, hover: null, sel: { rows: new Set(), cols: new Set(), cells: new Set() }, order: { taxa: null, loci: null, taxaMode: "input", lociMode: "input" }, hidePass: false, view: "summary" };
 
 function boot() {
+  window.__lmBooted = true;                                          // the template's watchdog stands down: from here every stall has its own message
   const tag = document.getElementById("lm-bundle"); const b64 = tag ? tag.textContent.trim() : "";
-  if (b64 && b64 !== "@@" + "BUNDLE@@") { start(b64ToBytes(b64)).catch(showError); return; }   // the marker the tool replaces, split so this file never carries it
+  if (b64 && b64 !== "@@" + "BUNDLE@@") {                            // the marker the tool replaces, split so this file never carries it
+    let bytes = null; try { bytes = b64ToBytes(b64); } catch (e) { /* a cut inside the base64 */ }
+    if (!bytes || !zipEnds(bytes)) { showIncomplete(b64.length); return; }     // the page was read before its file was complete
+    start(bytes).catch(showError); return;
+  }
   $("#app").replaceChildren(el("div", { class: "error" }, "This page carries no data: it is the viewer template without a report. Run locus_outliers.py; the report.html it writes has the data inside it."));
 }
 function showError(e) { console.error(e); $("#app").replaceChildren(el("div", { class: "error" }, "The report could not be read.\n\n" + (e && e.stack || e))); }
+// a complete bundle ends with the ZIP's end-of-central-directory record; a page cut before its end does not
+function zipEnds(u8) { const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength); for (let i = u8.length - 22; i >= Math.max(0, u8.length - 22 - 65536); i--) if (dv.getUint32(i, true) === 0x06054b50) return true; return false; }
+function showIncomplete(n) {
+  $("#app").replaceChildren(el("div", { class: "error" }, `This report file is incomplete: its data stops after ${(n * 3 / 4 / 1e6).toFixed(1)} MB. It was probably copied or downloaded before it was whole, or the viewer opened it before it finished arriving. Reload once the file is complete.`,
+    el("div", { style: "margin-top: 12px" }, el("button", { onclick: () => location.reload() }, "reload"))));
+}
 async function start(bytes) {
   $("#app").replaceChildren(el("div", { class: "loading" }, "Reading the report…"));
   const D = await loadBundle(bytes); App.D = D;

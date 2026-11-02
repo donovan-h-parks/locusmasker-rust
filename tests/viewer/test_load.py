@@ -62,14 +62,26 @@ class TestRefusals:
     def test_corrupted_data_shows_an_error_not_a_blank_page(self, page, report_of, tmp_path):
         html, R = report_of("dna_small"); b64 = base64.b64encode(b"this is not a zip file" * 100).decode()
         out = inline_viewer(b64, str(tmp_path / "bad.html")); page.goto("file://" + out); page.wait_for_selector(".error", timeout=30000)
-        assert "could not be read" in page.text_content(".error")
+        assert "incomplete" in page.text_content(".error")                    # data that does not end like the tool's ZIP: the same message as a cut file
 
     @pytest.mark.allow_errors
-    @pytest.mark.xfail(strict=True, reason="BUG: a report cut before its end (an incomplete download) stays on 'Loading the report…' with no message; the viewer script is the last thing in the file")
     def test_a_truncated_file_says_it_is_incomplete(self, page, report_of, tmp_path):
-        html, R = report_of("dna_small"); txt = open(html, encoding="utf-8").read(); cut = str(tmp_path / "cut.html")
-        open(cut, "w", encoding="utf-8").write(txt[:len(txt) * 2 // 3]); page.goto("file://" + cut); page.wait_for_timeout(1500)
-        body = page.text_content("body"); assert "Loading the report" not in body and ("incomplete" in body.lower() or "could not be read" in body)
+        """a page cut inside the bundle still boots (the viewer now sits before the data) and says the file is
+        incomplete, with how far its data reaches"""
+        html, R = report_of("dna_small"); txt = open(html, encoding="utf-8").read()
+        b = txt.index('id="lm-bundle"'); cut = str(tmp_path / "cut_bundle.html")
+        open(cut, "w", encoding="utf-8").write(txt[:b + (len(txt) - b) // 2]); page.goto("file://" + cut)
+        page.wait_for_selector(".error", timeout=30000)
+        body = page.text_content("body"); assert "incomplete" in body and "stops after" in body and "Loading the report" not in body
+
+    @pytest.mark.allow_errors
+    def test_a_page_cut_inside_the_viewer_falls_to_the_watchdog(self, page, report_of, tmp_path):
+        """cut before the viewer script ends, nothing can boot: the template's head watchdog replaces the silent
+        loading line and says to open the file in a regular browser"""
+        html, R = report_of("dna_small"); txt = open(html, encoding="utf-8").read()
+        v = txt.index("LocusMasker report viewer. One classic"); cut = str(tmp_path / "cut_viewer.html")
+        open(cut, "w", encoding="utf-8").write(txt[:v + 2000]); page.goto("file://" + cut)
+        page.wait_for_function("() => document.querySelector('#app') && document.querySelector('#app').textContent.includes('regular browser')", timeout=30000)
 
     def test_nothing_in_the_page_reads_undefined_or_nan(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html); page.wait_for_timeout(300)
