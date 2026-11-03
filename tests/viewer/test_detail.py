@@ -67,9 +67,16 @@ class TestCopies:
             page.select_option(".panel[data-key=detail] .crumb select", mode); page.wait_for_timeout(400)
             assert len(page.query_selector_all(".panel[data-key=detail] .rib-row2")) == ncop and page.evaluate("() => location.hash").find(f"cp={mode}") >= 0
 
-    def test_a_single_block_from_the_summary(self, page, report_of):
+    def test_a_single_donor_block_by_the_api(self, page, report_of):
+        """the copies view holds (reachable by the API and the chord view to come; the summary's bar lists are gone)"""
         html, R = report_of("dna_small"); open_report(page, html)
-        first = page.query_selector(".worst .worst-row:nth-child(2) .col:nth-child(1) .row"); name = first.query_selector(".nm").text_content(); n = int(first.query_selector(".num").text_content())
-        first.click(); page.wait_for_selector(".panel[data-key=detail]"); page.wait_for_timeout(400)
-        crumb = page.text_content(".panel[data-key=detail] .crumb"); assert name in crumb and f"{n} of" in crumb
+        side = R.arr("cells/side.npy"); pt = R.arr("cells/partner.npy")
+        donors = {}
+        for g in range(R.n):
+            for li in range(R.nloc):
+                if side[g, li] & 2 and not side[g, li] & 8: donors[int(pt[g, li])] = donors.get(int(pt[g, li]), 0) + 1
+        assert donors, "the fixture has no called copy"
+        d, n = max(donors.items(), key=lambda kv: kv[1])
+        page.evaluate(f"() => LM.openCopies('donor', '{d}')"); page.wait_for_selector(".panel[data-key=detail]"); page.wait_for_timeout(400)
+        crumb = page.text_content(".panel[data-key=detail] .crumb"); assert R.taxa["names"][d] in crumb and f"{n} of" in crumb
         assert len(page.query_selector_all(".panel[data-key=detail] .rib-row2")) == n

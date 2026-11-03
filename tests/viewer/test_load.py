@@ -23,7 +23,7 @@ class TestLoads:
 
     def test_the_api_the_tests_use_is_exposed(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html)
-        assert page.evaluate("() => Object.keys(window.LM).sort()") == ["App", "openCell", "openUnit", "setView", "start"]
+        assert page.evaluate("() => Object.keys(window.LM).sort()") == ["App", "openCell", "openCopies", "openUnit", "setView", "start"]
         assert page.evaluate("() => [LM.App.D.n, LM.App.D.nloc, LM.App.D.format, LM.App.D.K, LM.App.D.M]") == [R.n, R.nloc, 9, R.K, R.M]
 
     def test_the_loading_screen_is_gone(self, page, report_of):
@@ -37,8 +37,9 @@ class TestLoads:
 
     def test_a_report_with_nothing_masked(self, page, report_of):
         html, R = report_of("dna_clean"); open_report(page, html)
-        tiles = page.eval_on_selector_all(".tile .v", "els => els.map(e => e.textContent)")
-        assert tiles[:3] == ["0", "0", "0"] and page.query_selector_all(".worst .col .row") == [] and "donors" not in page.text_content(".worst")
+        assert page.text_content(".hero-n") == "0"
+        cards = page.eval_on_selector_all(".cards .card .card-n", "els => els.map(e => e.textContent)")
+        assert cards and all(v == "0" for v in cards) and page.query_selector_all(".worst .col .row") == []
 
     def test_sparse_numbers_and_no_sequences(self, page, tmp_path, monkeypatch):
         from tests import conftest as C
@@ -109,5 +110,5 @@ class TestOlderFormats:
     def test_older_reports_open_and_summarise(self, page, report_of, variant):
         html, R = report_of("dna_small", variant); open_report(page, html)
         assert page.evaluate("() => LM.App.D.format") == (5 if variant == "format5" else 3)
-        tiles = page.eval_on_selector_all(".tile .v", "els => els.map(e => e.textContent)"); assert tiles[0] == str(R.man["counts"]["masked"])
+        assert page.text_content(".hero-n").replace(",", "") == str(R.man["counts"]["masked"])
         for view in ("matrix", "loci", "taxa", "table", "summary"): page.evaluate(f"() => LM.setView('{view}')"); page.wait_for_timeout(150)

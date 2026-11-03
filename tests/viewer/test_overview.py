@@ -14,16 +14,19 @@ def masked_share(R):
 
 
 class TestSummary:
-    def test_tiles_are_the_manifest_counts(self, page, report_of):
+    def test_hero_and_cards_are_the_manifest_counts(self, page, report_of):
+        """the landing: the hero holds the masked total, one card per test in the canonical order with each test's
+        mask count (a both-direction cell counts on both of its tests' cards)"""
         html, R = report_of("dna_small"); open_report(page, html); c = R.man["counts"]
-        v = page.eval_on_selector_all(".tile .v", "els => els.map(e => e.textContent)"); k = page.eval_on_selector_all(".tile .k", "els => els.map(e => e.textContent)")
         share, per_locus, masked = masked_share(R)
-        rc = R.man.get("broad_sample"); off = 1 if rc else 0                           # format 8 adds the broad-sample tile
-        assert v[0] == str(c["masked"]) and v[1] == str(c["masked_divergent"]) and v[2] == str(c["masked_similar"])
-        if rc: assert v[3] == str((rc.get("close") or 0) + (rc.get("divergent") or 0) + (rc.get("both_sides") or 0)) and "broad sample" in k[3]
-        assert v[3 + off] == f"{int((masked.sum(1) > 0).sum())} / {c['taxa']}" and v[4 + off] == f"{int((per_locus > 0).sum())} / {c['loci']}"
-        assert f"of {c['cells']} tested" in k[0] and f"{c['ambiguous']} with fewer comparators" in k[1] and f"{c['similar_uncertain']} in a pair of uncertain direction" in k[2]
-        assert f"{c['excluded_taxa']} excluded" in k[3 + off] and f"{c['skipped_loci']} skipped" in k[4 + off]
+        assert page.text_content(".hero-n").replace(",", "") == str(c["masked"])
+        bs = R.man.get("broad_sample") or {}
+        bsN = (bs.get("close") or 0) + (bs.get("divergent") or 0) + (bs.get("both_sides") or 0)
+        cards = [v.replace(",", "") for v in page.eval_on_selector_all(".cards .card .card-n", "els => els.map(e => e.textContent)")]
+        want = [str(c["masked_divergent"] - (bs.get("divergent") or 0)), str(c["masked_similar"] - (bs.get("close") or 0))] + ([str(bsN)] if R.man.get("broad_sample") else [])
+        assert cards == want
+        stats = page.text_content(".hero-stats")
+        assert f"{int((masked.sum(1) > 0).sum())} / {c['taxa']}" in stats and f"{int((per_locus > 0).sum())} / {c['loci']}" in stats
 
     def test_most_masked_taxa_in_order(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html); share, _, masked = masked_share(R)
@@ -39,26 +42,21 @@ class TestSummary:
         nums = [int(x) for x in page.eval_on_selector_all(".worst .worst-row:nth-child(1) .col:nth-child(2) .row .num", "els => els.map(e => e.textContent)")]
         assert nums == sorted(nums, reverse=True) and nums == [int(per_locus[R.lx(n)]) for n in names] and len(names) == int((per_locus > 0).sum())
 
-    def test_donor_lists_leave_uncertain_pairs_out(self, page, report_of):
-        html, R = report_of("dna_small"); open_report(page, html); side = R.arr("cells/side.npy"); pt = R.arr("cells/partner.npy")
-        copies = [(g, int(pt[g, li])) for g in range(R.n) for li in range(R.nloc) if side[g, li] & 2 and not side[g, li] & 8]
-        assert copies, "the fixture has no called copy"
-        heads = page.eval_on_selector_all(".worst h3", "els => els.map(e => e.textContent)")
-        assert "most common donors" in heads and "most common recipients" in heads and "most common donor-recipient pairs" in heads
-        cols = page.eval_on_selector_all(".worst .worst-row:nth-child(2) .col", "els => els.map(c => Array.from(c.querySelectorAll('.row')).map(r => [r.querySelector('.nm').textContent, +r.querySelector('.num').textContent]))")
-        donors = {}; recips = {}
-        for g, d in copies: donors[R.taxa["names"][d]] = donors.get(R.taxa["names"][d], 0) + 1; recips[R.taxa["names"][g]] = recips.get(R.taxa["names"][g], 0) + 1
-        assert dict(cols[0]) == donors and dict(cols[1]) == recips and sum(n for _, n in cols[2]) == len(copies)
-        unc = {R.taxa["names"][g] for g in range(R.n) for li in range(R.nloc) if side[g, li] & 8}
-        assert not (unc & set(dict(cols[0]))) or True        # an uncertain member may be a donor elsewhere; the pair itself is never listed
-        pairs = {p for p, _ in cols[2]}; assert all("→" in p for p in pairs)
-
-    def test_histograms_count_every_unit(self, page, report_of):
+    def test_the_summary_has_no_donor_bar_lists(self, page, report_of):
+        """the donor/recipient/pair bar lists are gone from the summary (Rob, 3 Nov: the information returns as the
+        chord view); the two most-masked lists remain"""
         html, R = report_of("dna_small"); open_report(page, html)
-        svgs = page.query_selector_all(".hist-wrap svg"); assert len(svgs) == 2
+        heads = page.eval_on_selector_all(".worst h3", "els => els.map(e => e.textContent)")
+        assert len(page.query_selector_all(".worst .worst-row:nth-child(1) .col")) == 2
+        assert not any("donor" in h for h in heads)
+
+    def test_histograms_count_the_masked_units(self, page, report_of):
+        html, R = report_of("dna_small"); open_report(page, html)
+        svgs = page.query_selector_all(".hist-wrap svg"); assert len(svgs) == 3              # taxa, loci, significance
         totals = page.eval_on_selector_all(".hist-wrap svg", "els => els.map(s => Array.from(s.querySelectorAll(':scope > text')).map(t => t.textContent.replace(/,/g, '')).filter(t => /^\\d+$/.test(t)).map(Number))")
-        fs = R.arr("cells/focal_sites.npy"); present_taxa = int((fs.sum(1) > 0).sum()); present_loci = int((fs.sum(0) > 0).sum())
-        assert sum(totals[0]) == present_taxa and sum(totals[1]) == present_loci              # the bar labels: every unit with residues sits in one bin
+        side = R.arr("cells/side.npy")
+        assert sum(totals[0]) == int(((side & 3) > 0).any(1).sum())                          # taxa holding a mask: the zero bin is the subtitle's job
+        assert sum(totals[1]) == int(((side & 3) > 0).any(0).sum())                          # loci holding a mask
 
     def test_a_list_row_opens_the_detail_panel(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html)

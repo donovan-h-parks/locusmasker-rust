@@ -31,6 +31,56 @@ const LM_STR = {
     stalled: "This page's scripts have not run here. Open report.html in a regular browser (Chrome or Firefox).",
   },
 
+  // ---- the overview's summary (the landing view): the hero figures, then one card per test.
+  // The cards run in the tests' order: close-relative, closest-match, broad-sample. {n} is each card's mask count.
+  overview: {
+    hero_sub: "of {tested} sequences tested ({pct})",      // under the big masked count
+    hero_taxa: "{with} / {all} taxa hold a mask",          // the small stats beside the hero
+    hero_loci: "{with} / {all} loci hold a mask",
+    hero_excluded: "{n} taxa excluded",                    // only when the run excluded taxa
+    hero_skipped: "{n} loci skipped",                      // only when the run skipped loci
+
+    // one card per test: its name, its mask count, and ONE line on what the test asks. Click: the table, filtered.
+    card_close_relative: "close-relative test",
+    card_close_relative_line: "too divergent from its close relatives",
+    card_closest_match: "closest-match test",
+    card_closest_match_line: "too similar to another sequence at the locus",
+    card_broad_sample: "broad-sample test",
+    card_broad_sample_line: "out of line with a broad sample of taxa",
+    card_divergent_labels: "{n} divergent cells labelled also-too-close",   // the broad card's second line, when any
+
+    worst_taxa: "most masked taxa (share of tested loci)",
+    worst_loci: "most masked loci (sequences)",
+    hist_taxa: "taxa by their masked sequences",           // the distribution plots under the lists
+    hist_loci: "loci by their masked sequences",
+    hist_x: "masked sequences in the {unit}",              // {unit} = taxon | locus
+    hist_sig: "masks by significance",                     // the significance histogram
+    hist_sig_x: "mask log10 p",
+    bar_note: "the run's bar",                             // the dashed line's label on the significance histogram
+  },
+
+  // ---- the overview table: one row per cell. Headers; the family filter chips; the footer.
+  table: {
+    h_taxon: "taxon", h_locus: "locus",
+    h_test: "test",                                        // which test masked it (the strongest, as masked.csv's mask_test)
+    h_p: "log10 p",                                        // the mask's one significance, with its stars
+    h_obs: "observed %", h_exp: "expected %",              // divergence to the close relatives, median
+    h_excess: "excess (m)", h_partner: "partner", h_best: "best match",
+    chips: { all: "all", close_relative: "close-relative", closest_match: "closest-match", broad_sample: "broad-sample" },
+    masked_only: "masked cells only",
+    foot: "{n} rows · click a row for the alignment · click a header to sort, shift-click for the tie-breaking key",
+  },
+
+  // ---- the matrix legend (cell colours) and its names for the three mask kinds
+  legend: {
+    not_masked: "not masked",
+    divergent: "too divergent",
+    similar: "too similar",
+    both: "both directions",
+    untested: "not tested",
+    absent: "absent",
+  },
+
   // ---- fatal states: shown in #app in place of the report.
   fatal: {
     no_data: "This page carries no data: it is the viewer template without a report. Run locus_outliers.py; the report.html it writes has the data inside it.",
