@@ -59,6 +59,12 @@ const LM_STR = {
     bar_note: "the run's bar",                             // the dashed line's label on the significance histogram
   },
 
+  // ---- the matrix view: the zoom controls' tooltips and the one-time hint chip (gone on first zoom)
+  matrix: {
+    zoom_in: "zoom in", zoom_out: "zoom out", zoom_fit: "fit",
+    hint: "scroll to move · ctrl+scroll or pinch to zoom · click a cell",
+  },
+
   // ---- the overview table: one row per cell. Headers; the family filter chips; the footer.
   table: {
     h_taxon: "taxon", h_locus: "locus",

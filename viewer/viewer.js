@@ -435,7 +435,7 @@ function closePanel(key) {
 
 // ------------------------------------------------------------------ the overview panel: one view at a time, sized to the panel
 const Overview = (() => {
-  let P, matrix, ctx, rowCanvas, colCanvas, strip, stripCtx, wrap, viewEl = {};
+  let P, matrix, glCanvas, ctx, rowCanvas, colCanvas, strip, stripCtx, wrap, viewEl = {};
   const V = { x0: 0, y0: 0, cw: 4, ch: 4, user: false };      // first display row/col, the cell size in CSS px, and whether the user has zoomed
   let dragging = null;
   const VIEWS = [["summary", "summary"], ["matrix", "matrix"], ["loci", "loci ribbons"], ["taxa", "taxon ribbons"], ["table", "table"]];
@@ -461,8 +461,18 @@ const Overview = (() => {
     viewEl.tiles = el("div", { class: "tiles" }); viewEl.worst = el("div", { class: "worst" }); viewEl.summary.append(viewEl.tiles, viewEl.worst); P.body.append(viewEl.summary);
     // the matrix
     wrap = el("div", { class: "matrix-wrap" });
-    rowCanvas = el("canvas", { class: "rowlabels" }); colCanvas = el("canvas", { class: "collabels" }); matrix = el("canvas", { class: "matrix", tabindex: 0 });
-    wrap.append(colCanvas, rowCanvas, matrix); P.body.append(wrap); ctx = matrix.getContext("2d");
+    rowCanvas = el("canvas", { class: "rowlabels" }); colCanvas = el("canvas", { class: "collabels" });
+    glCanvas = el("canvas", { class: "matrix-gl" }); matrix = el("canvas", { class: "matrix", tabindex: 0 });
+    wrap.append(colCanvas, rowCanvas, glCanvas, matrix); P.body.append(wrap); ctx = matrix.getContext("2d");
+    const zq = (fx, fy) => { const { w, h } = canvasArea(); Overview._zoomAt(w / 2, h / 2, fx, fy); };
+    const mctl = el("div", { class: "mx-ctl" },
+      el("button", { title: LM_STR.matrix.zoom_in, onclick: () => zq(1.5, 1.5) }, "+"),
+      el("button", { title: LM_STR.matrix.zoom_out, onclick: () => zq(1 / 1.5, 1 / 1.5) }, "−"),
+      el("button", { title: LM_STR.matrix.zoom_fit, onclick: () => { V.user = false; fitAll(); redraw(); writeHash(); } }, "⤢"));
+    wrap.append(mctl);
+    let hinted = false; try { hinted = !!sessionStorage.lmMxHint; } catch (e) { }
+    if (!hinted) { const hint = el("div", { class: "mx-hint" }, LM_STR.matrix.hint); wrap.append(hint);
+      Overview._dropHint = () => { hint.remove(); Overview._dropHint = null; try { sessionStorage.lmMxHint = 1; } catch (e) { } }; }
     const legend = el("div", { class: "legend" });
     legend.append(el("span", { class: "fam" }, sw(D.col.passCell), LM_STR.legend.not_masked),
       el("span", { class: "fam" }, sw(D.col.red), LM_STR.legend.divergent),
@@ -586,7 +596,16 @@ const Overview = (() => {
     const D = App.D; const { w, h, rl, cl } = canvasArea(); const dpr = devicePixelRatio || 1;
     matrix.width = Math.round(w * dpr); matrix.height = Math.round(h * dpr); matrix.style.width = w + "px"; matrix.style.height = h + "px";
     V.x0 = clamp(V.x0, 0, Math.max(0, D.nloc - w / V.cw)); V.y0 = clamp(V.y0, 0, Math.max(0, D.n - h / V.ch));
-    const img = ctx.createImageData(matrix.width, matrix.height); const px = img.data; const lut = D.lut; const sev = D.sev, st = D.state;
+    glCanvas.width = matrix.width; glCanvas.height = matrix.height; glCanvas.style.width = w + "px"; glCanvas.style.height = h + "px";
+    const glOn = GLMatrix.draw(glCanvas, D, V, dpr);                 // the GPU paints the grid when in its regime; the 2d path owns the readable zoom range
+    glCanvas.style.visibility = glOn ? "" : "hidden";
+    if (glOn) {
+      ctx.clearRect(0, 0, matrix.width, matrix.height);
+      drawSelection(dpr); drawLabels(rl, cl, dpr); drawStrip();
+      return;
+    }
+    const img = ctx.createImageData(matrix.width, matrix.height);
+    const hit = new Uint8Array(matrix.width * matrix.height); const px = img.data; const lut = D.lut; const sev = D.sev, st = D.state;
     const ot = App.order.taxa, ol = App.order.loci; const nloc = D.nloc;
     const pw = V.cw * dpr, ph = V.ch * dpr;
     const colStart = new Int32Array(matrix.width), colEnd = new Int32Array(matrix.width);
@@ -600,8 +619,11 @@ const Overview = (() => {
         let best = -1, bestCode = 0;
         for (let r = r0; r <= r1; r++) { const g = ot[r] * nloc; for (let c = c0; c <= c1; c++) { const i = g + ol[c]; const s = sev[i]; if (s > best) { best = s; bestCode = st[i]; } } }
         const o = rowBase + x * 4; const l = bestCode * 4; px[o] = lut[l]; px[o + 1] = lut[l + 1]; px[o + 2] = lut[l + 2]; px[o + 3] = 255;
+        if (best >= 20) hit[y * matrix.width + x] = 1;
       }
     }
+    if (V.cw < 1.2) for (let q = 0; q < hit.length; q++)                 // thinner than a pixel: a mark claims an unmasked right
+      if (hit[q] && (q + 1) % matrix.width && !hit[q + 1]) { const o = q * 4; px[o + 4] = px[o]; px[o + 5] = px[o + 1]; px[o + 6] = px[o + 2]; px[o + 7] = 255; }   // neighbour, so single masks stay visible at any scale
     ctx.putImageData(img, 0, 0);
     if (V.cw >= 6 && V.ch >= 6) {
       ctx.save(); ctx.scale(dpr, dpr); ctx.strokeStyle = cssVar("--spine"); ctx.lineWidth = 1;
@@ -650,7 +672,9 @@ const Overview = (() => {
   // ---- interaction
   function cellAt(ev) { const r = matrix.getBoundingClientRect(); const x = ev.clientX - r.left, y = ev.clientY - r.top; return { x, y, col: Math.floor(V.x0 + x / V.cw), row: Math.floor(V.y0 + y / V.ch), cols: [Math.floor(V.x0 + x / V.cw), Math.max(Math.floor(V.x0 + x / V.cw), Math.ceil(V.x0 + (x + 1) / V.cw) - 1)], rows: [Math.floor(V.y0 + y / V.ch), Math.max(Math.floor(V.y0 + y / V.ch), Math.ceil(V.y0 + (y + 1) / V.ch) - 1)] }; }
   function bindMatrix() {
-    const zoomAt = (x, y, fx, fy) => { if (fx !== 1) { const ncw = clamp(V.cw * fx, 0.05, 40); V.x0 = V.x0 + x / V.cw - x / ncw; V.cw = ncw; } if (fy !== 1) { const nch = clamp(V.ch * fy, 0.05, 40); V.y0 = V.y0 + y / V.ch - y / nch; V.ch = nch; } V.user = true; labelSpace(); redraw(); writeHash(); };
+    const zoomAt = (x, y, fx, fy) => { if (Overview._dropHint) Overview._dropHint();
+      if (fx !== 1) { const ncw = clamp(V.cw * fx, 0.05, 40); V.x0 = V.x0 + x / V.cw - x / ncw; V.cw = ncw; } if (fy !== 1) { const nch = clamp(V.ch * fy, 0.05, 40); V.y0 = V.y0 + y / V.ch - y / nch; V.ch = nch; } V.user = true; labelSpace(); redraw(); writeHash(); };
+    Overview._zoomAt = zoomAt;
     matrix.addEventListener("wheel", ev => {
       ev.preventDefault(); const { x, y } = cellAt(ev);
       if (ev.ctrlKey || ev.metaKey) { const f = Math.exp(-ev.deltaY * 0.01); zoomAt(x, y, ev.altKey ? 1 : f, ev.shiftKey ? 1 : f); return; }   // a pinch arrives as ctrl+wheel
@@ -732,6 +756,102 @@ const Overview = (() => {
   return { create, render, redraw, setOrder, setView, refresh, V, highlight, labelSpace, fitAll, viewEl: () => viewEl };
 })();
 function debounce(fn, ms) { let t = null; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+
+// ------------------------------------------------------------------ the matrix's GL fast path: the whole grid as one
+// R8 state texture (taxa x loci, the display order baked in), colours from a 64x1 LUT texture, pan/zoom as uniforms.
+// Minification picks CPU-built mip levels that carry the MAX-SEVERITY state of each 2x2, so a single masked cell
+// survives to any zoom level. The 2d canvas above stays for selection, hatching and the zoomed-in detail
+const GLMatrix = (() => {
+  let gl = null, prog = null, quad = null, stateTex = null, lutTex = null, u = {}, cache = {};
+  const VS = "attribute vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }";
+  const FS = `precision highp float;
+    uniform sampler2D state, lut; uniform vec4 view; uniform vec2 dims; uniform vec2 cv; uniform vec3 bg;
+    void main() {
+      vec2 px = vec2(gl_FragCoord.x, cv.y - gl_FragCoord.y);
+      vec2 cell = view.xy + px / view.zw;
+      if (cell.x < 0.0 || cell.y < 0.0 || cell.x >= dims.x || cell.y >= dims.y) { gl_FragColor = vec4(bg, 1.0); return; }
+      float st = texture2D(state, cell / dims).r;
+      gl_FragColor = texture2D(lut, vec2((st * 255.0 + 0.5) / 64.0, 0.5));
+    }`;
+  function init(canvas) {
+    gl = canvas.getContext("webgl2", { antialias: false, preserveDrawingBuffer: true });
+    if (!gl) return false;
+    const sh = (t, src) => { const h = gl.createShader(t); gl.shaderSource(h, src); gl.compileShader(h); if (!gl.getShaderParameter(h, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(h)); return h; };
+    prog = gl.createProgram(); gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS)); gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+    quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    for (const k of ["state", "lut", "view", "dims", "cv", "bg"]) u[k] = gl.getUniformLocation(prog, k);
+    stateTex = gl.createTexture(); lutTex = gl.createTexture();
+    return true;
+  }
+  function upload(D, ot, ol) {
+    const W0 = D.nloc, H0 = D.n; const maxT = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+    const kx = Math.max(1, Math.ceil(W0 / maxT)), ky = Math.max(1, Math.ceil(H0 / maxT));   // an axis past the texture limit
+    const W = Math.ceil(W0 / kx), H = Math.ceil(H0 / ky);                                    // is pre-binned by max severity;
+    cache.kx = kx; cache.ky = ky;                                                            // the CPU path owns the zoomed-in range
+    let st = new Uint8Array(W * H), sv = new Uint8Array(W * H);
+    if (sv.fill) sv.fill(0);
+    for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) {
+      let b = -1, bc = 0;
+      for (let dy = 0; dy < ky; dy++) for (let dx = 0; dx < kx; dx++) {
+        const rr = r * ky + dy, cc = c * kx + dx; if (rr >= H0 || cc >= W0) continue;
+        const i = ot[rr] * W0 + ol[cc]; if (D.sev[i] > b) { b = D.sev[i]; bc = D.state[i]; } }
+      st[r * W + c] = bc; sv[r * W + c] = b < 0 ? 0 : b;
+    }
+    gl.bindTexture(gl.TEXTURE_2D, stateTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    let w = W, h = H, lvl = 0;
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, w, h, 0, gl.RED, gl.UNSIGNED_BYTE, st);
+    while (w > 1 || h > 1) {                                           // the max-severity pyramid: a lone mask survives every zoom level
+      const w2 = Math.max(1, w >> 1), h2 = Math.max(1, h >> 1);
+      const st2 = new Uint8Array(w2 * h2), sv2 = new Uint8Array(w2 * h2);
+      for (let y = 0; y < h2; y++) for (let x = 0; x < w2; x++) {
+        let b = -1, bc = 0;
+        for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) {
+          const sy = Math.min(h - 1, y * 2 + dy), sx = Math.min(w - 1, x * 2 + dx); const q = sy * w + sx;
+          if (sv[q] > b) { b = sv[q]; bc = st[q]; } }
+        st2[y * w2 + x] = bc; sv2[y * w2 + x] = b < 0 ? 0 : b;
+      }
+      lvl++; gl.texImage2D(gl.TEXTURE_2D, lvl, gl.R8, w2, h2, 0, gl.RED, gl.UNSIGNED_BYTE, st2);
+      st = st2; sv = sv2; w = w2; h = h2;
+    }
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST_MIPMAP_NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindTexture(gl.TEXTURE_2D, lutTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 64, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(D.lut.buffer.slice(0)));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return true;
+  }
+  function draw(canvas, D, V, dpr) {
+    try {
+      if (!gl && !init(canvas)) return false;
+      if (gl.isContextLost && gl.isContextLost()) { gl = null; if (!init(canvas)) return false; }
+      const ot = App.order.taxa, ol = App.order.loci;
+      if (cache.D !== D || cache.ot !== ot || cache.ol !== ol) {
+        if (!upload(D, ot, ol)) return false; cache.D = D; cache.ot = ot; cache.ol = ol;
+      }
+      const kx = cache.kx || 1, ky = cache.ky || 1;
+      const fidX = kx === 1 || V.cw * dpr * kx <= 1.2, fidY = ky === 1 || V.ch * dpr * ky <= 1.2;   // a pre-binned axis is exact only below a pixel per bin
+      const inRegime = !(V.cw >= 6 && V.ch >= 6) && fidX && fidY;      // fully readable cells go to the 2d path for gridlines and hatching
+      if (!inRegime) return false;
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      gl.useProgram(prog);
+      gl.bindBuffer(gl.ARRAY_BUFFER, quad); const loc = gl.getAttribLocation(prog, "p"); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, stateTex); gl.uniform1i(u.state, 0);
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, lutTex); gl.uniform1i(u.lut, 1);
+      gl.uniform4f(u.view, V.x0 / kx, V.y0 / ky, V.cw * dpr * kx, V.ch * dpr * ky);
+      gl.uniform2f(u.dims, Math.ceil(D.nloc / kx), Math.ceil(D.n / ky));
+      gl.uniform2f(u.cv, canvas.width, canvas.height);
+      const bgc = hexToRgb(cssVar("--surface"));
+      gl.uniform3f(u.bg, bgc[0] / 255, bgc[1] / 255, bgc[2] / 255);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      return true;
+    } catch (e) { console.warn("GL matrix fell back to canvas:", e); gl = null; return false; }
+  }
+  return { draw };
+})();
 
 // hover content for a cell, shared by the matrix, the ribbons and the table
 function cellHover(g, li, compact) {

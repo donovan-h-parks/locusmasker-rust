@@ -6,7 +6,9 @@
   --grey-1: #dedcd7;                                   /* a neutral for bars and tracks */
   /* one colour per outcome, no levels (dataviz validator, white page, all pairs): not masked (a point; a matrix cell),
      too divergent, copied from another taxon, both tests */
-  --pass: #c4c2bd; --pass-cell: #dedcd7; --red: #b5172e; --blue: #2f6bd8; --yellow: #e9ca00;
+  --pass: #c4c2bd; --pass-cell: #e9e7e2; --red: #b5172e; --blue: #2f6bd8; --yellow: #b58900;
+  /* the matrix triad red/blue/yellow is validator-passing (CVD dE >= 16, all >= 3:1 on white); the yellow must
+     never share an encoding with --orange (the focal marker) - they collide under deutan vision */
   --orange: #d9822b; --orange-ink: #c45500;              /* the focal sequence: dots and fills, and its name (4.5:1 on white) */
   /* the alignment: the plain cell, and the ink its grey grades are mixed from over white */
   --cell: #e9e8e4; --grade-grey: #52514e;
@@ -247,3 +249,11 @@ kbd { font: 11px var(--mono); background: var(--surface-3); border-radius: 4px; 
 
 
 .sw.split { background: linear-gradient(135deg, var(--blue) 0 50%, var(--red) 50% 100%) !important; }
+
+/* ---- the matrix's visible zoom controls and the one-time hint */
+.mx-ctl { position: absolute; top: 8px; right: 8px; display: flex; flex-direction: column; gap: 4px; z-index: 3; }
+.mx-ctl button { width: 26px; height: 26px; border: 1px solid var(--spine); border-radius: 6px; background: var(--surface); cursor: pointer; font-size: 14px; line-height: 1; color: var(--muted); }
+.mx-ctl button:hover { background: var(--surface-2); color: var(--ink); }
+.mx-hint { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff; border-radius: 999px; padding: 4px 14px; font-size: 12px; opacity: 0.85; pointer-events: none; z-index: 3; }
+
+.matrix-wrap .matrix-gl { grid-column: 2; grid-row: 2; pointer-events: none; }

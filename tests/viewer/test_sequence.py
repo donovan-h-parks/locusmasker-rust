@@ -127,7 +127,10 @@ class TestHeaderAndColours:
         # the p column
         p = page.eval_on_selector_all(".seq-p .pcell span", "els => els.map(e => [e.textContent, e.style.background])")
         assert p[0][0] == E.focal_stars()
-        bg = p[0][1].replace(" ", ""); want = ("rgb(233,202,0)" if E.dv and E.sm else "rgb(181,23,46)" if E.dv else "rgb(47,107,216)" if E.sm else "rgb(222,220,215)")
+        bg = p[0][1].replace(" ", "")                                            # the design tokens, read from the page so a token change never pins a test
+        tok = page.evaluate("() => { const v = k => getComputedStyle(document.documentElement).getPropertyValue(k).trim(); return { y: v('--yellow'), r: v('--red'), b: v('--blue'), p: v('--pass-cell') }; }")
+        hx = lambda h: "rgb(" + ",".join(str(int(h[i:i + 2], 16)) for i in (1, 3, 5)) + ")"
+        want = hx(tok["y"] if E.dv and E.sm else tok["r"] if E.dv else tok["b"] if E.sm else tok["p"])
         assert bg == want, (kind, bg, want)
         if not rc_y: assert p[1][0] == (stars(E.pairs[E.Y], E.bar) if E.Y in E.pairs else "–")
         for k, c in enumerate(E.comps): assert p[2 + off + k][0] == (stars(E.div[c], E.bar) if c in E.red else "–"), (kind, c)
