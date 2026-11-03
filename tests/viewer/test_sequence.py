@@ -201,8 +201,8 @@ class TestTrees:
                 elif t in E.pairs: assert fill == BLUE and weight == "700"
                 elif t in E.red: assert fill == RED and weight == "700"
                 elif t in E.comps: assert fill == INK
-            assert page.eval_on_selector_all(".trees-pane svg text", "els => els.filter(e => e.textContent.includes('expected')).length") >= 1
-            page.click(".trees-pane .close"); page.wait_for_timeout(100)
+            assert len(page.query_selector_all(".trees-pane svg text.tree-title")) == 2          # each tree carries its title
+            page.click(".seq-ctl button:has-text('trees')"); page.wait_for_timeout(100)         # the button toggles the docked trees off
             assert page.evaluate("() => document.querySelector('.trees-pane').style.display") == "none"
 
     def test_tree_hover_states_the_role(self, page, ctx):

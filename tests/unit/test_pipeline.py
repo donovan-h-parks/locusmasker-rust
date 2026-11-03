@@ -355,14 +355,26 @@ class TestCarried:
             for r, g in enumerate(taxa): assert bytes(blk[r]).decode() == "".join(orig[g][s] for s in loci[li][1])
 
     def test_trees_for_every_masked_cell(self, ctx):
-        R = ctx["R"]; side = R.arr("cells/side.npy"); pt = R.arr("cells/partner.npy")
+        """one tree pair per masked cell; its tips are every row of the alignment view - the focal, its relatives, then
+        its partner, its closest match at the locus and its broad-sample representative (whichever exist, no repeats) -
+        and the outgroup last"""
+        R = ctx["R"]; side = R.arr("cells/side.npy"); pt = R.arr("cells/partner.npy"); lc = R.arr("cells/locus_closest.npy"); rp = R.arr("cells/bs_rep.npy")
+        bsp = {}
+        if R.has("cells/bs_partner.npy"):
+            for l_, g_, p_ in zip(R.arr("cells/bs_locus.npy"), R.arr("cells/bs_taxon.npy"), R.arr("cells/bs_partner.npy")): bsp[(int(g_), int(l_))] = int(p_)
         for li in range(R.nloc):
             masked = [g for g, l in cells_tested(R) if l == li and side[g, l] & 3]
             if not masked: assert not R.has(f"trees/{li}.json"); continue
             T = R.js(f"trees/{li}.json"); assert T["cells"] == masked
             for k, g in enumerate(T["cells"]):
-                tips = T["tips"][k]; want = [g] + R.comps(g, li) + ([int(pt[g, li])] if pt[g, li] >= 0 and int(pt[g, li]) not in R.comps(g, li) else [])
-                og = T["outgroup"][k]; assert tips[:len(want)] == want and (og == -1 or (og == len(tips) - 1 and tips[og] not in want))
+                tips = T["tips"][k]; comps = R.comps(g, li); og = T["outgroup"][k]
+                assert tips[:1 + len(comps)] == [g] + comps and len(set(tips)) == len(tips)
+                broad = bsp[(g, li)] if bsp.get((g, li), -1) >= 0 else int(rp[g, li])   # the broad row: the verdict pass's representative, else stage 1's
+                required = {int(pt[g, li]), int(lc[g, li]), broad} - {-1}; allowed = required | ({int(rp[g, li]), bsp.get((g, li), -1)} - {-1})
+                extras = tips[1 + len(comps):(og if og >= 0 else len(tips))]
+                assert set(extras) <= allowed and (og == -1 or (og == len(tips) - 1 and tips[og] not in [g] + comps))
+                for t in required:                                                   # every row of the alignment view is a tip
+                    assert t in tips, (g, li, t)
                 for s in (T["expected"][k], T["observed"][k]):
                     assert s.endswith(";") and s.count("(") == s.count(")") and all(str(t) in re.findall(r"(\d+):", s) for t in tips)
                 assert T["closest"][k][0] in range(-1, len(tips)) and T["closest"][k][1] in range(-1, len(tips))

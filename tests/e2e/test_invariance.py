@@ -3,7 +3,7 @@ chunking of the work, or the memory the machine reports. These guard the promise
 import os
 import numpy as np
 import pytest
-from tests.conftest import lo, dataset, run_tool, npz_hashes, sha
+from tests.conftest import carried_rows_wanted, lo, dataset, run_tool, npz_hashes, sha
 
 pytestmark = pytest.mark.e2e
 
@@ -94,13 +94,9 @@ class TestChunking:
         monkeypatch.setattr(lo, "REPORT_SEQ_ALL_MAX", 1)
         ds = dataset("dna_small"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts); R = r.report
         assert R.man["carried"]["sequences"] == "fails"
-        side = R.arr("cells/side.npy"); nf = R.arr("cells/n_fail.npy"); pt = R.arr("cells/partner.npy"); rp = R.arr("cells/bs_rep.npy")
+        side = R.arr("cells/side.npy"); nf = R.arr("cells/n_fail.npy")
         for li in range(R.nloc):
-            want = set()
-            for g in range(R.n):
-                if nf[g, li] > 0 or side[g, li] & (2 | 128):                     # the focal, its relatives, its partner and its broad representative
-                    want.add(g); want.update(R.comps(g, li)); want.add(int(pt[g, li])) if pt[g, li] >= 0 else None
-                    if rp[g, li] >= 0: want.add(int(rp[g, li]))
+            want = carried_rows_wanted(R, li, [g for g in range(R.n) if nf[g, li] > 0 or side[g, li] & (2 | 128)])
             got = set(R.arr(f"seq/{li}_taxa.npy").tolist()) if R.has(f"seq/{li}.npy") else set()
             assert got == want, li
 

@@ -176,3 +176,16 @@ def sha(path):
 
 def npz_hashes(path):
     z = zipfile.ZipFile(path); return {k: hashlib.sha256(z.read(k)).hexdigest() for k in sorted(z.namelist()) if k != "manifest.json"}
+
+def carried_rows_wanted(R, li, cells):
+    """the rows the alignment view of each listed cell needs: the focal, its relatives, its pair partner, its stage-1 broad
+    representative and, when the verdict pass named one, the called side's representative"""
+    pt = R.arr("cells/partner.npy"); rp = R.arr("cells/bs_rep.npy"); bsp = {}
+    if R.has("cells/bs_partner.npy"):
+        for l_, g_, p_ in zip(R.arr("cells/bs_locus.npy"), R.arr("cells/bs_taxon.npy"), R.arr("cells/bs_partner.npy")): bsp[(int(g_), int(l_))] = int(p_)
+    want = set()
+    for g in cells:
+        want.add(g); want.update(R.comps(g, li))
+        for t in (int(pt[g, li]), int(rp[g, li]), bsp.get((g, li), -1)):
+            if t >= 0: want.add(t)
+    return want

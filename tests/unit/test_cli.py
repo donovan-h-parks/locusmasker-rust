@@ -4,7 +4,7 @@ import csv, gzip, json, os, re, zipfile
 import numpy as np
 import pytest
 import multiprocessing
-from tests.conftest import lo, dataset, run_tool, run_cli, Report
+from tests.conftest import carried_rows_wanted, lo, dataset, run_tool, run_cli, Report
 
 
 @pytest.mark.e2e
@@ -134,11 +134,9 @@ class TestOptions:
     def test_report_sequences_policy(self, tmp_out, tmp_path):
         ds = dataset("dna_small")
         r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--report-sequences", "none"]); assert not any(k.startswith("seq/") for k in r.report.names) and r.report.man["carried"]["sequences"] == "none"
-        r = run_tool(ds.aln, str(tmp_path / "m"), "dna", ds.parts, ["--report-sequences", "masked"]); R = r.report; side = R.arr("cells/side.npy"); pt = R.arr("cells/partner.npy")
+        r = run_tool(ds.aln, str(tmp_path / "m"), "dna", ds.parts, ["--report-sequences", "masked"]); R = r.report; side = R.arr("cells/side.npy")
         for li in range(R.nloc):
-            want = set()
-            for g in range(R.n):
-                if side[g, li] & 3: want.add(g); want.update(R.comps(g, li)); want.add(int(pt[g, li])) if pt[g, li] >= 0 else None
+            want = carried_rows_wanted(R, li, [g for g in range(R.n) if side[g, li] & 3])
             got = set(R.arr(f"seq/{li}_taxa.npy").tolist()) if R.has(f"seq/{li}.npy") else set()
             assert got == want, li
 

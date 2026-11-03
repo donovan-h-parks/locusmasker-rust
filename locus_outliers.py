@@ -3109,7 +3109,8 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
             cells_t = []
             for q in np.flatnonzero(masked_q).tolist():
                 g = int(idx[q]); tips = [g] + [int(c) for c in top[g] if c >= 0]
-                if partner_[q] >= 0 and int(partner_[q]) not in tips: tips.append(int(partner_[q]))
+                for t_ in (int(partner_[q]), int(lclos_[q]), int(bsrep_full[g])):   # every row of the alignment view is a tip
+                    if t_ >= 0 and t_ not in tips: tips.append(t_)
                 if len(tips) >= 2: cells_t.append((g, tips))
             Wu = mu = None
             if cells_t and P.m_full is not None:                                   # the outgroup search's rows of counts and of m for every tip at the locus, in one call
@@ -3408,6 +3409,9 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                         zi = DLO["z"][i]; fin_ = np.isfinite(zi)                 # the far member with the most extreme standardised residual
                         out["dlean"].append((g, float(dp[i]), int(comp3[i, int(np.where(fin_, zi, np.inf).argmin())]) if fin_.any() else -1))
             # the masked cells' artifacts, exactly the per-locus pass's constructions
+            in_tc = {int(g) for g, _, _ in tree_cells}                     # the trees rebuilt here: the divergent cells with their
+            retree = [(int(g), int(rp_)) for g, _dp, rp_ in out["dlean"] if rp_ >= 0] + [(int(g), int(p_)) for g, _dp, p_, _o, _e in out["label"] if p_ >= 0] \
+                + [(int(g), int(p_)) for g, _sp, _ep, p_, _c in out["lean"] if p_ >= 0 and (rep["side"][g, li] & 3) and int(g) not in in_tc]   # representative, and every masked gate-passer with the called side's
             if tree_cells:
                 qs = np.array([g for g, _, _ in tree_cells], np.int64)
                 FX = Xs[qs]; pres_ = FX >= 0
@@ -3420,12 +3424,16 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                     XB = Xs[np.maximum(Bq, 0)]; shared = hb[:, None] & pres_ & (XB >= 0) & (FX == XB) & (k_ >= 2)
                     rows_c[shared] = (CODE_SIMILAR + np.minimum(k_[shared], 125)).astype(np.uint8)
                 out["codes"] = (qs.astype(np.int32), rows_c)
+            if tree_cells or retree:                                           # the divergent cells' trees are rebuilt here, with their representative
                 tcells, texp, tobs, ttips, togs, tclos = [], [], [], [], [], []
                 cells_t = []
-                for g, partner, _cc in tree_cells:
-                    tips = [int(g)] + [int(c) for c in top[g] if c >= 0]
-                    if partner >= 0 and int(partner) not in tips: tips.append(int(partner))
-                    if len(tips) >= 2: cells_t.append((int(g), tips))
+                lc_of = (lambda g_: int(rep["locus_closest"][g_, li])) if dense else (lambda g_: -1)
+                pt_of = (lambda g_: int(rep["partner"][g_, li])) if dense else (lambda g_: -1)
+                for g, extra in [(int(g), int(p)) for g, p, _cc in tree_cells] + retree:
+                    tips = [g] + [int(c) for c in top[g] if c >= 0]
+                    for t_ in (pt_of(g), lc_of(g), extra):                          # every row of the alignment view is a tip
+                        if t_ >= 0 and t_ not in tips: tips.append(t_)
+                    if len(tips) >= 2: cells_t.append((g, tips))
                 Wu = mu = None
                 if cells_t and P.m_full is not None:
                     u = np.array(sorted({t for _, tips in cells_t for t in tips})); upos = {int(t): k2_ for k2_, t in enumerate(u)}
@@ -3464,6 +3472,8 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                         if rp_ >= 0: rs_.add(int(rp_))
                     for g, _dp, rp_ in out["dlean"]:                            # or the representative without one
                         if rp_ >= 0: rs_.add(int(rp_))
+                    for g, _sp, _ep, p_, _c in out["lean"]:                     # a masked gate-passer's called-side representative
+                        if p_ >= 0 and (rep["side"][g, li] & 3): rs_.add(int(p_))
                     if rs_:
                         rows_s = np.array(sorted(rs_), np.int64)
                         out["seq"] = (rows_s.astype(np.int32), np.stack([views[g_][sites] for g_ in rows_s.tolist()]))
@@ -3548,10 +3558,11 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                     else: rep["seqs"][li] = (rows_s, blk_s)
                 if out["trees"] is not None:
                     T_ = out["trees"]
-                    if li in rep["trees"]:                                      # merge, the cells in ascending taxon order as the single pass writes them
-                        T0 = rep["trees"][li]
-                        order = np.argsort(np.concatenate([T0["cells"], T_["cells"]]), kind="stable")
-                        rep["trees"][li] = {k_: [ (T0[k_] + T_[k_])[o_] for o_ in order.tolist() ] for k_ in ("cells", "expected", "observed", "tips", "outgroup", "closest")}
+                    if li in rep["trees"]:                                      # merge, the cells in ascending taxon order as the single pass writes them;
+                        T0 = rep["trees"][li]; new_ = set(T_["cells"])          # a cell rebuilt here replaces its single-pass tree
+                        k0 = [j_ for j_, c_ in enumerate(T0["cells"]) if c_ not in new_]
+                        order = np.argsort(np.concatenate([[T0["cells"][j_] for j_ in k0], T_["cells"]]), kind="stable")
+                        rep["trees"][li] = {k_: [ ([T0[k_][j_] for j_ in k0] + T_[k_])[o_] for o_ in order.tolist() ] for k_ in ("cells", "expected", "observed", "tips", "outgroup", "closest")}
                     else: rep["trees"][li] = T_
             PROG.finish()
         if bs_rows_rep:

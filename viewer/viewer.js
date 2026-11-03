@@ -1498,7 +1498,7 @@ function splitsOf(root) {                                         // the biparti
   walk(root); return root;
 }
 const TREE_COL = { outside: "#c2185b" };                          // a best match from outside the comparator set, in the ribbons
-function drawCophylo(host, D, entry, k, cell, T) {      // T: cellTests, for the tips' colours
+function drawCophylo(host, D, entry, k, cell, T, Wmax) { // T: cellTests, for the tips' colours; Wmax: the room the host offers
   const { g, li } = cell; const exp = parseNewick(entry.expected[k]), obs = parseNewick(entry.observed[k]);
   const name = x => D.taxa.names[+x]; const partner = D.num("partner", g, li), bm = D.num("best_match", g, li), bmId = D.num("best_match_identity", g, li); const comps = new Set(D.comps(g, li));
   const v4 = D.format >= 4, sr = similarRole(D, g, li), nsim = D.cols.n_similar[g * D.nloc + li];   // from format 4 the trees carry up to five too-similar partners, not the best match
@@ -1520,13 +1520,15 @@ function drawCophylo(host, D, entry, k, cell, T) {      // T: cellTests, for the
   const clos = entry.closest ? entry.closest[k] : null;                                                       // [expected, observed]: the tip closest to the focal in each tree, by that tree's own distances
   const closName = j => clos && clos[j] >= 0 ? String(entry.tips[k][clos[j]]) : null;
   const meas = document.createElement("canvas").getContext("2d"); meas.font = `bold 11.5px ${cssVar("--sans")}`; const LAB = Math.ceil(d3.max(tipsOf(exp), t => meas.measureText(labelOf(t.name)).width) + 10);
-  const nTip = tipsOf(exp).length; const RH = 20, GAP = 44, W = Math.min(820, Math.max(560, 2 * LAB + GAP + 240)), top = 10, H = top + nTip * RH + 40;
+  const nTip = tipsOf(exp).length; const RH = 20, GAP = 44, W = Math.max(Math.max(560, 2 * LAB + GAP + 240), Math.min(Wmax || 820, 1100)), top = 34, H = top + nTip * RH + 40;
   depthOf(exp); depthOf(obs); const inDepth = root => d3.max(tipsOf(root).filter(t => !isOg(t)), t => t.depth) || 0;
   // one scale for both trees; each takes the width its own depth needs, so a shallow expected tree leaves no blank
   const dE = inDepth(exp), dO = inDepth(obs), maxD = Math.max(dE, dO, 1e-6), OGLEN = 22;
   const sx = d3.scaleLinear().domain([0, Math.max(dE + dO, 1e-6)]).range([0, W - 2 * LAB - GAP - 28 - 2 * OGLEN]);
   assignY(exp, { y: 0 }); assignY(obs, { y: 0 });
   const svg = d3.create("svg").attr("width", W).attr("height", H).attr("class", "tangle");
+  svg.append("text").attr("class", "tree-title").attr("x", 8).attr("y", 16).attr("font-size", 12).attr("font-weight", 650).attr("fill", cssVar("--ink")).text(LM_STR.seq.tree_left);
+  svg.append("text").attr("class", "tree-title").attr("x", W - 8).attr("y", 16).attr("text-anchor", "end").attr("font-size", 12).attr("font-weight", 650).attr("fill", cssVar("--ink")).text(LM_STR.seq.tree_right);
   const yOf = n => top + n.y * RH + RH / 2;
   const focalCol = cssVar("--orange"), partnerCol = D.col.blue, inCol = cssVar("--ink"), outCol = cssVar("--faint");
   const stOf = t => T.blue.has(+t) ? "blue" : T.red.has(+t) ? "red" : null;      // the colour the alignment gives the taxon's name
@@ -1555,7 +1557,6 @@ function drawCophylo(host, D, entry, k, cell, T) {      // T: cellTests, for the
     for (let k = -2; k <= 3; k++) for (const f of [1, 2, 5]) { const v = f * Math.pow(10, k); if (sx(v) <= lim) best = v; } return best || 1; })();
   const by = H - 12; svg.append("line").attr("x1", 8).attr("x2", 8 + sx(bar)).attr("y1", by).attr("y2", by).attr("stroke", cssVar("--ink")).attr("stroke-width", 1.5);
   svg.append("text").attr("x", 12 + sx(bar)).attr("y", by + 4).attr("font-size", 10.5).attr("fill", cssVar("--muted")).text(`${bar}% ${D.format >= 3 ? "corrected divergence" : "divergence"}`);
-  svg.append("text").attr("x", W - 36).attr("y", by + 4).attr("text-anchor", "end").attr("font-size", 10.5).attr("fill", cssVar("--muted")).text("expected  ·  observed at this locus");
   const q = svg.append("g").attr("transform", `translate(${W - 20},${by})`).style("cursor", "help");
   q.append("circle").attr("r", 8).attr("fill", "none").attr("stroke", cssVar("--muted")).attr("stroke-width", 1.2); q.append("text").attr("y", 4).attr("text-anchor", "middle").attr("font-size", 11).attr("font-weight", 700).attr("fill", cssVar("--muted")).text("?");
   const explain = el("div", { style: "max-width: 380px" },
@@ -1679,7 +1680,7 @@ const Sequence = (() => {
       const entry = await D.trees(li); if (treesPane.style.display === "none") return; treesPane.replaceChildren();
       let k = -1; if (entry) for (let q = 0; q < entry.cells.length; q++) if (entry.cells[q] === g) { k = q; break; }
       if (k < 0) { treesPane.append(el("div", { class: "note", style: "padding: 8px" }, "trees were not carried for this cell")); return; }
-      treesPane.append(el("button", { class: "close", title: "close", onclick: toggleTrees }, "✕"), drawCophylo(treesPane, D, entry, k, { g, li }, T));
+      treesPane.append(drawCophylo(treesPane, D, entry, k, { g, li }, T, treesPane.getBoundingClientRect().width - 40));
     };
     if (showTrees) setTimeout(toggleTrees, 0);
     // one row per sequence in every column; the focal's p cell is its outcome as a colour (gold: both tests) with the stars of
@@ -2097,7 +2098,7 @@ const Card = (() => {
         if (k >= 0) {
           treesSlot.append(el("h4", null, S().trees_title));
           const T = cellTests(App.D, g, li, SIM, similarRole(App.D, g, li));
-          treesSlot.append(drawCophylo(treesSlot, App.D, entry, k, { g, li }, T));
+          treesSlot.append(drawCophylo(treesSlot, App.D, entry, k, { g, li }, T, 820));
         }
       })();
     }

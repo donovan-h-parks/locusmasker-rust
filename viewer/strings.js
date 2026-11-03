@@ -114,6 +114,9 @@ const LM_STR = {
     role_nonrelative: "non-relative",                // ... when it is not
     role_largest: "largest residual",                // the broad-sample row
     role_relative_n: "relative {n}",                 // the close relatives, in genome-wide rank order
+    // the two trees under the alignment: their titles
+    tree_left: "distances across the alignment",     // the expected tree: genome-wide divergences, scaled to this locus
+    tree_right: "distances at this locus",           // the observed tree: this locus's own divergences
   },
 
   // ---- the navigation stack: the deepest open level fills the window; the levels above it collapse to one
