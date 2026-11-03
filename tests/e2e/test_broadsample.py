@@ -33,7 +33,7 @@ class TestOnThePlantedFixture:
         fired = [row for row in rows if row["broad_sample_side"] == "close"]
         hits = [row for row in fired if (row["locus"], row["taxon"]) in recips]
         assert len(hits) >= 4, [(_r["locus"], _r["taxon"]) for _r in fired]
-        assert all(row["reason"] in ("similar", "both") and float(row["broad_sample_log10p"]) < -1.3 for row in hits)
+        assert all(row["reason"] in ("similar", "both") and float(row["broad_sample_p"]) <= 0.05 + 1e-6 for row in hits)
         assert all(float(row["broad_sample_observed"]) < float(row["broad_sample_expected"]) for row in hits)
         donors = {e["donor"] for e in events}
         assert any(row["broad_sample_partner"] in donors for row in hits)   # the most extreme aligned comparator names the donor
@@ -46,9 +46,9 @@ class TestOnThePlantedFixture:
         (e,) = ds.ev("hiddencontam")
         (row,) = [q for q in rows if (q["locus"], q["taxon"]) == (e["locus"], e["taxon"])]
         assert row["reason"] == "divergent" and row["broad_sample_side"] == "divergent" and broad_masked(row)
-        assert row["mask_test"] == "broad_sample" and float(row["mask_log10p"]) < -5         # the one significance is the stage-1 variance p
+        assert row["mask_test"] == "broad_sample" and float(row["mask_p"]) <= 1e-5 + 1e-6    # the one significance is the stage-1 variance p
         assert float(row["broad_sample_observed"]) > float(row["broad_sample_expected"])
-        assert float(row["broad_sample_log10p"]) < -1.3
+        assert float(row["broad_sample_p"]) <= 0.05 + 1e-6
         g = r.report.taxa["names"].index(e["taxon"]); li = r.report.loci["names"].index(e["locus"])
         s2 = int(r.report.arr("cells/side2.npy")[g, li])
         assert (s2 & 3) == 3 and (s2 & 8) and not (s2 & 4)                # tested, past the bar, the divergent arm called

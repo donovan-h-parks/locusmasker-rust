@@ -25,7 +25,7 @@ class TestPlanted:
         run = runs(name); ds = dataset(name)
         for e in ds.ev("contam"):
             r = run.masked_at(e["taxon"], e["locus"]); assert r is not None and r["reason"] in ("divergent", "both"), e
-            assert int(r["close_relative_comparators"]) == run.report.K and int(r["close_relative_fails"]) >= run.report.M and float(r["close_relative_log10p"]) < run.report.man["test"]["log10_bar"]
+            assert int(r["close_relative_comparators"]) == run.report.K and int(r["close_relative_fails"]) >= run.report.M and float(r["close_relative_p"]) <= 10 ** run.report.man["test"]["log10_bar"] + 1e-6
 
     def test_far_copies_are_masked_by_both_tests_with_the_donor_named(self, runs, name):
         run = runs(name); ds = dataset(name)

@@ -110,17 +110,18 @@ Method:
 Outputs (in --out; <stem> is the alignment file's name without extension)
   <stem>.masked.<ext>  the alignment in its input format with every masked sequence blanked
   masked.csv           ONE row per masked sequence and why: reason (divergent, similar or both),
-                       mask_test and mask_log10p - the sequence's one significance: the most significant
+                       mask_test and mask_p - the sequence's one significance: the most significant
                        BAR-HELD p over the tests that masked it (the close-relative decisive p, the fired
                        closest-match p, the broad-sample stage-1 variance p) and the test it came from;
-                       a rough level of belief, not a combined p -
+                       a rough level of belief, not a combined p. Every p in the text outputs is plain,
+                       at six decimals (1e-7 and below print 0.000000; report.npz keeps exact values) -
                        residues_masked (its residues at the locus; the whole stretch is blanked), then
                        one column family per test, each with its effect and its p where the test ran.
                        CLOSE-RELATIVE test: close_relative_fails of close_relative_comparators, the
                        observed and expected divergence (%; medians over the comparators),
                        close_relative_excess_m (the extra divergence beyond expectation, multiple-hit
                        corrected and divided by the locus rate: % on the scale of m) and
-                       close_relative_log10p, the p of the comparison that decides the majority.
+                       close_relative_p, the p of the comparison that decides the majority.
                        CLOSEST-MATCH test: the fired pair when it fired, else the strongest comparison
                        it made; closest_match_arm names the expectation used - "relative" (the partner
                        is one of the focal's relatives: the pair machinery, with closest_match_row_factor)
@@ -129,20 +130,20 @@ Outputs (in --out; <stem> is the alignment file's name without extension)
                        uncertain - the direction is called when the larger of the two members'
                        divergence excesses is more than --donor-threshold times the smaller, else both
                        are masked; empty when the test did not fire), observed and expected divergence
-                       (%; before the row factor), closest_match_log10p and
+                       (%; before the row factor), closest_match_p and
                        closest_match_partner_excess_m (the partner's divergence excess, next to this
                        sequence's close_relative_excess_m: the margin of the copy call). BROAD-SAMPLE
                        test: broad_sample_partner (the most extreme aligned member of the sample, by
                        standardised residual), broad_sample_side (close or divergent - the test calls
                        one direction at most, the stronger side), observed and expected (%) against the
-                       partner and broad_sample_log10p (on a divergent row with no broad mask these are
-                       the donor-side label). Then its comparators, closest first, and log10_bar, the
-                       bar every p was held to. p-values are floored at 1e-300 (log10 -300).
+                       partner and broad_sample_p (on a divergent row with no broad mask these are
+                       the donor-side label). Then its comparators, closest first, and p_bar, the
+                       bar every p was held to.
   tests.tsv.gz         with --all-tests only: one row per test performed, the focal sequence first.
                        test (close_relative, closest_match_relative, closest_match_outside; one row
                        per comparison), locus, taxon, comparator,
                        overlap (shared sites), mismatches, expected (expected mismatches; before the row
-                       factor), row_factor (closest_match_relative rows), log10p (exact), fail (0 or 1).
+                       factor), row_factor (closest_match_relative rows), p (six decimals), fail (0 or 1).
                        Large (every comparison at every locus); tabs or line breaks in names are
                        written as spaces.
   report.html          the interactive report, one file with its data inside (report.npz holds the
@@ -2527,18 +2528,29 @@ def fork_map(fn, items, workers, chunksize=1):
     finally: _FORK_FN = None
 
 
-MASKED_COLUMNS = ["locus", "taxon", "reason", "mask_test", "mask_log10p", "residues_masked",
-                  "close_relative_fails", "close_relative_comparators", "close_relative_observed", "close_relative_expected", "close_relative_excess_m", "close_relative_log10p",
-                  "closest_match_partner", "closest_match_arm", "closest_match_role", "closest_match_observed", "closest_match_expected", "closest_match_row_factor", "closest_match_log10p", "closest_match_relatives", "closest_match_partner_excess_m",
-                  "broad_sample_partner", "broad_sample_side", "broad_sample_observed", "broad_sample_expected", "broad_sample_log10p",
-                  "comparators", "log10_bar"]
+MASKED_COLUMNS = ["locus", "taxon", "reason", "mask_test", "mask_p", "residues_masked",
+                  "close_relative_fails", "close_relative_comparators", "close_relative_observed", "close_relative_expected", "close_relative_excess_m", "close_relative_p",
+                  "closest_match_partner", "closest_match_arm", "closest_match_role", "closest_match_observed", "closest_match_expected", "closest_match_row_factor", "closest_match_p", "closest_match_relatives", "closest_match_partner_excess_m",
+                  "broad_sample_partner", "broad_sample_side", "broad_sample_observed", "broad_sample_expected", "broad_sample_p",
+                  "comparators", "p_bar"]
+
+
+def pfmt(lnp):
+    """a p-value for the text outputs, from a NATURAL-log input: plain p at six decimals (1e-7 and below print
+    0.000000 - the extreme end is deliberately flattened; the report's arrays keep the exact log-space values)"""
+    return "" if lnp is None or not math.isfinite(lnp) else f"{min(math.exp(lnp), 1.0):.6f}"
+
+
+def pfmt10(l10):
+    """the same, from a log10 input"""
+    return "" if l10 is None or not math.isfinite(l10) else f"{min(10.0 ** l10, 1.0):.6f}"
 
 
 def fnum(v, nd):
     """a number for the text outputs: fixed decimals, no negative zero, empty when not finite"""
     v = float(v)
     return "" if not math.isfinite(v) else f"{round(v, nd) + 0.0:.{nd}f}"
-TESTS_COLUMNS = ["test", "locus", "taxon", "comparator", "overlap", "mismatches", "expected", "row_factor", "log10p", "fail"]
+TESTS_COLUMNS = ["test", "locus", "taxon", "comparator", "overlap", "mismatches", "expected", "row_factor", "p", "fail"]
 
 
 def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
@@ -2925,16 +2937,16 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                 rec, other, role = pair_of[q]; in_set = rec["arm"] == "comparator"
                 return [names[other], "relative" if in_set else "outside", role,
                         fnum(100 * rec["mis"] / rec["o"], 2), fnum(100 * rec["E"] / rec["o"], 2),
-                        fnum(rec["f"], 3) if in_set else "", fnum(rec["lnp"] / LN10, 3),
+                        fnum(rec["f"], 3) if in_set else "", pfmt(rec["lnp"]),
                         "" if in_set else "; ".join(names[c] for c in rec["rel"]), pex_of(other)]
             if tested2[q]:
                 return [names[int(Y[q])], "outside", "", fnum(100 * mis2[q] / o2[q], 2), fnum(100 * float(E2[q]) / o2[q], 2),
-                        "", fnum(float(lp_lo[q]) / LN10, 3), "; ".join(names[c] for c in rel2[q]), pex_of(int(Y[q]))]
+                        "", pfmt(float(lp_lo[q])), "; ".join(names[c] for c in rel2[q]), pex_of(int(Y[q]))]
             s_, k_ = int(starts[q]), int(kc[q])
             if k_ == 0: return [""] * 9
             j = s_ + int(np.argmin(lp_in[s_:s_ + k_]))
             return [names[int(ci[j])], "relative", "", fnum(100 * mis[j] / o[j], 2), fnum(100 * E_lo[j] / o[j], 2),
-                    fnum(ff[j], 3), fnum(lp_in[j] / LN10, 3), "", pex_of(int(ci[j]))]
+                    fnum(ff[j], 3), pfmt(lp_in[j]), "", pex_of(int(ci[j]))]
 
         mrows_out = []
         for q in np.flatnonzero(masked_q).tolist():
@@ -2943,10 +2955,10 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
             mc = []                                                             # the cell's one significance: the most significant
             if dv and np.isfinite(div_lp[q]): mc.append((float(div_lp[q]), "close_relative"))   # bar-held p over the tests that masked it
             if sm and q in pair_of: mc.append((float(pair_of[q][0]["lnp"]), "closest_match"))
-            mt, mp = (min(mc)[1], fnum(min(mc)[0] / LN10, 3)) if mc else ("", "")
+            mt, mp = (min(mc)[1], pfmt(min(mc)[0])) if mc else ("", "")
             s = int(starts[q]); comps = [names[int(c)] for c in ci[s:s + kc[q]]]
             row_ = [name, names[g], reason, mt, mp, int(nres[g]), int(nf[q]), int(kc[q]), fnum(100 - med_i[q], 2), fnum(100 - med_e[q], 2),
-                    fnum(exm[q], 3), fnum(div_lp[q] / LN10, 3)] + cm_cols(q) + ["", "", "", "", ""] + ["; ".join(comps), fnum(lbar10, 3)]
+                    fnum(exm[q], 3), pfmt(div_lp[q])] + cm_cols(q) + ["", "", "", "", ""] + ["; ".join(comps), pfmt10(lbar10)]
             mrows_out.append((g, reason, row_))
 
         # ---- the report's view of this locus: cell columns, best matches, site codes, sequence rows, trees, pairs
@@ -3161,17 +3173,18 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
             clean = lambda x: x.replace("\t", " ").replace("\n", " ").replace("\r", " ")
             lname = clean(name).replace("%", "%%"); tnames = [clean(x) for x in names]
             r3 = lambda v: (np.round(np.asarray(v, float), 3) + 0.0).tolist()
-            tests_block = ("close_relative\t" + lname + "\t%s\t%s\t%d\t%d\t%.3f\t\t%.3f\t%d\n") * len(gi) % tuple(chain.from_iterable(zip(
+            p6 = lambda v: (np.round(np.exp(np.minimum(np.asarray(v, float), 0.0)), 6) + 0.0).tolist()
+            tests_block = ("close_relative\t" + lname + "\t%s\t%s\t%d\t%d\t%.3f\t\t%.6f\t%d\n") * len(gi) % tuple(chain.from_iterable(zip(
                 [tnames[x] for x in gi.tolist()], [tnames[x] for x in ci.tolist()], o.astype(np.int64).tolist(), mis.astype(np.int64).tolist(),
-                r3(E), r3(lp_hi / LN10), fail_hi.astype(np.int64).tolist())))
-            tests_block += ("closest_match_relative\t" + lname + "\t%s\t%s\t%d\t%d\t%.3f\t%.4f\t%.3f\t%d\n") * len(gi) % tuple(chain.from_iterable(zip(
+                r3(E), p6(lp_hi), fail_hi.astype(np.int64).tolist())))
+            tests_block += ("closest_match_relative\t" + lname + "\t%s\t%s\t%d\t%d\t%.3f\t%.4f\t%.6f\t%d\n") * len(gi) % tuple(chain.from_iterable(zip(
                 [tnames[x] for x in gi.tolist()], [tnames[x] for x in ci.tolist()], o.astype(np.int64).tolist(), mis.astype(np.int64).tolist(),
-                r3(E_lo), ff.tolist(), r3(lp_in / LN10), fail_in.astype(np.int64).tolist())))
+                r3(E_lo), ff.tolist(), p6(lp_in), fail_in.astype(np.int64).tolist())))
             tq_ = np.flatnonzero(tested2)
             if len(tq_):
-                tests_block += ("closest_match_outside\t" + lname + "\t%s\t%s\t%d\t%d\t%.3f\t\t%.3f\t%d\n") * len(tq_) % tuple(chain.from_iterable(zip(
+                tests_block += ("closest_match_outside\t" + lname + "\t%s\t%s\t%d\t%d\t%.3f\t\t%.6f\t%d\n") * len(tq_) % tuple(chain.from_iterable(zip(
                     [tnames[int(idx[q])] for q in tq_.tolist()], [tnames[int(Y[q])] for q in tq_.tolist()], o2[tq_].astype(np.int64).tolist(),
-                    mis2[tq_].astype(np.int64).tolist(), r3(E2[tq_]), r3(lp_lo[tq_] / LN10), fail2[tq_].astype(np.int64).tolist())))
+                    mis2[tq_].astype(np.int64).tolist(), r3(E2[tq_]), p6(lp_lo[tq_]), fail2[tq_].astype(np.int64).tolist())))
 
         log = (f"{name}: {ncell} cells, {len(gi)} comparator slots, {int(tested2.sum())} closest-match tests; too divergent {int(flag.sum())}"
                f" (+{int(amb.sum())} with fewer comparators), too-similar pairs {len(pairs)} ({sum(1 for r in pairs.values() if r['arm'] == 'closest')} by the closest match)")
@@ -3470,18 +3483,18 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                     j = mrow_at.get((name, names[g]))
                     if j is not None:
                         mrows[j][21] = names[partner] if partner >= 0 else ""; mrows[j][22] = side_txt
-                        mrows[j][23] = fnum(obs_, 2); mrows[j][24] = fnum(exp_, 2); mrows[j][25] = fnum(lp_use / LN10, 3)
+                        mrows[j][23] = fnum(obs_, 2); mrows[j][24] = fnum(exp_, 2); mrows[j][25] = pfmt(lp_use)
                         v10 = var_lp10(li, g)                                   # the broad firing joins the cell's one significance when it is the most significant
-                        if np.isfinite(v10) and (mrows[j][4] == "" or v10 < float(mrows[j][4])):
-                            mrows[j][3] = "broad_sample"; mrows[j][4] = fnum(v10, 3)
+                        if np.isfinite(v10) and (mrows[j][4] == "" or 10.0 ** v10 < float(mrows[j][4]) - 1e-12):
+                            mrows[j][3] = "broad_sample"; mrows[j][4] = pfmt10(v10)
                 for g, b2, side_txt, lp_use, partner, obs_, exp_ in out["mask"]:
                     rep["side2"][g, li] |= b2; rep["side"][g, li] |= 2 if b2 & 4 else 1
                     views[g][sites] = 45
                     reason = "similar" if b2 & 4 else "divergent"
                     tally[reason] += 1; tally_bs["close" if b2 & 4 else "divergent"] += 1
-                    mrows.append([name, names[g], reason, "broad_sample", fnum(var_lp10(li, g), 3), int(P.focal_sites[g, li])] + [""] * 6 + [""] * 9
-                                 + [names[partner] if partner >= 0 else "", side_txt, fnum(obs_, 2), fnum(exp_, 2), fnum(lp_use / LN10, 3)]
-                                 + ["", fnum(lbar10, 3)])
+                    mrows.append([name, names[g], reason, "broad_sample", pfmt10(var_lp10(li, g)), int(P.focal_sites[g, li])] + [""] * 6 + [""] * 9
+                                 + [names[partner] if partner >= 0 else "", side_txt, fnum(obs_, 2), fnum(exp_, 2), pfmt(lp_use)]
+                                 + ["", pfmt10(lbar10)])
                     mrow_at[(name, names[g])] = len(mrows) - 1
                     if dense:
                         rep["partner"][g, li] = partner
@@ -3500,7 +3513,7 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                     j = mrow_at.get((name, names[g]))
                     if j is not None:                                           # a label on the divergent row: the mask, its reason and its significance unchanged
                         mrows[j][21] = names[partner] if partner >= 0 else ""; mrows[j][22] = "close"
-                        mrows[j][23] = fnum(obs_, 2); mrows[j][24] = fnum(exp_, 2); mrows[j][25] = fnum(dp_i / LN10, 3)
+                        mrows[j][23] = fnum(obs_, 2); mrows[j][24] = fnum(exp_, 2); mrows[j][25] = pfmt(dp_i)
                         tally_bs["labels"] += 1
                 if out["broad"]:
                     rep.setdefault("bs_records", {}).setdefault(li, []).extend(out["broad"])

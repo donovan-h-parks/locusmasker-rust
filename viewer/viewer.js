@@ -327,21 +327,22 @@ function copyGroups(D, mode) {
   return d3.groups(copiesOf(D), keyOf).map(([k, v]) => ({ k, label: label(k), list: v })).sort((a, b) => b.list.length - a.list.length || a.label.localeCompare(b.label));
 }
 
-// the log10 p every test is held to, when the bundle gives it (format 4), and " (bar −7.25)" built on it
-const bar10 = D => D.man.test && D.man.test.log10_bar != null ? fmt2(D.man.test.log10_bar) : null;
+// the p every test is held to, when the bundle gives it (format 4), and " (bar 4.5e-6)" built on it.
+// The machine form everywhere is log10 p; lmP is the one gate where it becomes words
+const bar10 = D => D.man.test && D.man.test.log10_bar != null ? lmP(D.man.test.log10_bar) : null;
 const barNote = D => bar10(D) !== null ? ` (bar ${bar10(D)})` : "";
-// a p-value from a float32 column (lam_p) as log10 p, on the bar's scale; the column underflows to 0 below about 1e-45
-const log10pTxt = p => p > 0 ? `log10 p = ${fmt2(Math.log10(p))}` : "log10 p < −45";
-// the direction test's log10 p: the exact column when the bundle has it (dir_log10p), else from lam_p
-const dirTxt = (D, g, li, lp) => { const d = D.num("dir_log10p", g, li); return d !== null ? `log10 p = ${fmt2(d)}` : log10pTxt(lp); };
+// a p-value from a float32 column (lam_p); the column underflows to 0 below about 1e-45
+const log10pTxt = p => p > 0 ? `p = ${lmP(Math.log10(p))}` : "p < 1e-45";
+// the direction test's p: the exact column when the bundle has it (dir_log10p), else from lam_p
+const dirTxt = (D, g, li, lp) => { const d = D.num("dir_log10p", g, li); return d !== null ? `p = ${lmP(d)}` : log10pTxt(lp); };
 // the run's tests and their bar: format 4 counts every test, Bonferroni over all of them; older bundles count the distinct
 // comparisons and give the bar as a normal quantile k
 function testSummary(T) {
   if (T.tests == null) return `${fmtInt(T.comparisons)} distinct comparisons, Bonferroni k ${T.bonferroni_k}`;
   const crT = T.close_relative_tests != null ? T.close_relative_tests : T.divergent_tests, cmrT = T.closest_match_relative_tests != null ? T.closest_match_relative_tests : T.comparator_tests, cmoT = T.closest_match_outside_tests != null ? T.closest_match_outside_tests : T.closest_tests;
-  if (cmrT != null) return `${fmtInt(T.tests)} tests (${fmtInt(crT)} close-relative, ${fmtInt(cmrT)} closest-match against a relative, ${fmtInt(cmoT)} against an outside match${T.broad_sample_tests ? `, ${fmtInt(T.broad_sample_tests)} broad-sample` : ""}), one Bonferroni bar for all of them, log10 p < ${fmt2(T.log10_bar)}`;
+  if (cmrT != null) return `${fmtInt(T.tests)} tests (${fmtInt(crT)} close-relative, ${fmtInt(cmrT)} closest-match against a relative, ${fmtInt(cmoT)} against an outside match${T.broad_sample_tests ? `, ${fmtInt(T.broad_sample_tests)} broad-sample` : ""}), one Bonferroni bar for all of them, p < ${lmP(T.log10_bar)}`;
   return `${fmtInt(T.tests)} tests (${fmtInt(T.divergent_tests)} too divergent, ${fmtInt(T.similar_tests)} too similar, ${fmtInt(T.direction_tests)} direction), ` +
-    (T.log10_bar != null ? `one Bonferroni bar for all of them, log10 p < ${fmt2(T.log10_bar)}` : `Bonferroni k ${T.bonferroni_k}`);
+    (T.log10_bar != null ? `one Bonferroni bar for all of them, p < ${lmP(T.log10_bar)}` : `Bonferroni k ${T.bonferroni_k}`);
 }
 
 // ------------------------------------------------------------------ the app
@@ -365,8 +366,7 @@ function showIncomplete(n) {                                          // the fil
   location.reload();                                                   // no loader on the page (an odd embed): the retry is a plain reload
 }
 async function start(bytes) {
-  const load = document.getElementById("lm-load");                     // the loading screen's last stop: the bar is full, the data is decoding
-  const noteEl = load && load.querySelector(".ls-note"); if (noteEl) noteEl.textContent = LM_STR.loading.reading;
+  // the loading screen stays as-is while the data decodes: same line, full bar
   await new Promise(r => setTimeout(r, 0));                            // let the note paint before the decode blocks the thread
   try { sessionStorage.removeItem("lmRetry"); } catch (e) { }
   const D = await loadBundle(bytes); App.D = D;
@@ -538,6 +538,12 @@ const Overview = (() => {
     const col = (title, items, open, head) => {
       const c = el("div", { class: "col" }, el("h3", head || null, title));
       const max = d3.max(items, d => d.v) || 1;
+      if (new Set(items.map(d => d.v)).size < 2) {                                 // ties carry no magnitude: a chip list, no bars
+        const box = el("div", { class: "chiprow" });
+        for (const it of items) box.append(el("button", { class: "chip", title: it.title, onclick: () => open(it), onmouseenter: () => it.kind && highlight(it.kind, it.i), onmouseleave: () => it.kind && highlight(null) },
+          sw(it.div >= it.sim ? D.col.red : D.col.blue), ` ${it.name} · ${it.label}`));
+        c.append(box); return c;
+      }
       for (const it of items) {
         const bar = el("div", { class: "bar" });
         const div = it.div / (it.div + it.sim || 1);
@@ -555,10 +561,10 @@ const Overview = (() => {
     w.append(el("div", { class: "worst-row" }, ct, cl));
     // the distribution plots and the significance histogram, sized to the room left in the panel
     const room = P.body.getBoundingClientRect().height - viewEl.tiles.getBoundingClientRect().height - w.getBoundingClientRect().height - 60;
-    const hh = clamp(room, 190, 420), hw = (w.getBoundingClientRect().width || 900) / 3 - 20;
-    const ht = el("div", { class: "hist-wrap" }), hl = el("div", { class: "hist-wrap" }), hs = el("div", { class: "hist-wrap" });
-    w.append(el("div", { class: "worst-row" }, el("div", { class: "col" }, ht), el("div", { class: "col" }, hl), el("div", { class: "col" }, hs)));
-    Hist.render(ht, "taxon", hw, hh); Hist.render(hl, "locus", hw, hh); SigHist.render(hs, hw, hh);
+    const hh = clamp(room, 190, 420), hw = (w.getBoundingClientRect().width || 800) / 2 - 20;
+    const ht = el("div", { class: "hist-wrap" }), hl = el("div", { class: "hist-wrap" });
+    w.append(el("div", { class: "worst-row" }, el("div", { class: "col" }, ht), el("div", { class: "col" }, hl)));
+    Hist.render(ht, "taxon", hw, hh); Hist.render(hl, "locus", hw, hh);
   }
   // ---- ordering
   function setOrder(axis, mode) {
@@ -874,16 +880,16 @@ function cellHover(g, li, compact) {
   let label = D.cellLabel(code, i); if ((sd & 3) === 3 && D.format < 5) label += v4 ? " · also copied from another taxon" : " · also masked as too similar"; if (sd & 4) label += " · fewer comparators than requested"; if (sd & 16) label += " (flagged; divergent masking was off)"; if (sd & 32) label += v4 ? " · identified as a copy (similar masking was off)" : " · a similar-side fail (similar masking was off)";
   row("state", reason ? `${D.cellLabel(code, i)}: ${reason}` : label);
   const mp_ = maskP(D, g, li);
-  if (mp_) row("mask significance", `log10 p = ${fmt2(mp_.p)}${starsOf(D, mp_.p) ? " " + starsOf(D, mp_.p) : ""} (the ${mp_.test} test)`);
+  if (mp_) row("mask significance", `p = ${lmP(mp_.p)}${starsOf(D, mp_.p) ? " " + starsOf(D, mp_.p) : ""} (the ${mp_.test} test)`);
   if (nc > 0) {
     row("residues", fmtInt(D.cols.focal_sites[i]));
     // ---- the closest-match test (one direction: too similar; two arms by where the expectation comes from)
     if (D.format >= 5 && ns) row("too-similar pairs", `${ns}${ns >= 255 ? "+" : ""}${ns > 1 ? "; the strongest below" : ""}`);
     else if (v4 && ns) row("too-similar partners", `${ns}${ns >= 255 ? "+" : ""} significant, among every taxon at the locus${ns > 1 ? (sd & (2 | 32) ? "; its source below" : "; the strongest below") : ""}`);
     const sr = similarRole(D, g, li);
-    if (sr && D.format >= 5) { const sp = D.num("sim_log10p", g, li); row(sr.fired ? (sr.role === "copy" ? "copied from" : sr.role === "uncertain" ? "too similar to" : sr.role === "none" ? (sr.tag === "far broad comparator" ? "too divergent from" : "too close to") : "copied by") : "closest match", sr.text); if (sp !== null && !sr.rc) row("closest-match test", `log10 p = ${fmt2(sp)}${barNote(D)}`);
+    if (sr && D.format >= 5) { const sp = D.num("sim_log10p", g, li); row(sr.fired ? (sr.role === "copy" ? "copied from" : sr.role === "uncertain" ? "too similar to" : sr.role === "none" ? (sr.tag === "far broad comparator" ? "too divergent from" : "too close to") : "copied by") : "closest match", sr.text); if (sp !== null && !sr.rc) row("closest-match test", `p = ${lmP(sp)}${barNote(D)}`);
       if (sr.fired && !sr.rc) { const xp = D.num("excess_m", sr.pt, li), x0 = D.num("excess_m", g, li), thr = D.man.options.donor_threshold; if (xp !== null && x0 !== null) row("which is the copy", `${sr.role === "uncertain" ? "uncertain" : "the member that fits its own relatives worse"}, by the close-relative excess: ${fmt2(Math.abs(x0))} m here against ${fmt2(Math.abs(xp))} m for ${D.taxa.names[sr.pt]}${thr ? ` (the larger must be more than ${thr} times the smaller to call it)` : ""}`); } }
-    else if (sr) { const lam = D.num("lam", g, li), lp = D.num("lam_p", g, li), sp = D.num("sim_log10p", g, li); row("too similar to", sr.text); if (sp !== null) row("closest-match test", `log10 p = ${fmt2(sp)}${barNote(D)}`); if (lam !== null) row("direction LRT", v4 && lp !== null ? `|2 ln LR| = ${fmt1(lam)}, ${dirTxt(D, g, li, lp)} (approximate χ², 1 df${bar10(D) !== null ? `; bar ${bar10(D)}` : ""})` : `|2 ln LR| = ${fmt1(lam)}, p = ${lp < 1e-4 ? lp.toExponential(1) : fmt3(lp)} (χ², 1 df)`); const rf = D.num("row_factor", g, li); if (rf !== null && rf < 1) row("row factor", `${fmt3(rf)} (the pair was tested against ${fmt3(rf)} × its expectation: ${v4 ? "one of the two" : "the sequence"} sits below expectation against its other comparators too)`); const gf = D.num("depth_factor", g, li); if (gf !== null && gf < 1) row("depth factor", `${fmt3(gf)} (pairs this far apart sit at ${fmt3(gf)} × expectation at this locus; the pair was tested against row factor × depth factor × its expectation)`); }
+    else if (sr) { const lam = D.num("lam", g, li), lp = D.num("lam_p", g, li), sp = D.num("sim_log10p", g, li); row("too similar to", sr.text); if (sp !== null) row("closest-match test", `p = ${lmP(sp)}${barNote(D)}`); if (lam !== null) row("direction LRT", v4 && lp !== null ? `|2 ln LR| = ${fmt1(lam)}, ${dirTxt(D, g, li, lp)} (approximate χ², 1 df${bar10(D) !== null ? `; bar ${bar10(D)}` : ""})` : `|2 ln LR| = ${fmt1(lam)}, p = ${lp < 1e-4 ? lp.toExponential(1) : fmt3(lp)} (χ², 1 df)`); const rf = D.num("row_factor", g, li); if (rf !== null && rf < 1) row("row factor", `${fmt3(rf)} (the pair was tested against ${fmt3(rf)} × its expectation: ${v4 ? "one of the two" : "the sequence"} sits below expectation against its other comparators too)`); const gf = D.num("depth_factor", g, li); if (gf !== null && gf < 1) row("depth factor", `${fmt3(gf)} (pairs this far apart sit at ${fmt3(gf)} × expectation at this locus; the pair was tested against row factor × depth factor × its expectation)`); }
     const bm = D.num("best_match", g, li);
     if (bm !== null && bm >= 0 && !compact) { const close = Array.from(D.closest.subarray(g * 5, g * 5 + 5)).includes(bm); row("best match", `${D.taxa.names[bm]} (${fmt1(D.num("best_match_identity", g, li))}% identity over shared sites${close ? ", one of the 5 closest relatives" : ""})`); }
     // ---- the broad-sample test (one direction at most: the stronger side is the call)
@@ -892,11 +898,11 @@ function cellHover(g, li, compact) {
       const rcr = D.rcAt && D.rcAt(i); const rcman = bsMan(D);
       let vp = rcr && !Number.isNaN(rcr.var_p) ? rcr.var_p : null;
       if (vp === null && D.cols.bs_log10p && !Number.isNaN(D.cols.bs_log10p[i])) vp = D.cols.bs_log10p[i];
-      if (!compact || s2v & (2 | 4 | 8 | 64)) row("broad sample", `${rcman ? rcman.per_cell : ""} comparators drawn from the taxon's pool${vp !== null ? `; stage 1 log10 p = ${fmt2(vp)}` : ""}${s2v & 2 ? ` — past the run's bar${barNote(D)}` : ", nothing unusual"}`);
+      if (!compact || s2v & (2 | 4 | 8 | 64)) row("broad sample", `${rcman ? rcman.per_cell : ""} comparators drawn from the taxon's pool${vp !== null ? `; stage 1 p = ${lmP(vp)}` : ""}${s2v & 2 ? ` — past the run's bar${barNote(D)}` : ", nothing unusual"}`);
       if (D.cols.bs_rho && !Number.isNaN(D.cols.bs_rho[i]) && !compact) row("own rate ρ", `${fmt3(D.cols.bs_rho[i])} × the locus rate (the median over its comparators)`);
-      if (s2v & 4 && rcr) row("broad: too close", `the far shortfall, log10 p = ${fmt2(rcr.lo)} at α${s2v & 32 ? " — another mask already covers the cell" : ""}`);
-      if (s2v & 8 && rcr) row("broad: too divergent", `half the far sample leans high, log10 p = ${fmt2(rcr.hi)} at α${s2v & 32 ? " — another mask already covers the cell" : ""}`);
-      if (s2v & 64 && rcr) row("broad: the donor side", `the divergent mask stands; without ρ the far shortfall names the donor side, log10 p = ${fmt2(rcr.lo)}${barNote(D)}`);
+      if (s2v & 4 && rcr) row("broad: too close", `the far shortfall, p = ${lmP(rcr.lo)} at α${s2v & 32 ? " — another mask already covers the cell" : ""}`);
+      if (s2v & 8 && rcr) row("broad: too divergent", `half the far sample leans high, p = ${lmP(rcr.hi)} at α${s2v & 32 ? " — another mask already covers the cell" : ""}`);
+      if (s2v & 64 && rcr) row("broad: the donor side", `the divergent mask stands; without ρ the far shortfall names the donor side, p = ${lmP(rcr.lo)}${barNote(D)}`);
       if ((s2v & 2) && !(s2v & (4 | 8 | 64)) && rcr && rcr.pt >= 0 && rcr.call) row("broad: the lean", `${rcr.call > 0 ? "toward too close" : "toward too divergent"}, ${D.taxa.names[rcr.pt]} the most extreme — not significant at α, nothing masked`);
     }
     // ---- the close-relative test (one direction: too divergent)
@@ -907,7 +913,7 @@ function cellHover(g, li, compact) {
     if (cl !== null && cl >= 0 && !compact) row("closest comparator", `${D.taxa.names[cl]}: ${fmt2(100 - D.num("closest_identity", g, li))}% observed vs ${fmt2(100 - D.num("closest_expected", g, li))}% expected over ${fmtInt(D.num("closest_overlap", g, li))} shared sites`);
     if (xm !== null) row("excess beyond expectation", `${fmt2(xm)} m`);
     const dp = D.num("div_log10p", g, li);
-    if (dp !== null && !compact) row("close-relative test", `log10 p = ${fmt2(dp)}, the comparison that decides the majority${barNote(D)}`);
+    if (dp !== null && !compact) row("close-relative test", `p = ${lmP(dp)}, the comparison that decides the majority${barNote(D)}`);
     if (s2v & 16 && !compact) row("broad-sample role", "excluded as a comparator at this locus (too divergent, or a masked copy)");
     if (!compact) row("", el("span", { class: "more" }, "click: open the alignment"));
   }
@@ -926,12 +932,18 @@ function unitHover(kind, i) {
 
 // ------------------------------------------------------------------ residual ribbons: the cells of one unit on an asinh axis
 // draws the residuals of the cells of a locus (by="locus") or a taxon into a canvas row; returns the drawn points for hover
-function residualOf(D, g, li, mode) {                        // one residual per cell per TEST, on that test's own axis
+function minCompSim(D, g, li) {                              // the strongest in-set pair evidence: min over the comparator slots
+  if (!D.tests) return null;
+  let base; if (D.dense) base = (g * D.nloc + li) * D.K; else { const q = D.sparse.get(g * D.nloc + li); if (q === undefined) return null; base = q * D.K; }
+  let m = null; for (let k = 0; k < D.K; k++) { const v = D.tests.sim[base + k]; if (Number.isFinite(v) && (m === null || v < m)) m = v; }
+  return m;
+}
+function residualOf(D, g, li, mode) {                        // one residual per cell per TEST ARM, on its own axis
   const i = g * D.nloc + li;
-  if (mode === "closest_match") {                            // its evidence is a p: the strongest of the pair and outside arms
-    const a = D.num("sim_log10p", g, li), b = D.num("locus_closest_log10p", g, li);
-    const v = a === null ? b : b === null ? a : Math.min(a, b);
-    return v === null || !Number.isFinite(v) ? null : -v;
+  if (mode === "cm_relative") { const v = minCompSim(D, g, li); return v === null ? null : -v; }
+  if (mode === "cm_outside") {
+    if (!(D.cols.side[i] & 64)) return null;                 // the outside test only ran where the locus's closest is not a relative
+    const v = D.num("locus_closest_log10p", g, li); return v === null ? null : -v;
   }
   if (mode === "broad_sample") {                             // observed / expected variance, log2
     const v = D.cols.bs_stat ? D.cols.bs_stat[i] : NaN;
@@ -939,8 +951,28 @@ function residualOf(D, g, li, mode) {                        // one residual per
   }
   return D.num("excess_m", g, li);                           // close_relative: the excess beyond expectation, in m
 }
+function maskKind(D, g, li) {                                // which test masked this cell (the ribbons' own-test colours)
+  const i = g * D.nloc + li; const sd = D.cols.side[i]; if (!(sd & 3)) return null;
+  const s2v = D.s2 ? D.s2(i) : 0;
+  const bsC = (s2v & 4) !== 0 && (s2v & 32) === 0, bsD = (s2v & 8) !== 0 && (s2v & 32) === 0;
+  const nc = D.cols.n_comp[i], nf = D.cols.n_fail[i];
+  const cr = (sd & 1) !== 0 && (nc === D.K ? nf >= D.M : nf >= (nc >> 1) + 1);
+  const cm = (sd & 2) !== 0 && D.cols.n_similar[i] > 0;
+  let arm = null;
+  if (cm) { const rel = minCompSim(D, g, li); const out = (sd & 64) ? D.num("locus_closest_log10p", g, li) : null;
+    arm = out !== null && (rel === null || out < rel) ? "out" : "rel"; }
+  return { cr, cm, arm, bsC, bsD };
+}
+function ribbonColour(D, g, li, mode) {                      // the mark's colour on this ribbon, null for a grey point
+  const mk = maskKind(D, g, li); if (!mk) return null;
+  if (mode === "close_relative") return mk.cr ? D.col.red : null;
+  if (mode === "cm_relative") return mk.cm && mk.arm === "rel" ? D.col.blue : null;
+  if (mode === "cm_outside") return mk.cm && mk.arm === "out" ? D.col.blue : null;
+  if (mode === "broad_sample") return mk.bsD ? D.col.red : mk.bsC ? D.col.blue : null;
+  return null;
+}
 function residualScale(D, mode, W, padL, padR) {
-  if (mode === "closest_match") return d3.scaleLinear().domain([0, Math.max(6, -(D.man.test && D.man.test.log10_bar || -6) * 2.5)]).range([padL, W - padR]);
+  if (mode === "cm_relative" || mode === "cm_outside") return d3.scaleLinear().domain([0, Math.max(6, -(D.man.test && D.man.test.log10_bar || -6) * 2.5)]).range([padL, W - padR]);
   if (mode === "broad_sample") { const d = D._bsDom || (D._bsDom = (() => { let m = 2; const v = D.cols.bs_stat; if (v) for (let q = 0; q < v.length; q++) { const x = v[q]; if (Number.isFinite(x) && x > 0) { const a = Math.abs(Math.log2(x)); if (a > m) m = a; } } return Math.min(m, 10); })());
     return d3.scaleLinear().domain([-d, d]).range([padL, W - padR]); }
   return d3.scaleSymlog().constant(1).domain(D.exDomain).range([padL, W - padR]);
@@ -954,7 +986,7 @@ function drawResidualRow(cv, kind, u, W, H, opts) {
     const g = kind === "locus" ? k : u, li = kind === "locus" ? u : k; const i = g * D.nloc + li; if (D.cols.n_comp[i] === 0) continue;
     const x = residualOf(D, g, li, mode); if (x === null || !Number.isFinite(x)) continue;
     if (mode === "close_relative") { const mi = D.num("med_identity", g, li); if (mi !== null && 100 - mi <= 0) { identical++; continue; } }
-    pts.push({ g, li, x, code: D.state[i], px: xs(x), py: 0 });
+    pts.push({ g, li, x, code: D.state[i], col: ribbonColour(D, g, li, mode), px: xs(x), py: 0 });
   }
   // the saturation band for a locus: where a saturated sequence would land, from the plateau, the rate and the expectation
   if (mode === "close_relative" && kind === "locus" && D.loci.rate[u]) {
@@ -964,14 +996,14 @@ function drawResidualRow(cv, kind, u, W, H, opts) {
   }
   c.strokeStyle = cssVar("--model"); c.lineWidth = 1; c.beginPath(); c.moveTo(xs(0) + 0.5, 1); c.lineTo(xs(0) + 0.5, H - 1); c.stroke();
   const jit = d3.randomUniform.source(d3.randomLcg(0.31 + (u % 97) / 100))(-(H / 2 - 4), H / 2 - 4); const cy = H / 2;
-  pts.sort((a, b) => D.sev[a.g * D.nloc + a.li] - D.sev[b.g * D.nloc + b.li]);
+  pts.sort((a, b) => (a.col ? 1 : 0) - (b.col ? 1 : 0));                     // this test's masks paint last, on top
   const many = pts.length > 400, ring = cssVar("--surface");
   const mark = opts.mark || null;
   for (const p of pts) {
-    p.py = cy + jit(); const col = D.pointColorOf(p.code) || cssVar("--grey-1");
+    p.py = cy + jit(); const col = p.col || cssVar("--pass");
     const dim = mark && !(p.g === mark[0] && p.li === mark[1]);
-    c.globalAlpha = dim ? 0.25 : p.code >= ST.RED ? 1 : many ? 0.35 : 0.7; c.fillStyle = col; c.beginPath(); c.arc(p.px, p.py, many ? 1.8 : 2.4, 0, 2 * Math.PI); c.fill(); c.globalAlpha = 1;
-    if (!dim && p.code >= ST.RED) { c.strokeStyle = ring; c.lineWidth = 0.6; c.stroke(); }   // one size; a fine white ring on the masked points only
+    c.globalAlpha = dim ? 0.25 : p.col ? 1 : many ? 0.35 : 0.7; c.fillStyle = col; c.beginPath(); c.arc(p.px, p.py, p.col ? 2.6 : many ? 1.8 : 2.4, 0, 2 * Math.PI); c.fill(); c.globalAlpha = 1;
+    if (!dim && p.col) { c.strokeStyle = ring; c.lineWidth = 0.6; c.stroke(); }   // a fine white ring on this test's masks only
   }
   if (mark) { const p = pts.find(q => q.g === mark[0] && q.li === mark[1]);
     if (p) { c.beginPath(); c.arc(p.px, p.py, 5, 0, 2 * Math.PI); c.strokeStyle = cssVar("--focus"); c.lineWidth = 1.6; c.stroke(); } }
@@ -981,8 +1013,8 @@ function residualAxis(W, padL, padR, mode) {
   const D = App.D; mode = mode || "close_relative"; const xs = residualScale(D, mode, W, padL, padR);
   const svg = d3.create("svg").attr("width", W).attr("height", 30).attr("class", "resid-axis");
   const S = LM_STR.ribbons;
-  if (mode === "closest_match") {
-    svg.append("g").attr("class", "axis").attr("transform", "translate(0,16)").call(d3.axisTop(xs).ticks(6));
+  if (mode === "cm_relative" || mode === "cm_outside") {
+    svg.append("g").attr("class", "axis").attr("transform", "translate(0,16)").call(d3.axisTop(xs).ticks(6).tickFormat(d => lmP(-d)));
     svg.append("text").attr("x", (xs.range()[0] + xs.range()[1]) / 2).attr("y", 29).attr("text-anchor", "middle").attr("fill", cssVar("--muted")).attr("font-size", 10.5).text(S.axis_closest);
   } else if (mode === "broad_sample") {
     svg.append("g").attr("class", "axis").attr("transform", "translate(0,16)").call(d3.axisTop(xs).ticks(7));
@@ -1013,7 +1045,7 @@ const Ribbons = (() => {
     if (sortMode === "masked") units.sort((a, b) => cnt.masked[b] - cnt.masked[a] || cnt.near[b] - cnt.near[a] || a - b); else if (sortMode === "name") units.sort((a, b) => names[a].localeCompare(names[b]));
     const sortSel = el("select", { onchange: e => { sortMode = e.target.value; build(); } }, ...[["masked", "most masked first"], ["name", "name"], ["input", "input order"]].map(([v, t]) => el("option", { value: v, selected: v === sortMode ? "" : null }, t)));
     const SR = LM_STR.ribbons;
-    const testSel = el("select", { onchange: e => { mode = e.target.value; build(); } }, ...[["close_relative", SR.test_close_relative], ["closest_match", SR.test_closest_match], ["broad_sample", SR.test_broad_sample]].map(([v, t]) => el("option", { value: v, selected: v === mode ? "" : null }, t)));
+    const testSel = el("select", { onchange: e => { mode = e.target.value; build(); } }, ...[["close_relative", SR.test_close_relative], ["cm_relative", SR.test_cm_relative], ["cm_outside", SR.test_cm_outside], ["broad_sample", SR.test_broad_sample]].map(([v, t]) => el("option", { value: v, selected: v === mode ? "" : null }, t)));
     if (ctlHost) { ctlHost.replaceChildren(el("label", null, SR.test_label + " ", testSel), el("label", null, "sort ", sortSel), el("span", { class: "k" }, `${fmtInt(units.length)} ${kind === "locus" ? "loci" : "taxa"}`)); }
     axisBox = el("div", { class: "rib-axis" }); list = el("div", { class: "rib-list" }); inner = el("div", { style: "position:relative" }); list.append(inner);
     root.replaceChildren(axisBox, list);
@@ -1361,11 +1393,14 @@ const Sequence = (() => {
     // the rows, the same shape for every cell: the focal; its closest match at this locus, the candidate of the similarity
     // test; a rule; its relatives in genome-wide rank order, the divergence test. A taxon in both roles appears twice
     const Y = T.closest !== null ? T.closest.taxon : null, ord = ["closest", "2nd closest", "3rd closest", "4th closest", "5th closest"];
+    const rcr0 = D.rcAt ? D.rcAt(i) : null; const bsRep = rcr0 && rcr0.pt >= 0 ? rcr0.pt : null;   // the sample's biggest-residual sequence
     const rows = [{ g, role: "focal", tag: "focal", tip: "the focal sequence" },
-      { g: Y, role: "closest", tag: "closest", tip: Y === null ? (D.format >= 7 ? "no taxon shares enough sites with the focal at this locus" : "this report does not record the closest match of a sequence whose closest-match test did not run (it is carried from report format 7)") : `the focal's closest match at this locus${comps.includes(Y) ? ` (also relative ${comps.indexOf(Y) + 1})` : " (not one of its relatives)"}` }];
-    if (sr && sr.rc && sr.pt !== null && sr.pt >= 0 && sr.pt !== Y) rows.push({ g: sr.pt, role: "broad", tag: "comparator", tip: sr.note });
+      { g: Y, role: "closest", tag: "closest", tip: Y === null ? (D.format >= 7 ? "no taxon shares enough sites with the focal at this locus" : "this report does not record the closest match of a sequence whose closest-match test did not run (it is carried from report format 7)") : `the focal's closest match at this locus${comps.includes(Y) ? ` (also relative ${comps.indexOf(Y) + 1})` : " (not one of its relatives)"}` },
+      { g: bsRep, role: "broad", tag: "comparator", tip: bsRep === null ? "the report carries no broad-sample representative for this cell" : (sr && sr.rc ? sr.note : "the broad comparator with the most extreme standardised residual") }];
     comps.forEach((c, r) => rows.push({ g: c, role: "comp", tag: `relative ${r + 1}`, tip: `relative ${r + 1}: the ${ord[r] || `${r + 1}th closest`} taxon genome-wide` }));
-    const divAt = rows.findIndex(r => r.role === "comp");
+    const divAt = rows.findIndex(r => r.role === "comp"), broadAt = rows.findIndex(r => r.role === "broad");
+    const ruleAt = new Set([1, broadAt, divAt]);                                  // a rule between each test's block
+    const rulesBefore = ri => { let n = 0; for (const q of ruleAt) if (q <= ri) n++; return n; };
     const seqRow = gg => { if (!S) return null; for (let k = 0; k < S.taxa.length; k++) if (S.taxa[k] === gg) return S.blk.subarray(k * S.len, (k + 1) * S.len); return null; };
     let codeRow = null; if (C) for (let k = 0; k < C.cells.length; k++) if (C.cells[k] === g) codeRow = C.blk.subarray(k * C.len, (k + 1) * C.len);
     const len = D.loci.length[li]; for (const r of rows) r.bytes = r.g === null ? null : seqRow(r.g);
@@ -1373,7 +1408,8 @@ const Sequence = (() => {
     for (const r of rows.slice(1)) { let n = 0, d = 0; if (r.bytes && focal) for (let s = 0; s < len; s++) { const a = focal[s], b = r.bytes[s]; if (isGap(a) || isGap(b)) continue; n++; if (a !== b) d++; } r.shared = n; r.diff = n ? d / n : NaN; }
     // each row's colour is its own test's: the closest row blue when significantly too similar to the focal, a relative red when
     // significantly too divergent from it (the trees colour a taxon by whichever test fired: blue, red or black)
-    for (const r of rows) r.st = r.role === "focal" ? "focal" : r.g === null ? null : r.role === "closest" ? (T.blue.has(r.g) ? "blue" : null) : r.role === "broad" ? (T.blue.has(r.g) ? "blue" : T.red.has(r.g) ? "red" : null) : (T.red.has(r.g) ? "red" : null);
+    const s2v0 = D.s2 ? D.s2(i) : 0; const bsC0 = (s2v0 & 4) && !(s2v0 & 32), bsD0 = (s2v0 & 8) && !(s2v0 & 32);
+    for (const r of rows) r.st = r.role === "focal" ? "focal" : r.g === null ? null : r.role === "closest" ? (T.blue.has(r.g) ? "blue" : null) : r.role === "broad" ? (bsC0 || s2v0 & 64 ? "blue" : bsD0 ? "red" : null) : (T.red.has(r.g) ? "red" : null);
     // per site: n, the relatives present (the closest match is never counted), and d, those that differ from the focal. A red
     // site has n >= 3 and d >= half of n, rounded up; a blue site is a red site where the closest match agrees with the focal.
     // From the rows when they are carried, else roughly from the tool's site codes
@@ -1402,7 +1438,7 @@ const Sequence = (() => {
     if ((s2v & 64) && Pn) says.push(withStars(`the broad sample also calls it too close to ${Pn}'s side`, rcr ? rcr.lo : null));
     const verdict = D.cols.n_comp[i] === 0 ? `Not tested: ${stateReason(D, g, li) || "no comparators"}` : `${masked ? "Masked" : off ? "Not masked (masking was off)" : "Not masked"}${says.length ? ": " + says.join("; ") : ""}${sd & 4 ? " (fewer comparators than requested)" : ""}`;
     // the tests in words, for the hovers: the focal's own two, or a row's against the focal
-    const lp = (what, p) => p === null || p === undefined || Number.isNaN(p) ? `${what}: not tested` : `${what}: log10 p ${fmt2(p)}${T.stars(p) ? " " + T.stars(p) : ""}`, barTxt = T.bar !== null ? ` · bar ${fmt2(T.bar)}` : "";
+    const lp = (what, p) => p === null || p === undefined || Number.isNaN(p) ? `${what}: not tested` : `${what}: p ${lmP(p)}${T.stars(p) ? " " + T.stars(p) : ""}`, barTxt = T.bar !== null ? ` · bar ${lmP(T.bar)}` : "";
     const focalNote = [divP !== null ? lp("too divergent", divP) : null, simP !== null && Pn ? lp(`too similar to ${Pn}`, simP) : null].filter(Boolean).join(" · ");
     const testNote = r => {
       if (r.role === "focal") return focalNote ? focalNote + barTxt : "";
@@ -1421,6 +1457,8 @@ const Sequence = (() => {
     head.append(el("div", { class: "seq-line" }, ...parts), ctl);
     // the body: test type · sequence · Taxon name · p<α · the alignment; the two name columns resize by their header's edge
     const body = el("div", { class: "seq-body" + (T.pcol ? " with-p" : "") }); body.style.setProperty("--wrole", colW.role + "px"); body.style.setProperty("--wname", colW.name + "px");
+    const treesPane = el("div", { class: "trees-pane", style: "display:none" });
+    const mid = el("div", { class: "seq-mid" }, body, treesPane);
     const cols = { gut: el("div", { class: "seq-col seq-gut" }), role: el("div", { class: "seq-col seq-role" }), names: el("div", { class: "seq-col seq-names" }), p: el("div", { class: "seq-col seq-p" }) };
     const cwrap = el("div", { class: "seq-canvas-wrap" }); const cv = el("canvas"); cwrap.append(cv);
     body.append(cols.gut, cols.role, cols.names, ...(T.pcol ? [cols.p] : []), cwrap);
@@ -1431,32 +1469,36 @@ const Sequence = (() => {
       return h; };
     const trk = (col, txt, extra) => cols[col].append(el("div", { class: "trk", style: `height:${RULER_H + 4}px`, ...(extra || {}) }, txt));
     trk("gut", "test type"); cols.role.append(el("div", { class: "trk", style: `height:${RULER_H + 4}px` }, "sequence", handle("role"))); cols.names.append(el("div", { class: "trk", style: `height:${RULER_H + 4}px` }, "Taxon name", handle("name")));
-    if (T.pcol) trk("p", "p<α", { title: `significant: * below alpha / N (log10 ${fmt2(T.bar)}), ** below alpha / 5N, *** below alpha / 50N` });
-    let treesCard = null;
-    const toggleTrees = async () => {
-      if (treesCard) { treesCard.remove(); treesCard = null; treesBtn.classList.remove("primary"); showTrees = false; return; }
+    if (T.pcol) trk("p", "p<α", { title: `significant: * below alpha / N (${lmP(T.bar)}), ** below alpha / 5N, *** below alpha / 50N` });
+    const toggleTrees = async () => {                                  // the trees dock beside the alignment, never over it
+      if (treesPane.style.display !== "none") { treesPane.style.display = "none"; treesPane.replaceChildren(); treesBtn.classList.remove("primary"); showTrees = false; redrawNow(); return; }
       showTrees = true; treesBtn.classList.add("primary");
-      treesCard = el("div", { class: "trees-card" }, el("div", { class: "loading", style: "padding: 10px" }, "loading the trees…")); cwrap.append(treesCard);
-      const entry = await D.trees(li); if (!treesCard) return; treesCard.replaceChildren();
+      treesPane.style.display = ""; treesPane.replaceChildren(el("div", { class: "loading", style: "padding: 10px" }, "loading the trees…")); redrawNow();
+      const entry = await D.trees(li); if (treesPane.style.display === "none") return; treesPane.replaceChildren();
       let k = -1; if (entry) for (let q = 0; q < entry.cells.length; q++) if (entry.cells[q] === g) { k = q; break; }
-      if (k < 0) { treesCard.append(el("div", { class: "note", style: "padding: 8px" }, "trees were not carried for this cell")); return; }
-      treesCard.append(el("button", { class: "close", title: "close", onclick: toggleTrees }, "✕"), drawCophylo(treesCard, D, entry, k, { g, li }, T));
+      if (k < 0) { treesPane.append(el("div", { class: "note", style: "padding: 8px" }, "trees were not carried for this cell")); return; }
+      treesPane.append(el("button", { class: "close", title: "close", onclick: toggleTrees }, "✕"), drawCophylo(treesPane, D, entry, k, { g, li }, T));
     };
     if (showTrees) setTimeout(toggleTrees, 0);
     // one row per sequence in every column; the focal's p cell is its outcome as a colour (gold: both tests) with the stars of
     // the decisive divergence p, the closest-match p, or the more significant of the two; a row's stars are its own test's
     rows.forEach((r, ri) => {
-      if (ri === divAt) for (const c of Object.values(cols)) c.append(el("div", { class: "rule", style: `height:${RULE_H}px` }));
-      const note = testNote(r), nm = r.g === null ? (D.format >= 7 ? "none" : "not recorded") : D.taxa.names[r.g];
+      if (ruleAt.has(ri)) for (const c of Object.values(cols)) c.append(el("div", { class: "rule", style: `height:${RULE_H}px` }));
+      const note = testNote(r), nm = r.g === null ? (r.role === "broad" ? LM_STR.seq.broad_none : D.format >= 7 ? "none" : "not recorded") : D.taxa.names[r.g];
       const tip = `${r.g === null ? "" : nm + ": "}${r.tip}${r.role !== "focal" && r.shared ? `; differs from the focal at ${fmt1(100 * r.diff)}% of ${fmtInt(r.shared)} shared sites` : ""}${note ? "\n" + note : ""}`;
-      cols.gut.append(el("div", { class: "seqnm gut", style: `height:${ROW_H}px`, title: ri === 0 ? "the similarity test: is the focal closer to its closest match than its relatives are?" : ri === divAt ? "the divergence test: is the focal further from its relatives than expected?" : r.role === "broad" ? "the broad-sample test: a broad sample of taxa against the focal; this row is its decisive comparator" : null }, ri === 0 ? "similarity" : ri === divAt ? "divergence" : r.role === "broad" ? "broad" : ""));
+      cols.gut.append(el("div", { class: "seqnm gut", style: `height:${ROW_H}px` },
+        r.role === "closest" ? LM_STR.seq.gut_closest : r.role === "broad" ? LM_STR.seq.gut_broad : ri === divAt ? LM_STR.seq.gut_relatives : ""));
       cols.role.append(el("div", { class: "seqnm role", style: `height:${ROW_H}px`, title: tip }, r.tag));
       cols.names.append(el("div", { class: "seqnm", style: `height:${ROW_H}px`, title: tip }, el("span", { class: "nm" + (r.st ? " st-" + r.st : "") + (r.g === null ? " none" : "") }, nm)));
       if (!T.pcol) return;
       let bg = D.col.passCell, txt = "–", ink = cssVar("--muted");
       if (r.role === "focal") { const mp = maskP(D, g, li); const fp = mp ? mp.p : dv && sm ? Math.min(divP ?? Infinity, simP ?? Infinity) : dv ? divP : sm ? simP : null; bg = dv && sm ? D.col.both : dv ? D.col.red : sm ? D.col.blue : D.col.passCell; txt = dv || sm ? T.stars(fp) : "–"; if (dv || sm) ink = "#ffffff"; }
       else if (r.role === "closest") { if (r.g !== null && T.blue.has(r.g)) { bg = D.col.blue; txt = T.stars(T.blue.get(r.g).p); ink = "#ffffff"; } }
-      else if (r.role === "broad") { if (r.g !== null && T.blue.has(r.g)) { bg = D.col.blue; txt = T.stars(T.blue.get(r.g).p); ink = "#ffffff"; } else if (r.g !== null && T.red.has(r.g)) { bg = D.col.red; txt = T.stars(T.red.get(r.g)); ink = "#ffffff"; } }
+      else if (r.role === "broad") { let vp = rcr0 && !Number.isNaN(rcr0.var_p) ? rcr0.var_p : null;
+        if (vp === null && D.cols.bs_log10p && !Number.isNaN(D.cols.bs_log10p[i])) vp = D.cols.bs_log10p[i];
+        const bsC = (s2v & 4) && !(s2v & 32), bsD = (s2v & 8) && !(s2v & 32);
+        if (bsC || bsD) { bg = bsC ? D.col.blue : D.col.red; ink = "#ffffff"; }
+        txt = vp !== null && T.stars(vp) ? T.stars(vp) : vp !== null ? "–" : "–"; if ((bsC || bsD) && !T.stars(vp)) txt = "*"; }
       else if (r.st === "red") { bg = D.col.red; txt = T.stars(T.red.get(r.g)); ink = "#ffffff"; }
       cols.p.append(el("div", { class: "pcell", style: `height:${ROW_H}px`, title: note || "" }, el("span", { style: `background:${bg}; color:${ink}` }, txt)));
     });
@@ -1464,11 +1506,11 @@ const Sequence = (() => {
     const key = el("span", { class: "seq-key", title: "a red site: of the focal's relatives present there (at least 3; its closest match is never counted), half or more differ from the focal; hover a site for the count" },
       "focal ", swc(D.col.redTint), " half or more of its relatives differ ", swc(D.col.blueTint), " and its closest match agrees · closest ", swc(D.col.blueTint), " agrees with the focal at such a site · relatives ", swc(D.col.redTint), " differ from the focal");
     const foot = el("div", { class: "seq-foot" }, key, el("span", null, `${fmtInt(len)} sites · pinch or ctrl+wheel: zoom · drag: move · letters from 7 px per site`), el("span", { class: "k", style: "margin-left:auto" }, S ? "" : "sequences were not carried for this locus"));
-    P.body.replaceChildren(head, body, foot);
+    P.body.replaceChildren(head, mid, foot);
     if (!S && !codeRow) { cwrap.append(el("div", { class: "note", style: "padding: 10px" }, "neither sequences nor site codes were carried for this cell in this report")); return; }
     const dpr = devicePixelRatio || 1;
     const fitPps = () => Math.max(0.05, cwrap.getBoundingClientRect().width / len);
-    const topOf = ri => RULER_H + 4 + ri * ROW_H + (ri >= divAt ? RULE_H : 0);
+    const topOf = ri => RULER_H + 4 + ri * ROW_H + RULE_H * rulesBefore(ri);
     const draw = () => {
       const W = Math.max(100, cwrap.getBoundingClientRect().width), H = topOf(rows.length) + 2;
       if (pps === null) { const f = fitPps(); pps = f >= 7 ? Math.min(f, 12) : f; }
@@ -1485,7 +1527,7 @@ const Sequence = (() => {
       // sequence rows
       const cellCol = D.col.cell, faint = cssVar("--faint"), redT = D.col.redTint, blueT = D.col.blueTint;
       c.font = `${Math.min(13, pps)}px ${cssVar("--mono")}`; c.textBaseline = "middle"; c.textAlign = "center";
-      c.strokeStyle = cssVar("--spine"); c.beginPath(); c.moveTo(0, topOf(divAt) - RULE_H / 2 - 0.5); c.lineTo(W, topOf(divAt) - RULE_H / 2 - 0.5); c.stroke();
+      c.strokeStyle = cssVar("--spine"); for (const ri of ruleAt) { c.beginPath(); c.moveTo(0, topOf(ri) - RULE_H / 2 - 0.5); c.lineTo(W, topOf(ri) - RULE_H / 2 - 0.5); c.stroke(); }
       rows.forEach((r, ri) => {
         const y = topOf(ri); const bytes = r.bytes; const isFocal = ri === 0, isCand = ri === 1;
         if (!bytes) { c.fillStyle = faint; c.font = `11px ${cssVar("--sans")}`; c.textAlign = "left"; c.fillText(r.g === null ? (D.format >= 7 ? "no closest match at this locus" : "closest match not recorded in this report") : "row not carried in this report", 4, y + ROW_H / 2); c.textAlign = "center"; c.font = `${Math.min(13, pps)}px ${cssVar("--mono")}`; return; }
@@ -1581,36 +1623,6 @@ const Hist = (() => {
   return { render };
 })();
 
-// ------------------------------------------------------------------ the significance histogram (overview > summary):
-// every mask's one bar-held log10 p, the run's bar dashed. One hue: it is one measure, not identities
-const SigHist = (() => {
-  function render(root, width, height) {
-    root.replaceChildren(); const D = App.D, S = LM_STR.overview;
-    const ps = maskIndex(D).map(r => r.p).filter(p => Number.isFinite(p)); if (!ps.length) return;
-    const bar = D.man.test && D.man.test.log10_bar != null ? D.man.test.log10_bar : null;
-    const W = Math.max(300, width), H = Math.max(170, height), m = { l: 44, r: 12, t: 22, b: 40 };
-    const lo = Math.min(d3.min(ps), bar ?? -1) - 1;
-    const xs = d3.scaleLinear().domain([lo, 0]).range([m.l, W - m.r]);
-    const B = d3.bin().domain(xs.domain()).thresholds(Math.min(40, Math.max(12, Math.round(W / 28))))(ps);
-    const ymax = d3.max(B, b => b.length) || 1; const ys = d3.scaleLinear().domain([0, ymax * 1.15]).range([H - m.b, m.t]);
-    const box = el("div", { class: "plot" }, el("h3", null, S.hist_sig, el("span", { class: "sub" }, fmtInt(ps.length))));
-    const svg = d3.create("svg").attr("width", W).attr("height", H);
-    svg.append("g").attr("class", "axis").attr("transform", `translate(${m.l},0)`).call(d3.axisLeft(ys).ticks(5).tickFormat(d3.format(",")));
-    svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(xs).ticks(6));
-    svg.append("text").attr("x", (m.l + W - m.r) / 2).attr("y", H - 4).attr("text-anchor", "middle").text(S.hist_sig_x);
-    for (const b of B) { if (!b.length) continue;
-      svg.append("rect").attr("x", xs(b.x0) + 1).attr("y", ys(b.length)).attr("width", Math.max(1, xs(b.x1) - xs(b.x0) - 2)).attr("height", ys(0) - ys(b.length))
-        .attr("fill", cssVar("--accent")).attr("rx", 1.5)
-        .on("mousemove", ev => showHover(el("div", null, el("b", null, `${fmtInt(b.length)}`), ` · log10 p ${fmt1(b.x0)} to ${fmt1(b.x1)}`), ev.clientX, ev.clientY))
-        .on("mouseleave", hideHover); }
-    if (bar !== null) { svg.append("line").attr("x1", xs(bar)).attr("x2", xs(bar)).attr("y1", m.t).attr("y2", H - m.b).attr("stroke", cssVar("--muted")).attr("stroke-dasharray", "4,3");
-      const atEdge = xs(bar) > W - m.r - 70;
-      svg.append("text").attr("x", xs(bar) + (atEdge ? -4 : 4)).attr("y", m.t + 10).attr("text-anchor", atEdge ? "end" : "start").attr("fill", cssVar("--muted")).style("font-size", "10px").text(S.bar_note); }
-    box.append(svg.node()); root.append(box);
-  }
-  return { render };
-})();
-
 // ------------------------------------------------------------------ the cards: one printable page per dataset,
 // locus, taxon or sequence. One design language: identity strip, the verdict band, the three per-test ribbons on
 // dataset-wide axes (the spine every card shares, so pages compare), the problems table, one true-axed shape plot,
@@ -1629,31 +1641,41 @@ const Card = (() => {
     let best = 0; for (const q of masks) if (q.code > best) best = q.code;
     return best ? sw(D.colorOf(D.famOf(best) === ST.BOTH ? ST.BOTH : best)) : sw(null);
   }
-  function verdictBand(D, masks, n, m, stateLine) {
-    const w = worstOf(masks);
+  function verdictBand(D, masks, n, m, stateLine, noWorst) {
+    const w = noWorst ? null : worstOf(masks);
     const line = stateLine !== null && stateLine !== undefined ? stateLine
       : masks.length === 0 ? S().verdict_clean : lmFmt(S().verdict_unit, { n: fmtInt(masks.length), m: fmtInt(m), pct: pct(masks.length, m) });
     return el("div", { class: "cd-verdict" + (masks.length ? "" : " clean") }, famChip(D, masks),
       el("span", { class: "cd-line" }, line),
-      w !== null ? el("span", { class: "cd-worst" }, lmFmt(S().worst, { p: fmt1(w) }), el("i", { class: "stars" }, " " + starsOf(D, w))) : null);
+      w !== null ? el("span", { class: "cd-worst" }, lmFmt(S().worst, { p: lmP(w) }), el("i", { class: "stars" }, " " + starsOf(D, w))) : null);
+  }
+  function spineCounts(D) {                                   // per test arm: how many masks it made (the ribbons' own colours)
+    if (D._spineCounts) return D._spineCounts;
+    const c = { close_relative: 0, cm_relative: 0, cm_outside: 0, broad_sample: 0 };
+    for (const q of maskIndex(D)) { const mk = maskKind(D, q.g, q.li); if (!mk) continue;
+      if (mk.cr) c.close_relative++;
+      if (mk.cm) c[mk.arm === "out" ? "cm_outside" : "cm_relative"]++;
+      if (mk.bsC || mk.bsD) c.broad_sample++; }
+    return (D._spineCounts = c);
   }
   function spine(D, kind, u, cell) {
-    const box = el("div", { class: "cd-spine" }); const W = 640, RH = 26;
-    for (const mode of ["close_relative", "closest_match", "broad_sample"]) {
-      if (mode === "broad_sample" && !D.cols.bs_stat && !D.rcRows) continue;
-      const row = el("div", { class: "cd-rib" }, el("span", { class: "cd-ribname" }, LM_STR.ribbons["test_" + mode]));
+    const box = el("div", { class: "cd-spine" }); const W = 620, RH = 26, PAD = 20;
+    const counts = spineCounts(D);
+    for (const mode of ["close_relative", "cm_relative", "cm_outside", "broad_sample"]) {
+      if (mode === "broad_sample" && !D.cols.bs_stat) continue;       // old bundles have no variance statistic to place
+      const row = el("div", { class: "cd-rib" },
+        el("span", { class: "cd-ribname" }, LM_STR.ribbons["test_" + mode], el("i", { class: "cd-ribn" }, fmtInt(counts[mode]))));
       const cv = el("canvas"); row.append(cv); box.append(row);
       if (kind === "dataset") drawResidualAll(cv, W, RH, mode);
-      else { const drawn = drawResidualRow(cv, kind === "sequence" ? "locus" : kind, kind === "sequence" ? cell[1] : u, W, RH, { padL: 8, padR: 8, mode, mark: kind === "sequence" ? cell : null }); }
-      box.append(el("div", { class: "cd-axis" }, residualAxis(W, 8, 8, mode)));
+      else drawResidualRow(cv, kind === "sequence" ? "locus" : kind, kind === "sequence" ? cell[1] : u, W, RH, { padL: PAD, padR: PAD, mode, mark: kind === "sequence" ? cell : null });
+      box.append(el("div", { class: "cd-axis" }, residualAxis(W, PAD, PAD, mode)));
     }
-    box.append(el("div", { class: "cd-note" }, S().spine_note));
     return box;
   }
-  function drawResidualAll(cv, W, H, mode) {                   // the dataset card's strip: every cell once
+  function drawResidualAll(cv, W, H, mode) {                   // the dataset card's strip: every cell once, the ribbon's OWN masks coloured
     const D = App.D; const dpr = devicePixelRatio || 1; cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.width = W + "px"; cv.style.height = H + "px";
     const c = cv.getContext("2d"); c.scale(dpr, dpr);
-    const xs = residualScale(D, mode, W, 8, 8); const cy = H / 2; const jit = d3.randomUniform.source(d3.randomLcg(0.41))(-(H / 2 - 4), H / 2 - 4);
+    const xs = residualScale(D, mode, W, 20, 20); const cy = H / 2; const jit = d3.randomUniform.source(d3.randomLcg(0.41))(-(H / 2 - 4), H / 2 - 4);
     c.strokeStyle = cssVar("--model"); c.beginPath(); c.moveTo(xs(0) + 0.5, 1); c.lineTo(xs(0) + 0.5, H - 1); c.stroke();
     const N = D.n * D.nloc; const step = Math.max(1, Math.floor(N / 30000));
     c.fillStyle = cssVar("--pass"); c.globalAlpha = 0.25;
@@ -1662,8 +1684,9 @@ const Card = (() => {
       c.beginPath(); c.arc(xs(v), cy + jit(), 1.5, 0, 2 * Math.PI); c.fill(); }
     c.globalAlpha = 1;
     for (const q of maskIndex(D)) { const v = residualOf(D, q.g, q.li, mode); if (v === null) continue;
-      const col = D.colorOf(q.code); c.fillStyle = col === "hatch" || !col ? cssVar("--pass") : col;
-      c.beginPath(); c.arc(xs(v), cy + jit(), 2.4, 0, 2 * Math.PI); c.fill(); c.strokeStyle = cssVar("--surface"); c.lineWidth = 0.6; c.stroke(); }
+      const col = ribbonColour(D, q.g, q.li, mode); if (!col) continue;        // not this test's mask: it stays in the grey cloud
+      c.fillStyle = col;
+      c.beginPath(); c.arc(xs(v), cy + jit(), 2.6, 0, 2 * Math.PI); c.fill(); c.strokeStyle = cssVar("--surface"); c.lineWidth = 0.6; c.stroke(); }
   }
   function problemsTable(D, masks, kind) {
     const rows = masks.slice().sort((a, b) => (Number.isFinite(a.p) ? a.p : 1) - (Number.isFinite(b.p) ? b.p : 1));
@@ -1675,7 +1698,7 @@ const Card = (() => {
       const mi = D.num("med_identity", q.g, q.li), me = D.num("med_expected", q.g, q.li); const pt = D.num("partner", q.g, q.li);
       const names = kind === "locus" ? [D.taxa.names[q.g]] : kind === "taxon" ? [D.loci.names[q.li]] : [D.taxa.names[q.g], D.loci.names[q.li]];
       t.append(el("tr", null, ...names.map(nm => el("td", null, nm)),
-        el("td", null, sw(D.colorOf(q.code)), q.test), el("td", { class: "num" }, Number.isFinite(q.p) ? fmt1(q.p) + " " + starsOf(D, q.p) : ""),
+        el("td", null, sw(D.colorOf(q.code)), q.test), el("td", { class: "num" }, Number.isFinite(q.p) ? lmP(q.p) + " " + starsOf(D, q.p) : ""),
         el("td", { class: "num" }, mi === null ? "" : fmt2(100 - mi)), el("td", { class: "num" }, me === null ? "" : fmt2(100 - me)),
         el("td", null, pt !== null && pt >= 0 ? D.taxa.names[pt] : "")));
     }
@@ -1710,12 +1733,7 @@ const Card = (() => {
     let title, masks, cells, m, spineEl, shape, extra = null, seqState = null;
     if (kind === "dataset") {
       title = D.man.dataset; masks = masksAll; m = D.man.counts.cells;
-      spineEl = spine(D, "dataset");
-      shape = el("div", { class: "cd-shapebox" });
-      extra = el("div", { class: "cd-counts" }, lmFmt(S().counts_line, {
-        a: fmtInt(masksAll.filter(q => q.test === "close-relative").length),
-        b: fmtInt(masksAll.filter(q => q.test === "closest-match").length),
-        c: fmtInt(masksAll.filter(q => q.test === "broad-sample").length) }));
+      spineEl = spine(D, "dataset"); shape = null;
     } else if (kind === "locus" || kind === "taxon") {
       const u = a; title = kind === "locus" ? D.loci.names[u] : D.taxa.names[u];
       masks = masksAll.filter(q => (kind === "locus" ? q.li : q.g) === u);
@@ -1732,12 +1750,11 @@ const Card = (() => {
     }
     const page = el("div", { class: "cd-page" },
       el("div", { class: "cd-id" }, el("span", { class: "cd-type" }, S()["type_" + kind]), el("b", null, title)),
-      verdictBand(D, masks, masks.length, m, seqState),
+      verdictBand(D, masks, masks.length, m, seqState, kind === "dataset"),
       extra, spineEl,
       el("div", { class: "cd-row" }, masks.length && kind !== "sequence" ? problemsTable(D, masks, kind) : null, shape),
-      el("div", { class: "cd-foot" }, lmFmt(S().footer, { dataset: D.man.dataset, version: D.man.version, date: (D.man.date || "").slice(0, 10), bar: fmt2(D.man.test.log10_bar) })));
+      el("div", { class: "cd-foot" }, lmFmt(S().footer, { dataset: D.man.dataset, version: D.man.version, date: (D.man.date || "").slice(0, 10), bar: lmP(D.man.test.log10_bar) })));
     const bar = el("div", { class: "cd-bar" }, el("button", { onclick: () => window.print() }, S().print), el("button", { onclick: close }, S().close));
-    if (kind === "dataset") { const sh = page.querySelector(".cd-shapebox"); if (sh) SigHist.render(sh, 330, 250); }
     host.replaceChildren(bar, page); host.style.display = ""; document.body.classList.add("card-open");
   }
   return { open, close };
@@ -1781,7 +1798,7 @@ const Table = (() => {
     const RH = 22;
     const paint = () => { inner.style.height = rows.length * RH + "px"; inner.style.position = "relative"; inner.replaceChildren(); const top = body.scrollTop; const i0 = Math.max(0, Math.floor(top / RH) - 5), i1 = Math.min(rows.length, i0 + Math.ceil(body.clientHeight / RH) + 10);
       for (let i = i0; i < i1; i++) { const r = rows[i]; const st = starsOf(D, r.p); inner.append(el("div", { class: "trow", style: `position:absolute; top:${i * RH}px; left:0; right:0`, onclick: () => Sequence.open(r.g, r.li), onmouseenter: () => { App.sel.cells.clear(); App.sel.cells.add(r.g * D.nloc + r.li); } },
-        el("span", null, sw(D.colorOf(r.code)), r.taxon), el("span", null, r.locus), el("span", null, r.test), el("span", { class: "pcol" }, r.p === null ? "" : fmt1(r.p), st ? el("i", { class: "stars" }, " " + st) : null),
+        el("span", null, sw(D.colorOf(r.code)), r.taxon), el("span", null, r.locus), el("span", null, r.test), el("span", { class: "pcol" }, r.p === null ? "" : lmP(r.p), st ? el("i", { class: "stars" }, " " + st) : null),
         el("span", null, r.obs === null ? "" : fmt2(r.obs)), el("span", null, r.exp === null ? "" : fmt2(r.exp)), el("span", null, r.excess_m === null ? "" : fmt2(r.excess_m)), el("span", null, r.partner), el("span", null, r.bm))); }
       $(".n", foot).textContent = lmFmt(T().foot, { n: fmtInt(rows.length) }); };
     body.addEventListener("scroll", paint); paint();
@@ -1789,11 +1806,12 @@ const Table = (() => {
   function download() {
     const D = App.D; const keepM = maskedOnly, keepF = family; maskedOnly = false; family = "all"; build(); maskedOnly = keepM; family = keepF;
     const v4 = D.format >= 4;                                 // from format 4: the cell's role in its reported pair and the tests' log10 p, in the tests' names
-    const lines = ["taxon\tlocus\tstate\tmask_test\tmask_log10p\tn_fail\tn_similar\tobserved_divergence\texpected_divergence\texcess_m\tbest_match\tbest_match_identity\tpartner\tdirection_lrt" + (v4 ? "\tclosest_match_role\tclose_relative_log10p\tclosest_match_log10p\tbroad_sample_log10p" : "")];
+    const p6 = v => v === null || v === undefined || v === "" || Number.isNaN(v) ? "" : Math.min(Math.pow(10, v), 1).toFixed(6);
+    const lines = ["taxon\tlocus\tstate\tmask_test\tmask_p\tn_fail\tn_similar\tobserved_divergence\texpected_divergence\texcess_m\tbest_match\tbest_match_identity\tpartner\tdirection_lrt" + (v4 ? "\tclosest_match_role\tclose_relative_p\tclosest_match_p\tbroad_sample_p" : "")];
     for (const r of rows) { const pt = D.num("partner", r.g, r.li); const bm = D.num("best_match", r.g, r.li); const sr = v4 ? similarRole(D, r.g, r.li) : null;
       const i = r.g * D.nloc + r.li; const rcr = D.rcAt ? D.rcAt(i) : null;
       const bsp = rcr && !Number.isNaN(rcr.var_p) ? rcr.var_p : (D.cols.bs_log10p && !Number.isNaN(D.cols.bs_log10p[i]) ? D.cols.bs_log10p[i] : null);
-      lines.push([r.taxon, r.locus, D.labelOf(r.code), r.test, r.p ?? "", r.n_fail, r.n_similar, r.obs ?? "", r.exp ?? "", r.excess_m ?? "", bm !== null && bm >= 0 ? D.taxa.names[bm] : "", r.bm_id ?? "", pt !== null && pt >= 0 ? D.taxa.names[pt] : "", r.lam ?? "", ...(v4 ? [sr ? sr.role : "", D.num("div_log10p", r.g, r.li) ?? "", D.num("sim_log10p", r.g, r.li) ?? "", bsp ?? ""] : [])].join("\t")); }
+      lines.push([r.taxon, r.locus, D.labelOf(r.code), r.test, p6(r.p), r.n_fail, r.n_similar, r.obs ?? "", r.exp ?? "", r.excess_m ?? "", bm !== null && bm >= 0 ? D.taxa.names[bm] : "", r.bm_id ?? "", pt !== null && pt >= 0 ? D.taxa.names[pt] : "", r.lam ?? "", ...(v4 ? [sr ? sr.role : "", p6(D.num("div_log10p", r.g, r.li)), p6(D.num("sim_log10p", r.g, r.li)), p6(bsp)] : [])].join("\t")); }
     const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/tab-separated-values" })); a.download = `${D.man.dataset || "report"}_cells.tsv`; a.click(); build();
   }
   return { render, download, open };

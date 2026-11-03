@@ -30,9 +30,11 @@ class TestSummary:
 
     def test_most_masked_taxa_in_order(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html); share, _, masked = masked_share(R)
-        names = page.eval_on_selector_all(".worst .worst-row:nth-child(1) .col:nth-child(1) .row .nm", "els => els.map(e => e.textContent)")
+        names = page.evaluate("""() => { const c = document.querySelector('.worst .worst-row:nth-child(1) .col:nth-child(1)');
+            const rows = Array.from(c.querySelectorAll('.row .nm')).map(e => e.textContent);
+            return rows.length ? rows : Array.from(c.querySelectorAll('.chiprow .chip')).map(e => e.textContent.trim().split(' ·')[0]); }""")
         want = [R.taxa["names"][g] for g in sorted(np.flatnonzero(masked.sum(1) > 0), key=lambda g: -share[g])][:10]
-        assert len(names) == len(want) and sorted(names) == sorted(want)
+        assert len(names) == len(want) and sorted(names) == sorted(want)         # ties render as chips, magnitudes as bars
         got_share = [share[R.tx(n)] for n in names]; assert got_share == sorted(got_share, reverse=True)
         labels = page.eval_on_selector_all(".worst .worst-row:nth-child(1) .col:nth-child(1) .row .num", "els => els.map(e => e.textContent)"); assert all(l.endswith("%") for l in labels)
 
@@ -52,7 +54,7 @@ class TestSummary:
 
     def test_histograms_count_the_masked_units(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html)
-        svgs = page.query_selector_all(".hist-wrap svg"); assert len(svgs) == 3              # taxa, loci, significance
+        svgs = page.query_selector_all(".hist-wrap svg"); assert len(svgs) == 2              # taxa, loci
         totals = page.eval_on_selector_all(".hist-wrap svg", "els => els.map(s => Array.from(s.querySelectorAll(':scope > text')).map(t => t.textContent.replace(/,/g, '')).filter(t => /^\\d+$/.test(t)).map(Number))")
         side = R.arr("cells/side.npy")
         assert sum(totals[0]) == int(((side & 3) > 0).any(1).sum())                          # taxa holding a mask: the zero bin is the subtitle's job
@@ -60,7 +62,8 @@ class TestSummary:
 
     def test_a_list_row_opens_the_detail_panel(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html)
-        name = page.text_content(".worst .worst-row:nth-child(1) .col:nth-child(1) .row .nm"); page.click(".worst .worst-row:nth-child(1) .col:nth-child(1) .row"); page.wait_for_selector(".panel[data-key=detail]")
+        sel = page.query_selector(".worst .worst-row:nth-child(1) .col:nth-child(1) .row .nm") and ".worst .worst-row:nth-child(1) .col:nth-child(1) .row" or ".worst .worst-row:nth-child(1) .col:nth-child(1) .chiprow .chip"
+        name = page.text_content(sel + (" .nm" if ".row" == sel[-4:] else "")).strip().split(" ·")[0]; page.click(sel); page.wait_for_selector(".panel[data-key=detail]")
         assert name in page.text_content(".panel[data-key=detail] .crumb")
 
 

@@ -119,7 +119,7 @@ class TestOptions:
         nslots = int(R.arr("cells/n_comp.npy").sum()); assert kinds["close_relative"] == nslots and kinds["closest_match_relative"] == nslots
         assert kinds["closest_match_outside"] == R.man["test"]["closest_match_outside_tests"]
         bar = R.man["test"]["log10_bar"]
-        for x in rows: assert (float(x["log10p"]) < bar) == (x["fail"] == "1"), x
+        for x in rows: assert (float(x["p"]) <= 10 ** bar + 5e-7) == (x["fail"] == "1"), x   # plain p at six decimals
         names = set(R.taxa["names"]); assert all(x["taxon"] in names and x["comparator"] in names for x in rows)
 
     def test_report_codes_policy(self, tmp_out, tmp_path):

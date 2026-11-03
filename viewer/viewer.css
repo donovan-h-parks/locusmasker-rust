@@ -169,7 +169,7 @@ button.help { border-radius: 50%; width: 22px; height: 22px; padding: 0; font-we
 .seq-head .seq-line { flex: 1 1 400px; }
 .seq-head .num { font-variant-numeric: tabular-nums; }
 .seq-ctl { display: inline-flex; gap: 10px; align-items: center; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
-.seq-body { --wgut: 68px; --wrole: 72px; --wname: 150px; --wp: 36px; flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: var(--wgut) var(--wrole) var(--wname) 1fr; overflow: auto; }
+.seq-body { --wgut: 98px; --wrole: 72px; --wname: 150px; --wp: 36px; flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: var(--wgut) var(--wrole) var(--wname) 1fr; overflow: auto; }
 .seq-body.with-p { grid-template-columns: var(--wgut) var(--wrole) var(--wname) var(--wp) 1fr; }
 .seq-col { font-size: 12px; border-right: 1px solid var(--grid); background: var(--surface-2); position: sticky; }
 .seq-gut { left: 0; } .seq-role { left: var(--wgut); } .seq-names { left: calc(var(--wgut) + var(--wrole)); } .seq-p { left: calc(var(--wgut) + var(--wrole) + var(--wname)); }
@@ -219,6 +219,8 @@ kbd { font: 11px var(--mono); background: var(--surface-3); border-radius: 4px; 
 /* ---- the loading screen: logo, the report's title, a live progress bar (viewer.html's loader builds it) */
 .loadscreen { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 24px; box-sizing: border-box; }
 .loadscreen .logo { width: 96px; height: 96px; }
+.loadscreen .ls-grid { display: grid; grid-template-columns: repeat(3, 28px); grid-template-rows: repeat(3, 28px); gap: 3px; }
+.loadscreen .ls-grid div { border-radius: 3px; transition: background-color 900ms ease; }
 .loadscreen .ls-title { font-size: 22px; font-weight: 650; letter-spacing: -0.01em; max-width: 60ch; text-align: center; overflow-wrap: anywhere; }
 .loadscreen .ls-track { width: min(340px, 80vw); height: 6px; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
 .loadscreen .ls-fill { height: 100%; width: 0; border-radius: 3px; background: var(--accent); transition: width 150ms linear; }
@@ -271,9 +273,10 @@ kbd { font: 11px var(--mono); background: var(--surface-3); border-radius: 4px; 
 .cd-verdict .cd-worst { margin-left: auto; font-size: 12.5px; font-weight: 500; color: var(--muted); }
 .cd-verdict .stars { font-style: normal; color: var(--accent); }
 .cd-spine { padding: 6px 0 2px; }
-.cd-rib { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 8px; }
-.cd-ribname { font-size: 11.5px; color: var(--muted); text-align: right; }
-.cd-axis { margin-left: 118px; }
+.cd-rib { display: grid; grid-template-columns: 128px 1fr; align-items: center; gap: 8px; margin-top: 8px; }
+.cd-ribname { font-size: 11.5px; color: var(--muted); text-align: right; line-height: 1.25; }
+.cd-ribname .cd-ribn { display: block; font-style: normal; font-weight: 650; color: var(--ink); font-variant-numeric: tabular-nums; }
+.cd-axis { margin-left: 136px; }
 .cd-note { font-size: 10.5px; color: var(--faint); text-align: right; padding-top: 2px; }
 .cd-counts { font-size: 12px; color: var(--muted); padding: 2px 0 6px; }
 .cd-row { display: flex; gap: 18px; align-items: flex-start; padding-top: 10px; flex-wrap: wrap; }
@@ -291,3 +294,14 @@ kbd { font: 11px var(--mono); background: var(--surface-3); border-radius: 4px; 
 }
 #lm-card .more { display: none; }                 /* no interactive hints on a printable card */
 .cd-verdict .cd-line::first-letter { text-transform: uppercase; }
+
+/* ---- the sequence panel's middle band: the alignment and, when toggled, the trees docked beside it */
+.seq-mid { display: flex; flex: 1 1 auto; min-height: 0; }
+.seq-mid .seq-body { flex: 1 1 auto; min-width: 0; }
+.trees-pane { flex: 0 0 auto; max-width: 620px; border-left: 1px solid var(--spine); overflow: auto; background: var(--surface); }
+
+.trees-pane { position: relative; }
+.trees-pane .close { position: absolute; right: 6px; top: 6px; padding: 0 6px; z-index: 2; }
+
+.worst .chiprow { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 0; }
+.worst .chiprow .chip { display: inline-flex; align-items: center; gap: 4px; }

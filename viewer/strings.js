@@ -20,14 +20,11 @@ const LM_STR = {
     tab_title: "{dataset} · LocusMasker",   // the browser tab, as soon as the dataset's name is known
     no_title: "LocusMasker report",         // in place of the dataset name when the page carries none (template without data)
     progress: "{x} / {y} {u}",              // under the bar, ticking live while the file arrives; x = loaded, y = total, u = MB or KB
-    reading: "reading…",                    // under the full bar, while the loaded data is decoded (big reports: a few seconds)
+    line: "Loading data into browser…",     // the one line under the figures, for the whole journey (a short file keeps
+                                            // loading and the page re-reads it by itself; no other words)
 
-    // the same screen, bar held at {x} / {y} MB, when the file on disk is short (copied or downloaded before it
-    // was whole) or its data is damaged. The page retries by itself ({s} counts down); no action needed.
-    incomplete: "The file is incomplete — retrying in {s}s.",
-
-    // the same screen when the page's own scripts never ran (an IDE pane or preview that blocks or truncates
-    // scripts). Retrying cannot help there, so say where to open the file instead.
+    // only when the page's own scripts never ran (an IDE pane or preview that blocks or truncates scripts):
+    // reloading cannot help there, so say where to open the file instead.
     stalled: "This page's scripts have not run here. Open report.html in a regular browser (Chrome or Firefox).",
   },
 
@@ -54,9 +51,6 @@ const LM_STR = {
     hist_taxa: "taxa by their masked sequences",           // the distribution plots under the lists
     hist_loci: "loci by their masked sequences",
     hist_x: "masked sequences in the {unit}",              // {unit} = taxon | locus
-    hist_sig: "masks by significance",                     // the significance histogram
-    hist_sig_x: "mask log10 p",
-    bar_note: "the run's bar",                             // the dashed line's label on the significance histogram
   },
 
   // ---- the matrix view: the zoom controls' tooltips and the one-time hint chip (gone on first zoom)
@@ -70,10 +64,11 @@ const LM_STR = {
   ribbons: {
     test_label: "test",
     test_close_relative: "close-relative",
-    test_closest_match: "closest-match",
+    test_cm_relative: "closest-match · relative",   // the arm whose partner is one of the focal's relatives
+    test_cm_outside: "closest-match · outside",     // the arm whose partner is not
     test_broad_sample: "broad-sample",
     axis_close_relative: "◀ less divergent · excess divergence from its close relatives, in units of m · more divergent ▶",
-    axis_closest: "similarity to its closest match, −log10 p · stronger evidence ▶",
+    axis_closest: "similarity to its closest match, p · stronger evidence ▶",
     axis_broad: "◀ steadier than expected · observed / expected variance over the broad sample, log2 · wilder ▶",
   },
 
@@ -81,7 +76,7 @@ const LM_STR = {
   table: {
     h_taxon: "taxon", h_locus: "locus",
     h_test: "test",                                        // which test masked it (the strongest, as masked.csv's mask_test)
-    h_p: "log10 p",                                        // the mask's one significance, with its stars
+    h_p: "p",                                              // the mask's one significance, with its stars
     h_obs: "observed %", h_exp: "expected %",              // divergence to the close relatives, median
     h_excess: "excess (m)", h_partner: "partner", h_best: "best match",
     chips: { all: "all", close_relative: "close-relative", closest_match: "closest-match", broad_sample: "broad-sample" },
@@ -99,6 +94,16 @@ const LM_STR = {
     absent: "absent",
   },
 
+  // ---- the alignment (sequence) panel: the gutter names the tests, in the order closest-match, broad-sample,
+  // close-relative; the broad row is always present, showing the sample's biggest-residual sequence with the
+  // variance test's p.
+  seq: {
+    gut_closest: "closest-match",
+    gut_broad: "broad-sample",
+    gut_relatives: "close-relative",
+    broad_none: "none drawn",                        // the broad row's name when the report carries no representative
+  },
+
   // ---- the cards: one printable page per dataset / locus / taxon / sequence, one design language.
   // The verdict band is the "fine / bad / discuss" line; the spine is the three per-test ribbons on dataset-wide
   // axes, so cards compare side by side; the table names what is involved; the footer makes the page traceable.
@@ -109,13 +114,11 @@ const LM_STR = {
     verdict_clean: "No problems found",              // the calm verdict when nothing is masked
     verdict_unit: "{n} of {m} sequences masked ({pct})",   // locus and taxon cards
     verdict_dataset: "{n} of {m} sequences masked ({pct})",
-    worst: "worst log10 p {p}",                      // beside the verdict, with its stars
-    spine_note: "every card in a report shares these axes",   // under the ribbons, once
-    t_taxon: "taxon", t_locus: "locus", t_test: "test", t_p: "log10 p", t_obs: "observed %", t_exp: "expected %", t_partner: "partner",
+    worst: "worst p {p}",                      // beside the verdict, with its stars (not on the dataset card)
+    t_taxon: "taxon", t_locus: "locus", t_test: "test", t_p: "p", t_obs: "observed %", t_exp: "expected %", t_partner: "partner",
     more_rows: "… and {n} more",                     // when the problems table is cut to a page
-    counts_line: "close-relative {a} · closest-match {b} · broad-sample {c}",   // the dataset card's per-test counts
     shape_title_unit: "observed vs expected divergence to the close relatives",
-    footer: "{dataset} · LocusMasker {version} · {date} · every test held to log10 p < {bar}",
+    footer: "{dataset} · LocusMasker {version} · {date} · every test held to p < {bar}",
   },
 
   // ---- fatal states: shown in #app in place of the report.
@@ -127,5 +130,8 @@ const LM_STR = {
   },
 
 };
+// p-values for people: plain p, two decimals down to 0.01, scientific below (never log10 in a display).
+// The inputs everywhere are log10 p (the lossless machine form); this is the one place they become words.
+function lmP(lp) { if (lp === null || lp === undefined || Number.isNaN(lp)) return ""; const p = Math.pow(10, lp); return p >= 0.01 ? p.toFixed(2) : p.toExponential(1); }
 // the viewer and the loader fill {placeholders} with this
 function lmFmt(s, vars) { return s.replace(/\{(\w+)\}/g, (_, k) => vars[k] !== undefined ? vars[k] : "{" + k + "}"); }

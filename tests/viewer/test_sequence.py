@@ -13,7 +13,7 @@ RULER_H, ROW_H, RULE_H = 18, 18, 7
 GAP = set(b"-?.* ")
 
 
-def top_of(ri): return RULER_H + 4 + ri * ROW_H + (RULE_H if ri >= 2 else 0)
+def top_of(ri): return RULER_H + 4 + ri * ROW_H + RULE_H * sum(1 for q in (1, 2, 3) if q <= ri)   # a rule before each test block
 
 
 def open_cell(page, g, li):
@@ -82,11 +82,11 @@ class TestLayout:
     def test_columns_roles_and_rows(self, page, ctx):
         R = ctx["R"]; g, li = ctx["kinds"]["divergent"]; open_report(page, ctx["html"]); open_cell(page, g, li)
         assert page.eval_on_selector_all(".seq-col .trk", "els => els.map(e => e.textContent)") == ["test type", "sequence", "Taxon name", "p<α"]
-        roles = page.eval_on_selector_all(".seq-role .seqnm", "els => els.map(e => e.textContent)"); assert roles == ["focal", "closest"] + [f"relative {i + 1}" for i in range(len(R.comps(g, li)))]
-        assert page.eval_on_selector_all(".seq-gut .seqnm", "els => els.map(e => e.textContent).filter(Boolean)") == ["similarity", "divergence"]
+        roles = page.eval_on_selector_all(".seq-role .seqnm", "els => els.map(e => e.textContent)"); assert roles == ["focal", "closest", "comparator"] + [f"relative {i + 1}" for i in range(len(R.comps(g, li)))]
+        assert page.eval_on_selector_all(".seq-gut .seqnm", "els => els.map(e => e.textContent).filter(Boolean)") == ["closest-match", "broad-sample", "close-relative"]
         names = page.eval_on_selector_all(".seq-names .seqnm .nm", "els => els.map(e => e.textContent)")
-        assert names[0] == R.taxa["names"][g] and names[1] == R.taxa["names"][int(R.cell("locus_closest", g, li))] and names[2:] == [R.taxa["names"][c] for c in R.comps(g, li)]
-        assert len(page.query_selector_all(".seq-col .rule")) == 4                      # one rule per column, between the two groups
+        assert names[0] == R.taxa["names"][g] and names[1] == R.taxa["names"][int(R.cell("locus_closest", g, li))] and names[3:] == [R.taxa["names"][c] for c in R.comps(g, li)]   # names[2] is the broad row
+        assert len(page.query_selector_all(".seq-col .rule")) == 12                     # one rule per column between each of the three test blocks
         assert page.text_content(".seq-key").startswith("focal") and "half or more of its relatives differ" in page.text_content(".seq-key")
 
     def test_crumb_and_hash(self, page, ctx):
@@ -121,7 +121,7 @@ class TestHeaderAndColours:
         s2 = int(R.arr("cells/side2.npy")[g, li]) if R.has("cells/side2.npy") else 0
         rc_y = bool(s2 & (4 | 64)) and R.has("cells/bs_partner.npy") and E.Y is not None and any(
             int(rl) == li and int(rt) == g and int(rp) == E.Y for rl, rt, rp in zip(R.arr("cells/bs_locus.npy"), R.arr("cells/bs_taxon.npy"), R.arr("cells/bs_partner.npy")))
-        off = 1 if any("broad comparator" in t for t in page.eval_on_selector_all(".seq-role .seqnm", "els => els.map(e => e.textContent)")) else 0
+        off = 1                                                                   # the broad-sample row is always present (format 9)
         assert "st-focal" in cls[0] and (("st-blue" in cls[1]) == ((E.Y in E.pairs) or rc_y))   # the closest row is also blue when it is the labelled donor side
         for k, c in enumerate(E.comps): assert ("st-red" in cls[2 + off + k]) == (c in E.red), (kind, c)
         # the p column
@@ -138,8 +138,10 @@ class TestHeaderAndColours:
     def test_hovers_carry_the_numbers(self, page, ctx):
         R = ctx["R"]; g, li = ctx["kinds"]["divergent"]; E = Expect(R, g, li); open_report(page, ctx["html"]); open_cell(page, g, li)
         titles = page.eval_on_selector_all(".seq-names .seqnm", "els => els.map(e => e.title)")
-        assert f"log10 p {E.divP:.2f}".replace("-", "−") in titles[0] and f"bar {E.bar:.2f}".replace("-", "−") in titles[0]
-        for k, c in enumerate(E.comps): assert "too divergent from the focal: log10 p" in titles[2 + k] and "too similar to the focal" in titles[2 + k]
+        def ptxt(lp):
+            p = 10 ** lp; return f"{p:.2f}" if p >= 0.01 else f"{p:.1e}".replace("e-0", "e-")
+        assert f"p {ptxt(E.divP)}" in titles[0] and f"bar {ptxt(E.bar)}" in titles[0]
+        for k, c in enumerate(E.comps): assert "too divergent from the focal: p" in titles[3 + k] and "too similar to the focal" in titles[3 + k]
         assert "closest match at this locus" in titles[1]
         assert page.get_attribute(".seq-p .trk", "title").startswith("significant")
 
@@ -154,7 +156,7 @@ class TestSites:
             col = page.evaluate("() => { const D = LM.App.D; return { red: D.col.redTint, blue: D.col.blueTint, cell: D.col.cell }; }"); col = {k: rgb(v) for k, v in col.items()}
             W = page.evaluate("() => document.querySelector('.seq-canvas-wrap canvas').clientWidth"); nvis = min(int(W // 12) - 1, 80)
             px = page.evaluate(f"""() => {{ const c = document.querySelector('.seq-canvas-wrap canvas'); const g = c.getContext('2d'); const out = [];
-                for (let ri = 0; ri < {2 + len(E.comps)}; ri++) {{ const row = []; for (let s = 0; s < {nvis}; s++) {{ const d = g.getImageData(s * 12 + 1, {RULER_H + 4} + ri * {ROW_H} + (ri >= 2 ? {RULE_H} : 0) + 2, 1, 1).data; row.push([d[0], d[1], d[2]]); }} out.push(row); }} return out; }}""")
+                for (let ri = 0; ri < {3 + len(E.comps)}; ri++) {{ const row = []; for (let s = 0; s < {nvis}; s++) {{ const d = g.getImageData(s * 12 + 1, {RULER_H + 4} + ri * {ROW_H} + (ri >= 1 ? {RULE_H} : 0) + (ri >= 2 ? {RULE_H} : 0) + (ri >= 3 ? {RULE_H} : 0) + 2, 1, 1).data; row.push([d[0], d[1], d[2]]); }} out.push(row); }} return out; }}""")
             sites = E.site_colours(); f = E.rows[g]; cand = E.rows.get(E.Y)
             for s in range(nvis):
                 if sites[s] is None: continue
@@ -164,7 +166,7 @@ class TestSites:
                 for k, c in enumerate(E.comps):
                     b = E.rows[c][s]
                     if b in GAP: continue
-                    assert px[2 + k][s] == (col["red"] if b != f[s] else col["cell"]), (kind, "relative", k, s)
+                    assert px[3 + k][s] == (col["red"] if b != f[s] else col["cell"]), (kind, "relative", k, s)
 
     def test_site_hover_counts_the_relatives(self, page, ctx):
         R = ctx["R"]; g, li = ctx["kinds"]["divergent"]; E = Expect(R, g, li); open_report(page, ctx["html"]); open_cell(page, g, li)
@@ -189,8 +191,8 @@ class TestTrees:
         for kind in ("copy", "divergent", "uncertain"):
             if kind not in ctx["kinds"]: continue
             g, li = ctx["kinds"][kind]; E = Expect(R, g, li); open_report(page, ctx["html"]); open_cell(page, g, li)
-            page.click(".seq-ctl button:has-text('trees')"); page.wait_for_selector(".trees-card svg", timeout=15000); page.wait_for_timeout(300)
-            tips = page.evaluate("() => Array.from(document.querySelectorAll('.trees-card svg text')).filter(t => t.getAttribute('font-size') === '11.5').map(t => [t.textContent.split(':')[0], t.getAttribute('fill'), t.getAttribute('font-weight')])")
+            page.click(".seq-ctl button:has-text('trees')"); page.wait_for_selector(".trees-pane svg", timeout=15000); page.wait_for_timeout(300)
+            tips = page.evaluate("() => Array.from(document.querySelectorAll('.trees-pane svg text')).filter(t => t.getAttribute('font-size') === '11.5').map(t => [t.textContent.split(':')[0], t.getAttribute('fill'), t.getAttribute('font-weight')])")
             assert len(tips) >= 2 * (1 + len(E.comps))
             for name, fill, weight in tips:
                 t = R.tx(name) if name in R.taxa["names"] else None
@@ -198,12 +200,13 @@ class TestTrees:
                 elif t in E.pairs: assert fill == BLUE and weight == "700"
                 elif t in E.red: assert fill == RED and weight == "700"
                 elif t in E.comps: assert fill == INK
-            assert page.eval_on_selector_all(".trees-card svg text", "els => els.filter(e => e.textContent.includes('expected')).length") >= 1
-            page.click(".trees-card .close"); page.wait_for_timeout(100); assert page.query_selector(".trees-card") is None
+            assert page.eval_on_selector_all(".trees-pane svg text", "els => els.filter(e => e.textContent.includes('expected')).length") >= 1
+            page.click(".trees-pane .close"); page.wait_for_timeout(100)
+            assert page.evaluate("() => document.querySelector('.trees-pane').style.display") == "none"
 
     def test_tree_hover_states_the_role(self, page, ctx):
         R = ctx["R"]; g, li = ctx["kinds"]["copy"]; open_report(page, ctx["html"]); open_cell(page, g, li)
-        page.click(".seq-ctl button:has-text('trees')"); page.wait_for_selector(".trees-card svg"); page.wait_for_timeout(200)
-        titles = page.evaluate("() => Array.from(document.querySelectorAll('.trees-card svg text title')).map(t => t.textContent)")
+        page.click(".seq-ctl button:has-text('trees')"); page.wait_for_selector(".trees-pane svg"); page.wait_for_timeout(200)
+        titles = page.evaluate("() => Array.from(document.querySelectorAll('.trees-pane svg text title')).map(t => t.textContent)")
         assert any(t.endswith("focal sequence") for t in titles) and any("closest match at locus; significantly closer than expected" in t for t in titles)
         assert all(("inside focal group" in t) or ("outside focal group" in t) or t.endswith("focal sequence") for t in titles)

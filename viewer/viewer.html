@@ -22,15 +22,29 @@ whole file has parsed and the viewer never ran, this is also the last line of de
   const mb = n => big ? (n / 1e6).toFixed(1) : String(Math.round(n / 1e3));
   const unit = big ? "MB" : "KB";
   let box = null, fill = null, num = null, note = null;
+  let cells = null, anim = null;
+  const LOGO = { 2: "#2f6bd8", 3: "#e9ca00", 7: "#b5172e" };          // the logo's own colours; grey everywhere else
+  const GREY = "#8f8d88";
   const build = app => {
     box = document.createElement("div"); box.className = "loadscreen"; box.id = "lm-load"; box.dataset.state = "arriving";
-    const tpl = document.getElementById("lm-logo");
-    if (tpl) box.appendChild(tpl.content.firstElementChild.cloneNode(true));
+    const grid = document.createElement("div"); grid.className = "ls-grid"; cells = [];
+    const where = {};                                                  // colour -> its current cell
+    for (let i = 0; i < 9; i++) { const d = document.createElement("div"); d.style.background = LOGO[i] || GREY; if (LOGO[i]) where[LOGO[i]] = i; cells.push(d); grid.appendChild(d); }
+    box.appendChild(grid);
+    const still = typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (anim) clearInterval(anim);
+    if (!still) anim = setInterval(() => {                             // a colour fades out of its square and into a new grey one
+      if (window.__lmBooted) { clearInterval(anim); return; }
+      const colors = Object.keys(where); const col = colors[Math.floor(Math.random() * colors.length)];
+      const from = where[col]; const greys = []; for (let i = 0; i < 9; i++) if (!colors.some(c2 => where[c2] === i)) greys.push(i);
+      const to = greys[Math.floor(Math.random() * greys.length)];
+      cells[from].style.background = GREY; cells[to].style.background = col; where[col] = to;
+    }, 1400);
     const h = document.createElement("div"); h.className = "ls-title"; h.textContent = M && M.dataset ? M.dataset : (S.no_title || "LocusMasker report"); box.appendChild(h);
     const track = document.createElement("div"); track.className = "ls-track";
     fill = document.createElement("div"); fill.className = "ls-fill"; track.appendChild(fill); box.appendChild(track);
     num = document.createElement("div"); num.className = "ls-num"; box.appendChild(num);
-    note = document.createElement("div"); note.className = "ls-note"; box.appendChild(note);
+    note = document.createElement("div"); note.className = "ls-note"; note.textContent = S.line || ""; box.appendChild(note);
     if (M && M.dataset && S.tab_title) document.title = fmt(S.tab_title, { dataset: M.dataset });
     app.replaceChildren(box);
   };
@@ -55,9 +69,7 @@ whole file has parsed and the viewer never ran, this is also the last line of de
     if (num && y) num.textContent = fmt(S.progress || "{x} / {y} {u}", { x: mb(x), y: mb(y), u: unit });
     box.dataset.state = "incomplete";
     let n = 0; try { n = +sessionStorage.lmRetry || 0; sessionStorage.lmRetry = n + 1; } catch (e) { }
-    let s = Math.min(Math.round(2 * Math.pow(2, n)), 15);
-    const tick = () => { note.textContent = fmt(S.incomplete || "", { s, x: mb(x), y: mb(y) }); if (s-- <= 0) location.reload(); else setTimeout(tick, 1000); };
-    tick();
+    setTimeout(() => location.reload(), Math.min(Math.round(2000 * Math.pow(2, n)), 15000));   // quietly re-read; the screen and its line stay
   };
   window.__lmRetryShort = retry;                                      // the viewer hands the cut-bundle case back here
 })();

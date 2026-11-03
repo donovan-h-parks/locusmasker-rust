@@ -33,7 +33,7 @@ if Z is not None:                                                    # name a ta
 # every test of the pair, by locus and test (close_relative, closest_match_relative, closest_match_outside; one row per direction
 # tested); the file is read as bytes and a line is split only when it holds the two names side by side, so a large
 # file streams quickly
-COLS = ("test", "locus", "taxon", "comparator", "overlap", "mismatches", "expected", "row_factor", "log10p", "fail")
+COLS = ("test", "locus", "taxon", "comparator", "overlap", "mismatches", "expected", "row_factor", "p", "fail")
 rows = {}; keys = {(a.a, a.b), (a.b, a.a)}; pats = tuple(f"\t{x}\t{y}\t".encode() for x, y in keys)
 with gzip.open(tp, "rb") as fh:
     head = fh.readline().decode().rstrip("\n").split("\t"); c = {k: i for i, k in enumerate(head)}

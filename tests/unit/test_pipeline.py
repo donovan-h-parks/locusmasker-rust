@@ -292,13 +292,13 @@ class TestOutputs:
             g, li = R.tx(r["taxon"]), R.lx(r["locus"]); sd = int(side[g, li])
             assert r["reason"] == ("both" if (sd & 3) == 3 else "divergent" if sd & 1 else "similar")
             assert r["mask_test"] in ("close_relative", "closest_match", "broad_sample")      # the one significance: bar-held, so
-            assert float(r["mask_log10p"]) < R.man["test"]["log10_bar"] + 1e-3                # every masked sequence earns at least one star
+            assert float(r["mask_p"]) <= 10 ** R.man["test"]["log10_bar"] + 1e-6              # every masked sequence earns at least one star (six-decimal rounding)
             assert int(r["residues_masked"]) == fs[g, li]
             if r["close_relative_fails"] == "":                                  # masked by the broad-sample test alone: its own columns carry the evidence
-                assert r["broad_sample_partner"] != "" and r["broad_sample_side"] != "" and float(r["broad_sample_log10p"]) < 0; continue
+                assert r["broad_sample_partner"] != "" and r["broad_sample_side"] != "" and float(r["broad_sample_p"]) <= 0.05 + 1e-6; continue
             assert int(r["close_relative_fails"]) == nf[g, li] and int(r["close_relative_comparators"]) == nc[g, li]
             assert r["comparators"] == "; ".join(R.taxa["names"][c] for c in R.comps(g, li))
-            assert float(r["log10_bar"]) == pytest.approx(R.man["test"]["log10_bar"], abs=1e-3)
+            assert float(r["p_bar"]) == pytest.approx(10 ** R.man["test"]["log10_bar"], abs=1e-6)
             if sd & 2:
                 role = r["closest_match_role"]; partner = r["closest_match_partner"]
                 assert (role in ("copy", "uncertain") or int(R.cell("n_similar", g, li)) > 1) and partner == R.taxa["names"][int(R.cell("partner", g, li))]   # a cell masked as the copy of one pair may be the source of a stronger one
