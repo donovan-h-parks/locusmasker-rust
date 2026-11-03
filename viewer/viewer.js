@@ -747,10 +747,19 @@ const Overview = (() => {
   }
   function highlight(kind, i) { App.sel.rows.clear(); App.sel.cols.clear(); if (kind === "row") App.sel.rows.add(i); if (kind === "col") App.sel.cols.add(i); redraw(); }
   function doSearch(q) {
-    const D = App.D; App.sel.rows.clear(); App.sel.cols.clear(); q = q.trim().toLowerCase(); if (!q) { redraw(); return; }
-    let first = null;
-    D.taxa.names.forEach((nm, g) => { if (nm.toLowerCase().includes(q)) { App.sel.rows.add(g); if (!first) first = ["row", g]; } });
-    D.loci.names.forEach((nm, l) => { if (nm.toLowerCase().includes(q)) { App.sel.cols.add(l); if (!first) first = ["col", l]; } });
+    const D = App.D; App.sel.rows.clear(); App.sel.cols.clear(); q = q.trim(); if (!q) { redraw(); return; }
+    let first = null; const lq = q.toLowerCase();
+    D.taxa.names.forEach((nm, g) => { if (nm.toLowerCase().includes(lq)) { App.sel.rows.add(g); if (!first) first = ["row", g]; } });
+    D.loci.names.forEach((nm, l) => { if (nm.toLowerCase().includes(lq)) { App.sel.cols.add(l); if (!first) first = ["col", l]; } });
+    if (!first && typeof Fuse !== "undefined" && q.length >= 3) {                 // nothing contains it: the fuzzy pass (typos, partial ids)
+      if (!D._fuse) D._fuse = new Fuse(
+        D.taxa.names.map((nm, g) => ({ nm, kind: "row", i: g })).concat(D.loci.names.map((nm, l) => ({ nm, kind: "col", i: l }))),
+        { keys: ["nm"], threshold: 0.35, ignoreLocation: true });
+      for (const r of D._fuse.search(q, { limit: 12 })) {
+        (r.item.kind === "row" ? App.sel.rows : App.sel.cols).add(r.item.i);
+        if (!first) first = [r.item.kind, r.item.i];
+      }
+    }
     if (first) { const { w, h } = canvasArea(); if (first[0] === "row") { const r = App.order.taxa.indexOf(first[1]); V.y0 = r - h / V.ch / 2; } else { const c = App.order.loci.indexOf(first[1]); V.x0 = c - w / V.cw / 2; } }
     redraw();
   }
