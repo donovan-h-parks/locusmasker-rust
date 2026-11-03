@@ -1394,7 +1394,7 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
         for k in ("n_comp", "n_fail", "n_similar", "side", "focal_sites"): put(f"cells/{k}.npy", rep[k])
         if "side2" in rep:
             put("cells/side2.npy", rep["side2"])
-            for k in ("bs_locus", "bs_taxon", "bs_var_log10p", "bs_lo_log10p", "bs_hi_log10p", "bs_partner", "bs_call", "bs_log10p", "bs_rho"):
+            for k in ("bs_locus", "bs_taxon", "bs_var_log10p", "bs_lo_log10p", "bs_hi_log10p", "bs_partner", "bs_call", "bs_log10p", "bs_rho", "bs_stat"):
                 if k in rep: put(f"cells/{k}.npy", rep[k])
         numcols = ("med_identity", "med_expected", "excess_m", "closest", "closest_overlap", "closest_identity", "closest_expected",
                    "best_match", "best_match_identity", "partner", "div_log10p", "sim_log10p", "locus_closest", "locus_closest_log10p")
@@ -3268,6 +3268,7 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
         if dense:
             rep["bs_log10p"] = np.full((n, nloc), np.nan, np.float32); rep["bs_log10p"][tax_a, loc_a] = (lp1 / LN10).astype(np.float32)
             rep["bs_rho"] = np.full((n, nloc), np.nan, np.float32); rep["bs_rho"][tax_a, loc_a] = rho_a
+            rep["bs_stat"] = np.full((n, nloc), np.nan, np.float32); rep["bs_stat"][tax_a, loc_a] = x_a.astype(np.float32)   # observed/expected variance: the stage-1 statistic itself
         key_a = np.sort(loc_a * np.int64(n) + tax_a)                           # stage-1 p lookup for the report's sparse rows
         lp1_by = lp1[np.argsort(loc_a * np.int64(n) + tax_a, kind="stable")]
         flag_by_loc = {int(li): tax_a[past & (loc_a == li)] for li in np.unique(loc_a[past])}

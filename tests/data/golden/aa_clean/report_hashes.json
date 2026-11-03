@@ -3,6 +3,7 @@
  "cells/best_match_identity.npy": "baf6adef159dc5a1a39ad1596c0a6fa41f3901189c3cbc265006de4c7222f774",
  "cells/bs_log10p.npy": "9e4995d2b3ae2f0cdee8929a4f5fca6391e772031c4ea623a1d7477f5f48e06b",
  "cells/bs_rho.npy": "2f998f4e5459f07fa4119c8f46a75cec621b3b282fd01911506fd6c8b5be35a8",
+ "cells/bs_stat.npy": "66062d42c3eca56adecd817e11dcd45460e9c3b8197fc047c2ada36b32b9692b",
  "cells/closest.npy": "9537a17c071c4459667e93b606e402ed19f9127722196834a37c3ebff4b920dc",
  "cells/closest_expected.npy": "fe0c8f27b9090e7b7de237633319ba8b2bb656847fb541a4b81e84d01dd70494",
  "cells/closest_identity.npy": "0a7009f31af4174927747f0865f539fe207a546b06d1183f30b3380d9a152fdd",

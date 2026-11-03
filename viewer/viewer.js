@@ -104,7 +104,7 @@ async function loadBundle(bytes) {
   for (const k of numCols) D.cols[k] = (await npy(`cells/${k}.npy`)).data;
   for (const k of ["lam", "lam_p", "row_factor", "div_log10p", "sim_log10p", "dir_log10p", "depth_factor", "locus_closest", "locus_closest_log10p"]) if (zip.has(`cells/${k}.npy`)) D.cols[k] = (await npy(`cells/${k}.npy`)).data;   // not in every format; D.num gives null without them
   const bsp = zip.has("cells/bs_locus.npy") || zip.has("cells/bs_log10p.npy") ? "bs" : "rc";   // older format-8 bundles wrote the broad-sample members as cells/rc_*
-  for (const k of ["log10p", "rho"]) if (zip.has(`cells/${bsp}_${k}.npy`)) D.cols[`bs_${k}`] = (await npy(`cells/${bsp}_${k}.npy`)).data;   // dense runs: the broad-sample stage-1 p and rho of every tested cell
+  for (const k of ["log10p", "rho", "stat"]) if (zip.has(`cells/${bsp}_${k}.npy`)) D.cols[`bs_${k}`] = (await npy(`cells/${bsp}_${k}.npy`)).data;   // dense runs: the broad-sample stage-1 p, rho and variance ratio of every tested cell
   D.s2 = i => D.cols.side2 ? D.cols.side2[i] : 0;                 // format 8: the broad-sample bits (1 tested, 2 past the bar, 4 close, 8 divergent in older bundles, 16 excluded as comparator, 32 close not re-reported, 64 the divergent-cell label)
   D.rcRows = null;
   if (zip.has(`cells/${bsp}_locus.npy`)) {                         // the sequences the verdict pass inspected, with their tail p's and partner
@@ -916,19 +916,38 @@ function unitHover(kind, i) {
 
 // ------------------------------------------------------------------ residual ribbons: the cells of one unit on an asinh axis
 // draws the residuals of the cells of a locus (by="locus") or a taxon into a canvas row; returns the drawn points for hover
+function residualOf(D, g, li, mode) {                        // one residual per cell per TEST, on that test's own axis
+  const i = g * D.nloc + li;
+  if (mode === "closest_match") {                            // its evidence is a p: the strongest of the pair and outside arms
+    const a = D.num("sim_log10p", g, li), b = D.num("locus_closest_log10p", g, li);
+    const v = a === null ? b : b === null ? a : Math.min(a, b);
+    return v === null || !Number.isFinite(v) ? null : -v;
+  }
+  if (mode === "broad_sample") {                             // observed / expected variance, log2
+    const v = D.cols.bs_stat ? D.cols.bs_stat[i] : NaN;
+    return Number.isFinite(v) && v > 0 ? Math.log2(v) : null;
+  }
+  return D.num("excess_m", g, li);                           // close_relative: the excess beyond expectation, in m
+}
+function residualScale(D, mode, W, padL, padR) {
+  if (mode === "closest_match") return d3.scaleLinear().domain([0, Math.max(6, -(D.man.test && D.man.test.log10_bar || -6) * 2.5)]).range([padL, W - padR]);
+  if (mode === "broad_sample") { const d = D._bsDom || (D._bsDom = (() => { let m = 2; const v = D.cols.bs_stat; if (v) for (let q = 0; q < v.length; q++) { const x = v[q]; if (Number.isFinite(x) && x > 0) { const a = Math.abs(Math.log2(x)); if (a > m) m = a; } } return Math.min(m, 10); })());
+    return d3.scaleLinear().domain([-d, d]).range([padL, W - padR]); }
+  return d3.scaleSymlog().constant(1).domain(D.exDomain).range([padL, W - padR]);
+}
 function drawResidualRow(cv, kind, u, W, H, opts) {
-  const D = App.D; const dpr = devicePixelRatio || 1; cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.width = W + "px"; cv.style.height = H + "px";
+  const D = App.D; const mode = opts.mode || "close_relative"; const dpr = devicePixelRatio || 1; cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.width = W + "px"; cv.style.height = H + "px";
   const c = cv.getContext("2d"); c.scale(dpr, dpr); c.clearRect(0, 0, W, H);
-  const xs = d3.scaleSymlog().constant(1).domain(D.exDomain).range([opts.padL || 6, W - (opts.padR || 6)]);
+  const xs = residualScale(D, mode, W, opts.padL || 6, opts.padR || 6);
   const pts = []; let identical = 0; const N = kind === "locus" ? D.n : D.nloc;
   for (let k = 0; k < N; k++) {
     const g = kind === "locus" ? k : u, li = kind === "locus" ? u : k; const i = g * D.nloc + li; if (D.cols.n_comp[i] === 0) continue;
-    const x = D.num("excess_m", g, li); if (x === null || !Number.isFinite(x)) continue;
-    const mi = D.num("med_identity", g, li); if (mi !== null && 100 - mi <= 0) { identical++; continue; }
+    const x = residualOf(D, g, li, mode); if (x === null || !Number.isFinite(x)) continue;
+    if (mode === "close_relative") { const mi = D.num("med_identity", g, li); if (mi !== null && 100 - mi <= 0) { identical++; continue; } }
     pts.push({ g, li, x, code: D.state[i], px: xs(x), py: 0 });
   }
   // the saturation band for a locus: where a saturated sequence would land, from the plateau, the rate and the expectation
-  if (kind === "locus" && D.loci.rate[u]) {
+  if (mode === "close_relative" && kind === "locus" && D.loci.rate[u]) {
     const P = D.loci.plateau[u], rate = D.loci.rate[u]; const corr = p => -P * Math.log(1 - Math.min(Math.max(p, 0), 0.98 * P) / P);
     const ce = pts.map(p => { const me = D.num("med_expected", p.g, p.li); return me === null ? NaN : (corr(0.98 * P) - corr(100 - me)) / rate; }).filter(Number.isFinite).sort(d3.ascending);
     if (ce.length) { const c10 = d3.quantileSorted(ce, 0.1); c.fillStyle = cssVar("--surface-3"); c.fillRect(xs(c10), 1, Math.max(0, W - xs(c10)), H - 2); }
@@ -944,12 +963,21 @@ function drawResidualRow(cv, kind, u, W, H, opts) {
   }
   return { pts, identical, xs };
 }
-function residualAxis(W, padL, padR) {
-  const D = App.D; const xs = d3.scaleSymlog().constant(1).domain(D.exDomain).range([padL, W - padR]);
+function residualAxis(W, padL, padR, mode) {
+  const D = App.D; mode = mode || "close_relative"; const xs = residualScale(D, mode, W, padL, padR);
   const svg = d3.create("svg").attr("width", W).attr("height", 30).attr("class", "resid-axis");
-  const tv = [-1000, -100, -10, -1, 0, 1, 10, 100, 1000].filter(v => v >= D.exDomain[0] && v <= D.exDomain[1]);
-  svg.append("g").attr("class", "axis").attr("transform", "translate(0,16)").call(d3.axisTop(xs).tickValues(tv).tickFormat(d3.format(",")));
-  svg.append("text").attr("x", xs(0)).attr("y", 29).attr("text-anchor", "middle").attr("fill", cssVar("--muted")).attr("font-size", 10.5).text("◀ less divergent · excess divergence from its comparators, in units of m · more divergent ▶");
+  const S = LM_STR.ribbons;
+  if (mode === "closest_match") {
+    svg.append("g").attr("class", "axis").attr("transform", "translate(0,16)").call(d3.axisTop(xs).ticks(6));
+    svg.append("text").attr("x", (xs.range()[0] + xs.range()[1]) / 2).attr("y", 29).attr("text-anchor", "middle").attr("fill", cssVar("--muted")).attr("font-size", 10.5).text(S.axis_closest);
+  } else if (mode === "broad_sample") {
+    svg.append("g").attr("class", "axis").attr("transform", "translate(0,16)").call(d3.axisTop(xs).ticks(7));
+    svg.append("text").attr("x", xs(0)).attr("y", 29).attr("text-anchor", "middle").attr("fill", cssVar("--muted")).attr("font-size", 10.5).text(S.axis_broad);
+  } else {
+    const tv = [-1000, -100, -10, -1, 0, 1, 10, 100, 1000].filter(v => v >= D.exDomain[0] && v <= D.exDomain[1]);
+    svg.append("g").attr("class", "axis").attr("transform", "translate(0,16)").call(d3.axisTop(xs).tickValues(tv).tickFormat(d3.format(",")));
+    svg.append("text").attr("x", xs(0)).attr("y", 29).attr("text-anchor", "middle").attr("fill", cssVar("--muted")).attr("font-size", 10.5).text(S.axis_close_relative);
+  }
   return svg.node();
 }
 function bindResidualHover(cv, getPts) {
@@ -961,7 +989,7 @@ function bindResidualHover(cv, getPts) {
 
 // all loci or all taxa as residual ribbons, one row each, virtualised
 const Ribbons = (() => {
-  let root, kind, sortMode = "masked", units = [], list, inner, W = 600, axisBox;
+  let root, kind, sortMode = "masked", mode = "close_relative", units = [], list, inner, W = 600, axisBox;
   const RH = 22, NAME_W = 190 + 4;                                               // the name column and its grid gap
   let ctlHost = null;
   function render(container, k, host) { root = container; kind = k; ctlHost = host; root.replaceChildren(); build(); }
@@ -970,11 +998,13 @@ const Ribbons = (() => {
     units = d3.range(N).filter(u => cnt.tested[u] > 0);
     if (sortMode === "masked") units.sort((a, b) => cnt.masked[b] - cnt.masked[a] || cnt.near[b] - cnt.near[a] || a - b); else if (sortMode === "name") units.sort((a, b) => names[a].localeCompare(names[b]));
     const sortSel = el("select", { onchange: e => { sortMode = e.target.value; build(); } }, ...[["masked", "most masked first"], ["name", "name"], ["input", "input order"]].map(([v, t]) => el("option", { value: v, selected: v === sortMode ? "" : null }, t)));
-    if (ctlHost) { ctlHost.replaceChildren(el("label", null, "sort ", sortSel), el("span", { class: "k", title: `each row is one ${kind}, each mark one of its sequences, placed by its divergence from its comparators: red masked too divergent, blue ${D.format >= 4 ? "masked as a copy of another taxon (its source can be any taxon, so a copy can sit anywhere on the axis)" : "too similar"}, yellow masked by both tests, small grey dots not masked${kind === "locus" ? "; the shaded band is where a saturated sequence lands" : ""}. Click a name for its panel, a mark for the alignment.` }, `${fmtInt(units.length)} ${kind === "locus" ? "loci" : "taxa"}`)); }
+    const SR = LM_STR.ribbons;
+    const testSel = el("select", { onchange: e => { mode = e.target.value; build(); } }, ...[["close_relative", SR.test_close_relative], ["closest_match", SR.test_closest_match], ["broad_sample", SR.test_broad_sample]].map(([v, t]) => el("option", { value: v, selected: v === mode ? "" : null }, t)));
+    if (ctlHost) { ctlHost.replaceChildren(el("label", null, SR.test_label + " ", testSel), el("label", null, "sort ", sortSel), el("span", { class: "k" }, `${fmtInt(units.length)} ${kind === "locus" ? "loci" : "taxa"}`)); }
     axisBox = el("div", { class: "rib-axis" }); list = el("div", { class: "rib-list" }); inner = el("div", { style: "position:relative" }); list.append(inner);
     root.replaceChildren(axisBox, list);
     W = Math.max(300, root.getBoundingClientRect().width - NAME_W - 24);
-    axisBox.replaceChildren(el("div", { class: "rib-head", style: `width:${NAME_W}px; flex: 0 0 auto` }, el("span", null, kind === "locus" ? "locus" : "taxon")), residualAxis(W, 8, 8));
+    axisBox.replaceChildren(el("div", { class: "rib-head", style: `width:${NAME_W}px; flex: 0 0 auto` }, el("span", null, kind === "locus" ? "locus" : "taxon")), residualAxis(W, 8, 8, mode));
     inner.style.height = units.length * RH + "px";
     list.addEventListener("scroll", paint); paint();
   }
@@ -986,7 +1016,7 @@ const Ribbons = (() => {
       const nm = el("span", { class: "nm", title: `${names[u]}: ${cnt.masked[u]} masked of ${cnt.tested[u]} tested`, onclick: () => Detail.open(kind, u) }, sw(cnt.masked[u] ? (cnt.div[u] >= cnt.sim[u] ? D.col.red : D.col.blue) : null), names[u]);
       const row = el("div", { class: "rib-row", style: `position:absolute; top:${i * RH}px; left:0; right:0; height:${RH}px` }, nm, cv);
       inner.append(row);
-      drawn = drawResidualRow(cv, kind, u, W, RH - 2, { padL: 8, padR: 8 });
+      drawn = drawResidualRow(cv, kind, u, W, RH - 2, { padL: 8, padR: 8, mode });
       if (drawn.identical) row.title = `${drawn.identical} sequences identical to their comparators are not drawn`;
       bindResidualHover(cv, () => drawn.pts);
     }

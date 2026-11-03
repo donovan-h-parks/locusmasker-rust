@@ -8,6 +8,7 @@
  "cells/bs_log10p.npy": "701244f091f00d75c0885c342d0f7ab0241ffe07fbf432811c964bbc7c72563b",
  "cells/bs_partner.npy": "0c69564c9fa23a6e6e96d9c1ef9f099fb5fc7d9cffbd729529140a011d714fa2",
  "cells/bs_rho.npy": "4fdf151d755c1eafb76bf30432c0d9a743b756d1147b3f23043a0bf0ec786681",
+ "cells/bs_stat.npy": "1fee8d94e3b5f330b40070f61060f94f21aa1436ce5ae0878fb542ac9014de78",
  "cells/bs_taxon.npy": "ca64cda3e853b93a6bebd310ea521d65ce489779f98773a2d5e1747a96e32f8f",
  "cells/bs_var_log10p.npy": "309341783a8ec70f7ff2b2bdd94824db622bde5315b0df868a0301dd35a6633d",
  "cells/closest.npy": "cfa68aa9e0ed8ada693fcceb2127e98f5e8616c735b34209c6f72429ac760420",

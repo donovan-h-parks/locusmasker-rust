@@ -11,6 +11,7 @@
  "cells/bs_log10p.npy": "a3cd5a4d4a420877e967abac04739984a26b51319a2fe5b8f3f8797b913fedb5",
  "cells/bs_partner.npy": "c78caa73ce57bb8beb3875a265d72401db7ea944a030a4a1deb06c75fbfac3ca",
  "cells/bs_rho.npy": "51d77de38482add1439257ab5e97894355915d128b93aa31729d8a21eebf26e9",
+ "cells/bs_stat.npy": "3d25a382dad64d22c99f814a77966ca7084d5b6309c72681ca3de56581869e44",
  "cells/bs_taxon.npy": "bb4136f7962b4ac8fa7352ddcd621d2c7fa693390f2153dbd86c3d6a2b42a7c2",
  "cells/bs_var_log10p.npy": "b859d717cd1055cae1f598f5364e8b95e828aa1ed5e60a421a043e4bd094202d",
  "cells/closest.npy": "59478f9f671f1f5410cd16dfc864e905562ad04fe31440a0f2b9922bd184ea93",

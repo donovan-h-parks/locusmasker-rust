@@ -65,6 +65,18 @@ const LM_STR = {
     hint: "scroll to move · ctrl+scroll or pinch to zoom · click a cell",
   },
 
+  // ---- the residual ribbons (overview > loci/taxon ribbons): one row per unit, one mark per sequence, placed by
+  // its residual from the SELECTED test's own expectation. The axis caption names each test's units.
+  ribbons: {
+    test_label: "test",
+    test_close_relative: "close-relative",
+    test_closest_match: "closest-match",
+    test_broad_sample: "broad-sample",
+    axis_close_relative: "◀ less divergent · excess divergence from its close relatives, in units of m · more divergent ▶",
+    axis_closest: "similarity to its closest match, −log10 p · stronger evidence ▶",
+    axis_broad: "◀ steadier than expected · observed / expected variance over the broad sample, log2 · wilder ▶",
+  },
+
   // ---- the overview table: one row per cell. Headers; the family filter chips; the footer.
   table: {
     h_taxon: "taxon", h_locus: "locus",
