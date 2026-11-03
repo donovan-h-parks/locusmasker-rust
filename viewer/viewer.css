@@ -312,3 +312,6 @@ kbd { font: 11px var(--mono); background: var(--surface-3); border-radius: 4px; 
 .cd-flow h4 { margin: 0 0 4px; font-size: 12px; color: var(--muted); font-weight: 650; }
 .cd-flowrow { display: flex; gap: 14px; justify-content: space-between; font-size: 12px; min-width: 210px; border-bottom: 1px solid var(--grid); padding: 1.5px 0; }
 .cd-flowrow b { font-variant-numeric: tabular-nums; }
+
+.cd-plotrow { padding-top: 10px; }
+.cd-plotrow h4 { margin: 0 0 2px; font-size: 12px; font-weight: 650; color: var(--ink); }

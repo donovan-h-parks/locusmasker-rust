@@ -1734,41 +1734,48 @@ const Card = (() => {
       if (p) svg.append("circle").attr("cx", xs(p.x)).attr("cy", ys(p.y)).attr("r", 6).attr("fill", "none").attr("stroke", cssVar("--focus")).attr("stroke-width", 1.6); }
     return svg.node();
   }
-  function rankStrip(D, kind, W, H) {                         // every unit's % masked, ranked: the shape of the damage
+  function rankStrip(D, kind, W, H) {                         // every unit's % masked, ranked: the shape of the damage, one row, a little title
     const cnt = kind === "taxon" ? D.taxCount : D.locCount; const names = kind === "taxon" ? D.taxa.names : D.loci.names;
     const units = [];
     for (let u = 0; u < (kind === "taxon" ? D.n : D.nloc); u++) if (cnt.tested[u] > 0) units.push([u, 100 * cnt.masked[u] / cnt.tested[u]]);
     units.sort((a, b) => b[1] - a[1]);
-    const shown = units.slice(0, Math.max(400, Math.min(units.length, 60)));       // thousands of near-zero taxa say nothing:
-    if (units.length > shown.length) units.length = shown.length;                   // the ranked top carries the shape
-    const m = { l: 40, r: 10, t: 16, b: 26 };
-    const p99 = units.length ? units[Math.floor(units.length * 0.01)][1] : 0;      // one extreme taxon must not flatten the curve:
-    const ymax = Math.max(2, Math.min((units[0] ? units[0][1] : 0) * 1.08, Math.max(p99 * 2.5, 5)));   // clip near the 99th percentile, the label carries the top
+    if (units.length > 400) units.length = 400;                                     // thousands of near-zero units say nothing
+    const m = { l: 44, r: 12, t: 6, b: 32 };
+    const p99 = units.length ? units[Math.floor(units.length * 0.01)][1] : 0;      // one extreme unit must not flatten the curve:
+    const ymax = Math.max(2, Math.min((units[0] ? units[0][1] : 0) * 1.08, Math.max(p99 * 2.5, 5)));   // the label carries the top
     const xs = d3.scaleLinear().domain([0, units.length]).range([m.l, W - m.r]), ys = d3.scaleLinear().domain([0, ymax]).range([H - m.b, m.t]);
     const svg = d3.create("svg").attr("width", W).attr("height", H).attr("class", "cd-rank");
     svg.append("g").attr("class", "axis").attr("transform", `translate(${m.l},0)`).call(d3.axisLeft(ys).ticks(4).tickFormat(v => v + "%"));
-    svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(xs).ticks(4).tickFormat(d3.format("~s")));
-    const area = d3.area().x((d, i) => xs(i)).y0(ys(0)).y1(d => ys(d[1]));
+    svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(xs).ticks(6).tickFormat(d3.format("~s")));
+    const area = d3.area().x((d, i) => xs(i)).y0(ys(0)).y1(d => ys(Math.min(d[1], ymax)));
     const step = Math.max(1, Math.floor(units.length / (W - m.l - m.r)));
     const pts = []; for (let i = 0; i < units.length; i += step) pts.push(units[i]);
-    svg.append("path").attr("d", area(pts)).attr("fill", cssVar("--pass")).attr("opacity", 0.7);
+    svg.append("path").attr("d", area(pts)).attr("fill", cssVar("--pass")).attr("opacity", 0.75);
     if (units.length && units[0][1] > 0) {
-      svg.append("text").attr("x", xs(0) + 3).attr("y", Math.max(m.t + 8, ys(Math.min(units[0][1], ymax)) - 3)).attr("font-size", 10).attr("fill", cssVar("--ink"))
+      svg.append("text").attr("x", xs(0) + 4).attr("y", Math.max(m.t + 9, ys(Math.min(units[0][1], ymax)) - 4)).attr("font-size", 10).attr("fill", cssVar("--ink"))
         .text(`${names[units[0][0]]} ${fmt1(units[0][1])}%`);
     }
-    svg.append("text").attr("x", (m.l + W - m.r) / 2).attr("y", H - 2).attr("text-anchor", "middle").attr("font-size", 10.5).attr("fill", cssVar("--muted"))
-      .text(lmFmt(kind === "taxon" ? S().rank_taxa : S().rank_loci, {}));
-    return svg.node();
+    svg.append("text").attr("x", (m.l + W - m.r) / 2).attr("y", H - 3).attr("text-anchor", "middle").attr("font-size", 10).attr("fill", cssVar("--faint")).text(S().rank_x);
+    return el("div", { class: "cd-plotrow" }, el("h4", null, kind === "taxon" ? S().rank_taxa : S().rank_loci), svg.node());
   }
-  function flowLists(D) {                                     // the dataset's donors and recipients, most copies first
-    const cols = [["donor", S().donors], ["recipient", S().recipients]].map(([mode, title]) => {
-      const groups = copyGroups(D, mode).slice(0, 8);
-      const c = el("div", { class: "cd-flow" }, el("h4", null, title));
-      for (const gr of groups) c.append(el("div", { class: "cd-flowrow" },
-        el("span", { class: "nm" }, gr.label), el("b", null, fmtInt(gr.list.length))));
-      return c;
+  function flowPlot(D, mode, W, N) {                          // the canonical ranked-category form: a lollipop per taxon, in % of attributed copies
+    const groups = copyGroups(D, mode); const total = d3.sum(groups, gr => gr.list.length) || 1;
+    const top = groups.slice(0, N); const RH = 21;
+    const m = { l: 10, r: 46, t: 4, b: 36 }; const H = m.t + top.length * RH + m.b;
+    const nameW = 150;
+    const vmax = Math.max(5, 100 * (top[0] ? top[0].list.length : 0) / total * 1.12);
+    const xs = d3.scaleLinear().domain([0, vmax]).range([m.l + nameW, W - m.r]);
+    const svg = d3.create("svg").attr("width", W).attr("height", H).attr("class", "cd-rank");
+    svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(xs).ticks(4).tickFormat(v => v + "%"));
+    top.forEach((gr, i) => {
+      const y = m.t + i * RH + RH / 2; const v = 100 * gr.list.length / total;
+      svg.append("text").attr("x", m.l + nameW - 8).attr("y", y + 3.5).attr("text-anchor", "end").attr("font-size", 11).attr("fill", cssVar("--ink")).text(gr.label);
+      svg.append("line").attr("x1", xs(0)).attr("x2", xs(v)).attr("y1", y).attr("y2", y).attr("stroke", cssVar("--spine")).attr("stroke-width", 1.4);
+      svg.append("circle").attr("cx", xs(v)).attr("cy", y).attr("r", 4).attr("fill", D.col.blue);
+      svg.append("text").attr("x", xs(v) + 8).attr("y", y + 3.5).attr("font-size", 10.5).attr("fill", cssVar("--muted")).attr("font-variant", "tabular-nums").text(fmtInt(gr.list.length));
     });
-    return el("div", { class: "cd-flows" }, ...cols);
+    svg.append("text").attr("x", (m.l + nameW + W - m.r) / 2).attr("y", H - 3).attr("text-anchor", "middle").attr("font-size", 10).attr("fill", cssVar("--faint")).text(S().flow_x);
+    return el("div", { class: "cd-plotrow half" }, el("h4", null, mode === "donor" ? S().donors : S().recipients), svg.node());
   }
   function open(kind, a, b) {
     ensure(); const D = App.D;
@@ -1777,8 +1784,8 @@ const Card = (() => {
     if (kind === "dataset") {
       title = D.man.dataset; masks = masksAll; m = D.man.counts.cells;
       spineEl = spine(D, "dataset");
-      shape = el("div", { class: "cd-row" }, rankStrip(D, "taxon", 330, 150), rankStrip(D, "locus", 330, 150));
-      if (copiesOf(D).length) extra = flowLists(D);
+      shape = el("div", null, rankStrip(D, "taxon", 820, 130), rankStrip(D, "locus", 820, 130));
+      if (copiesOf(D).length) extra = el("div", { class: "cd-row" }, flowPlot(D, "donor", 400, 10), flowPlot(D, "recipient", 400, 10));
     } else if (kind === "locus" || kind === "taxon") {
       const u = a; title = kind === "locus" ? D.loci.names[u] : D.taxa.names[u];
       masks = masksAll.filter(q => (kind === "locus" ? q.li : q.g) === u);

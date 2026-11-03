@@ -118,10 +118,12 @@ const LM_STR = {
     t_taxon: "taxon", t_locus: "locus", t_test: "test", t_p: "p", t_obs: "observed %", t_exp: "expected %", t_partner: "partner",
     more_rows: "… and {n} more",                     // when the problems table is cut to a page
     shape_title_unit: "observed vs expected divergence to the close relatives",
-    rank_taxa: "% masked per taxon, ranked",         // the dataset card's two rank curves
-    rank_loci: "% masked per locus, ranked",
+    rank_taxa: "% masked per taxon",                 // the dataset card's two rank curves (little titles above each)
+    rank_loci: "% masked per locus",
+    rank_x: "ranked",                                // the curves' x caption
     donors: "top donors",                            // who a copy was more likely copied from
     recipients: "top recipients",                    // who holds the copies
+    flow_x: "% of attributed copies",                // the lollipops' shared axis
     footer: "{dataset} · LocusMasker {version} · {date} · every test held to p < {bar}",
   },
 
