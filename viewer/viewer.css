@@ -165,7 +165,7 @@ button.help { border-radius: 50%; width: 22px; height: 22px; padding: 0; font-we
 .seq-head .seq-line { flex: 1 1 400px; }
 .seq-head .num { font-variant-numeric: tabular-nums; }
 .seq-ctl { display: inline-flex; gap: 10px; align-items: center; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
-.seq-body { --wgut: 98px; --wrole: 72px; --wname: 150px; --wp: 36px; flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: var(--wgut) var(--wrole) var(--wname) 1fr; overflow: auto; }
+.seq-body { --wgut: 98px; --wrole: 104px; --wname: 150px; --wp: 36px; flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: var(--wgut) var(--wrole) var(--wname) 1fr; overflow: auto; }
 .seq-body.with-p { grid-template-columns: var(--wgut) var(--wrole) var(--wname) var(--wp) 1fr; }
 .seq-col { font-size: 12px; border-right: 1px solid var(--grid); background: var(--surface-2); position: sticky; }
 .seq-gut { left: 0; } .seq-role { left: var(--wgut); } .seq-names { left: calc(var(--wgut) + var(--wrole)); } .seq-p { left: calc(var(--wgut) + var(--wrole) + var(--wname)); }
@@ -312,9 +312,9 @@ kbd { font: 11px var(--mono); background: var(--surface-3); border-radius: 4px; 
 .cd-verdict .cd-line::first-letter { text-transform: uppercase; }
 
 /* ---- the sequence panel's middle band: the alignment and, when toggled, the trees docked beside it */
-.seq-mid { display: flex; flex: 1 1 auto; min-height: 0; }
-.seq-mid .seq-body { flex: 1 1 auto; min-width: 0; }
-.trees-pane { flex: 0 0 auto; max-width: 620px; border-left: 1px solid var(--spine); overflow: auto; background: var(--surface); }
+.seq-mid { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.seq-mid .seq-body { flex: 0 1 auto; min-width: 0; min-height: 0; }
+.trees-pane { flex: 1 1 auto; min-height: 0; border-top: 1px solid var(--spine); overflow: auto; background: var(--surface); }   /* the trees take the room UNDER the alignment */
 
 .trees-pane { position: relative; }
 .trees-pane .close { position: absolute; right: 6px; top: 6px; padding: 0 6px; z-index: 2; }

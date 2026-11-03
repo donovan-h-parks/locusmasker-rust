@@ -1571,7 +1571,7 @@ function drawCophylo(host, D, entry, k, cell, T) {      // T: cellTests, for the
 const Sequence = (() => {
   let cur = null, pps = null, x0 = 0, dots = true, drawFn = null, showTrees = true;   // the trees dock beside the alignment from the start
   const RULER_H = 18, ROW_H = 18, RULE_H = 7;                                       // the rule between the similarity rows and the divergence block
-  const colW = { role: 72, name: 150 }; try { Object.assign(colW, JSON.parse(localStorage.getItem("lm.seqcols") || "{}")); } catch (e) { /* no storage */ }
+  const colW = { role: 104, name: 150 }; try { Object.assign(colW, JSON.parse(localStorage.getItem("lm.seqcols") || "{}")); } catch (e) { /* no storage */ }
   function open(g, li) {
     cur = { g, li }; pps = null; x0 = 0;
     if (!App.panels.sequence) {

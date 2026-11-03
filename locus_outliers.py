@@ -3366,7 +3366,7 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                     badS[anc[min_stat(alo) < BS_SCREEN_LOGP]] = True
                     badE[anc[min_stat(ahi) < BS_SCREEN_LOGP]] = True
             top = sel[li][0]
-            out = dict(mask=[], note=[], label=[], lean=[], codes=None, trees=None, broad=[])
+            out = dict(mask=[], note=[], label=[], lean=[], dlean=[], codes=None, trees=None, broad=[])
             tree_cells = []
             if len(rows_f):
                 comp2, O2, W2, LO, HI = far_tails(rows_f, True, badS, badE)
@@ -3404,6 +3404,9 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                     if dp[i] < logbar:
                         jd_ = int(np.where(np.isfinite(DLO["lp"][i]), DLO["lp"][i], np.inf).argmin())
                         out["label"].append((g, float(dp[i]), int(pld[i]), 100.0 * Od[i, jd_] / max(Wd[i, jd_], 1.0), 100.0 * float(DLO["E"][i, jd_]) / max(Wd[i, jd_], 1.0)))
+                    else:                                                        # no label: the cell still names its representative,
+                        zi = DLO["z"][i]; fin_ = np.isfinite(zi)                 # the far member with the most extreme standardised residual
+                        out["dlean"].append((g, float(dp[i]), int(comp3[i, int(np.where(fin_, zi, np.inf).argmin())]) if fin_.any() else -1))
             # the masked cells' artifacts, exactly the per-locus pass's constructions
             if tree_cells:
                 qs = np.array([g for g, _, _ in tree_cells], np.int64)
@@ -3457,6 +3460,10 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                     for g, partner, _cc in tree_cells:
                         rs_.add(int(g)); rs_.update(int(c) for c in top[g] if c >= 0)
                         if partner >= 0: rs_.add(int(partner))
+                    for g, _dp, rp_, _o, _e in out["label"]:                    # the divergent cells' broad rows: the label's partner
+                        if rp_ >= 0: rs_.add(int(rp_))
+                    for g, _dp, rp_ in out["dlean"]:                            # or the representative without one
+                        if rp_ >= 0: rs_.add(int(rp_))
                     if rs_:
                         rows_s = np.array(sorted(rs_), np.int64)
                         out["seq"] = (rows_s.astype(np.int32), np.stack([views[g_][sites] for g_ in rows_s.tolist()]))
@@ -3514,6 +3521,8 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                         rep["comparators"].append(sel[li][0][g:g + 1].astype(np.int32))
                         for k_ in ("comp_div_log10p", "comp_sim_log10p"): rep[k_].append(np.full((1, K_eff), np.nan, np.float32))
                         sparse_at.setdefault(li, set()).add(g)
+                for g, dp_i, rp_ in out["dlean"]:                              # every divergent cell's representative, label or not
+                    bs_rows_rep.append((li, g, dp_i, np.nan, rp_, 0))
                 for g, dp_i, partner, obs_, exp_ in out["label"]:
                     rep["side2"][g, li] |= 64
                     bs_rows_rep.append((li, g, dp_i, np.nan, partner, 1))
