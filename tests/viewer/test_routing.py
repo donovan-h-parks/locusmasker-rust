@@ -91,7 +91,7 @@ class TestOlderFormatPanels:
         names = page.eval_on_selector_all(".seq-names .seqnm .nm", "els => els.map(e => e.textContent)"); assert names[1] == "not recorded"
         g, li = kinds["copy"]; page.evaluate(f"() => LM.openCell({g}, {li})"); page.wait_for_timeout(400)
         names = page.eval_on_selector_all(".seq-names .seqnm .nm", "els => els.map(e => [e.textContent, e.className])"); assert "st-blue" in names[1][1]
-        page.click(".seq-ctl button:has-text('trees')"); page.wait_for_selector(".trees-pane svg", timeout=15000)
+        page.wait_for_selector(".trees-pane svg", timeout=15000)
 
     def test_format3_opens_the_panels(self, page, report_of):
         html, R = report_of("dna_small", "format3"); kinds = cells_of_kind(report_of("dna_small")[1]); open_report(page, html)

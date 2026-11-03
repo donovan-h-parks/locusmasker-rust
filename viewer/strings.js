@@ -108,6 +108,12 @@ const LM_STR = {
     gut_broad: "broad-sample",
     gut_relatives: "close-relative",
     broad_none: "none drawn",                        // the broad row's name when the report carries no representative
+    // the "sequence" column: what each row is to the focal
+    role_focal: "focal",
+    role_relative: "relative",                       // the closest match, when it is one of the close relatives
+    role_nonrelative: "non-relative",                // ... when it is not
+    role_largest: "largest residual",                // the broad-sample row
+    role_relative_n: "relative {n}",                 // the close relatives, in genome-wide rank order
   },
 
   // ---- the navigation stack: the deepest open level fills the window; the levels above it collapse to one

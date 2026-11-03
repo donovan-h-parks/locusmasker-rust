@@ -82,7 +82,8 @@ class TestLayout:
     def test_columns_roles_and_rows(self, page, ctx):
         R = ctx["R"]; g, li = ctx["kinds"]["divergent"]; open_report(page, ctx["html"]); open_cell(page, g, li)
         assert page.eval_on_selector_all(".seq-col .trk", "els => els.map(e => e.textContent)") == ["test type", "sequence", "Taxon name", "p<α"]
-        roles = page.eval_on_selector_all(".seq-role .seqnm", "els => els.map(e => e.textContent)"); assert roles == ["focal", "closest", "comparator"] + [f"relative {i + 1}" for i in range(len(R.comps(g, li)))]
+        roles = page.eval_on_selector_all(".seq-role .seqnm", "els => els.map(e => e.textContent)")
+        assert len(roles) == 3 + len(R.comps(g, li)) and len(set(roles[3:])) == len(roles[3:])   # focal, closest, broad, then one tag per relative (the words are the catalog's)
         assert page.eval_on_selector_all(".seq-gut .seqnm", "els => els.map(e => e.textContent).filter(Boolean)") == ["closest-match", "broad-sample", "close-relative"]
         names = page.eval_on_selector_all(".seq-names .seqnm .nm", "els => els.map(e => e.textContent)")
         assert names[0] == R.taxa["names"][g] and names[1] == R.taxa["names"][int(R.cell("locus_closest", g, li))] and names[3:] == [R.taxa["names"][c] for c in R.comps(g, li)]   # names[2] is the broad row
@@ -191,7 +192,7 @@ class TestTrees:
         for kind in ("copy", "divergent", "uncertain"):
             if kind not in ctx["kinds"]: continue
             g, li = ctx["kinds"][kind]; E = Expect(R, g, li); open_report(page, ctx["html"]); open_cell(page, g, li)
-            page.click(".seq-ctl button:has-text('trees')"); page.wait_for_selector(".trees-pane svg", timeout=15000); page.wait_for_timeout(300)
+            page.wait_for_selector(".trees-pane svg", timeout=15000); page.wait_for_timeout(300)
             tips = page.evaluate("() => Array.from(document.querySelectorAll('.trees-pane svg text')).filter(t => t.getAttribute('font-size') === '11.5').map(t => [t.textContent.split(':')[0], t.getAttribute('fill'), t.getAttribute('font-weight')])")
             assert len(tips) >= 2 * (1 + len(E.comps))
             for name, fill, weight in tips:
@@ -206,7 +207,7 @@ class TestTrees:
 
     def test_tree_hover_states_the_role(self, page, ctx):
         R = ctx["R"]; g, li = ctx["kinds"]["copy"]; open_report(page, ctx["html"]); open_cell(page, g, li)
-        page.click(".seq-ctl button:has-text('trees')"); page.wait_for_selector(".trees-pane svg"); page.wait_for_timeout(200)
+        page.wait_for_selector(".trees-pane svg"); page.wait_for_timeout(200)
         titles = page.evaluate("() => Array.from(document.querySelectorAll('.trees-pane svg text title')).map(t => t.textContent)")
         assert any(t.endswith("focal sequence") for t in titles) and any("closest match at locus; significantly closer than expected" in t for t in titles)
         assert all(("inside focal group" in t) or ("outside focal group" in t) or t.endswith("focal sequence") for t in titles)

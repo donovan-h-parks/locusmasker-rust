@@ -226,7 +226,7 @@ BAND_SLOTS = 4                    # per (taxon, locus) the closest-match band ke
                                   # minimum, up to this many (one is the rule; more needs two overlaps with 2 o1 o2 >= 1e9)
 LSET_ELEMENTS = 1 << 20           # a locus's closest matches are found in taxa x taxa slices of about this many elements (rows = this / taxa)
 __version__ = "0.13.1"
-REPORT_FORMAT = 9                 # bundle format version; the viewer refuses a newer one (3: tree branch lengths are F81-corrected; 4: the too-similar test over every pair; 7: every test of every cell, the closest match at the locus, the uncertain-direction pairs; 8: the broad-sample test, cells/side2 and cells/bs_*; 9: the broad-sample call - one direction at most, both sides' statistics and the standardised-residual representative for every gate-passer: cells/bs_hi_log10p, cells/bs_call)
+REPORT_FORMAT = 9                 # bundle format version; the viewer refuses a newer one (3: tree branch lengths are F81-corrected; 4: the too-similar test over every pair; 7: every test of every cell, the closest match at the locus, the uncertain-direction pairs; 8: the broad-sample test, cells/side2 and cells/bs_*; 9: the broad-sample call - one direction at most, both sides' statistics and the standardised-residual representative for every gate-passer: cells/bs_hi_log10p, cells/bs_call; from 0.13.1 also cells/bs_rep, the stage-1 representative of every tested cell, and its sequence among the masked cells' carried rows)
 DENSE_CELLS_MAX = 8_000_000       # per-cell numeric report columns are dense (taxa x loci) up to this many cells, sparse beyond
 BEST_MATCH_ALL_MAX_TAXA = 2000    # best matches for every tested cell up to this many taxa; beyond, only for cells with a fail
 BEST_MATCH_MIN_SITES = 30         # a best match needs this many sites shared with the focal (as plot_panels.best_matches)
@@ -1395,7 +1395,7 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
         for k in ("n_comp", "n_fail", "n_similar", "side", "focal_sites"): put(f"cells/{k}.npy", rep[k])
         if "side2" in rep:
             put("cells/side2.npy", rep["side2"])
-            for k in ("bs_locus", "bs_taxon", "bs_var_log10p", "bs_lo_log10p", "bs_hi_log10p", "bs_partner", "bs_call", "bs_log10p", "bs_rho", "bs_stat"):
+            for k in ("bs_locus", "bs_taxon", "bs_var_log10p", "bs_lo_log10p", "bs_hi_log10p", "bs_partner", "bs_call", "bs_log10p", "bs_rho", "bs_stat", "bs_rep"):
                 if k in rep: put(f"cells/{k}.npy", rep[k])
         numcols = ("med_identity", "med_expected", "excess_m", "closest", "closest_overlap", "closest_identity", "closest_expected",
                    "best_match", "best_match_identity", "partner", "div_log10p", "sim_log10p", "locus_closest", "locus_closest_log10p")
@@ -2972,7 +2972,7 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
         # The dataset-wide scale null, the bar and both stage-2 sides run in the parent once every locus
         # has reported. Divergent cells and masked copies are never comparators; a comparator whose own row variance
         # is extreme is dropped from every cell that drew it
-        bs_blk = None
+        bs_blk = None; bsrep_full = np.full(n, -1, np.int64)      # every tested cell's broad representative, for the carried rows
         if bs is not None:
             dmask = np.zeros(n, bool); cpmask = np.zeros(n, bool)
             if mask_hi: dmask[idx[dflag]] = True
@@ -3012,18 +3012,22 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                     t_ = (kc_ >= BS_MIN) & np.isfinite(s2)
                     ref = float(np.median(s2[t_])) if t_.sum() >= 5 else np.nan
                     x_ = np.where(t_, s2 / ref, np.nan) if np.isfinite(ref) and ref > 0 else np.full(len(rows_bs), np.nan)
-                    return x_, kc_, rho_
-                x_bs, k_bs, rho_bs = bs_var(ok0)
+                    az = np.where(ok_ & np.isfinite(z_), np.abs(z_), -np.inf)           # the representative: the most extreme
+                    jr = az.argmax(1)                                                   # standardised residual, either side
+                    rep_ = np.where(np.isfinite(az[np.arange(len(rows_bs)), jr]), comp[np.arange(len(rows_bs)), jr], -1)
+                    return x_, kc_, rho_, rep_
+                x_bs, k_bs, rho_bs, rep_bs = bs_var(ok0)
                 fin_bs = np.isfinite(x_bs); badt = np.zeros(n, bool)
                 if fin_bs.sum() >= 5:
                     medx = float(np.median(x_bs[fin_bs]))
                     badt[rows_bs[fin_bs & (x_bs > BS_VAR_SCREEN * medx)]] = True
-                    if badt.any(): x_bs, k_bs, rho_bs = bs_var(ok0 & ~badt[comp])
+                    if badt.any(): x_bs, k_bs, rho_bs, rep_bs = bs_var(ok0 & ~badt[comp])
                 fin_bs = np.isfinite(x_bs)
+                bsrep_full[rows_bs[fin_bs]] = rep_bs[fin_bs]
                 if fin_bs.any():
                     bs_blk = dict(rows=rows_bs[fin_bs].astype(np.int32), x=x_bs[fin_bs], k=np.minimum(k_bs[fin_bs], 32767).astype(np.int16),
-                                  rho=rho_bs[fin_bs].astype(np.float32), excl=np.flatnonzero(dmask | cpmask).astype(np.int32),
-                                  varbad=np.flatnonzero(badt).astype(np.int32))
+                                  rho=rho_bs[fin_bs].astype(np.float32), rep=rep_bs[fin_bs].astype(np.int32),
+                                  excl=np.flatnonzero(dmask | cpmask).astype(np.int32), varbad=np.flatnonzero(badt).astype(np.int32))
         simlp_ = np.full(ncell, np.nan, np.float32); simlp_[tested2] = lp_lo[tested2] / LN10
         for q, (rec, _, _) in pair_of.items(): simlp_[q] = rec["lnp"] / LN10
         rep_q = fail_q if codes_policy == "fails" else masked_q if codes_policy == "masked" else np.zeros(ncell, bool)
@@ -3148,6 +3152,7 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                 for q in np.flatnonzero(want).tolist():
                     g = int(idx[q]); rs.add(g); rs.update(int(c) for c in top[g] if c >= 0)
                     if partner_[q] >= 0: rs.add(int(partner_[q]))
+                    if bsrep_full[g] >= 0: rs.add(int(bsrep_full[g]))
                 rows_s = np.array(sorted(rs), dtype=np.int64)
             if len(rows_s):
                 seq_out = (rows_s.astype(np.int32), np.stack([views[g][sites] for g in rows_s.tolist()]))
@@ -3282,6 +3287,8 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
             rep["bs_log10p"] = np.full((n, nloc), np.nan, np.float32); rep["bs_log10p"][tax_a, loc_a] = (lp1 / LN10).astype(np.float32)
             rep["bs_rho"] = np.full((n, nloc), np.nan, np.float32); rep["bs_rho"][tax_a, loc_a] = rho_a
             rep["bs_stat"] = np.full((n, nloc), np.nan, np.float32); rep["bs_stat"][tax_a, loc_a] = x_a.astype(np.float32)   # observed/expected variance: the stage-1 statistic itself
+            rep["bs_rep"] = np.full((n, nloc), -1, np.int32)                                                              # the stage-1 representative of every tested cell:
+            rep["bs_rep"][tax_a, loc_a] = np.concatenate([b["rep"] for b in bsL if b is not None])                        # the comparator with the most extreme standardised residual
         key_a = np.sort(loc_a * np.int64(n) + tax_a)                           # stage-1 p lookup for the report's sparse rows
         lp1_by = lp1[np.argsort(loc_a * np.int64(n) + tax_a, kind="stable")]
         flag_by_loc = {int(li): tax_a[past & (loc_a == li)] for li in np.unique(loc_a[past])}

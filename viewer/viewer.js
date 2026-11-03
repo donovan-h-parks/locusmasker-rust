@@ -104,7 +104,7 @@ async function loadBundle(bytes) {
   for (const k of numCols) D.cols[k] = (await npy(`cells/${k}.npy`)).data;
   for (const k of ["lam", "lam_p", "row_factor", "div_log10p", "sim_log10p", "dir_log10p", "depth_factor", "locus_closest", "locus_closest_log10p"]) if (zip.has(`cells/${k}.npy`)) D.cols[k] = (await npy(`cells/${k}.npy`)).data;   // not in every format; D.num gives null without them
   const bsp = zip.has("cells/bs_locus.npy") || zip.has("cells/bs_log10p.npy") ? "bs" : "rc";   // older format-8 bundles wrote the broad-sample members as cells/rc_*
-  for (const k of ["log10p", "rho", "stat"]) if (zip.has(`cells/${bsp}_${k}.npy`)) D.cols[`bs_${k}`] = (await npy(`cells/${bsp}_${k}.npy`)).data;   // dense runs: the broad-sample stage-1 p, rho and variance ratio of every tested cell
+  for (const k of ["log10p", "rho", "stat", "rep"]) if (zip.has(`cells/${bsp}_${k}.npy`)) D.cols[`bs_${k}`] = (await npy(`cells/${bsp}_${k}.npy`)).data;   // dense runs: the broad-sample stage-1 p, rho, variance ratio and representative of every tested cell
   D.s2 = i => D.cols.side2 ? D.cols.side2[i] : 0;                 // format 8: the broad-sample bits (1 tested, 2 past the bar, 4 close, 8 divergent in older bundles, 16 excluded as comparator, 32 close not re-reported, 64 the divergent-cell label)
   D.rcRows = null;
   if (zip.has(`cells/${bsp}_locus.npy`)) {                         // the sequences the verdict pass inspected, with their tail p's and partner
@@ -296,6 +296,12 @@ function similarRole(D, g, li) {
 // (from format 7, which carries every comparator's tests: comp); the closest match at the locus with its too-similar test
 // (format 7; before it, the closest match tested outside the set, format 5); stars, *, ** and *** below alpha / N, alpha / 5N
 // and alpha / 50N (the bar, and a fifth and a fiftieth of it)
+// the broad-sample row's sequence: the called side's representative when the cell passed the gate (stage 2), else the
+// stage-1 one (the comparator with the most extreme standardised residual, either side); -1 only in older bundles
+function bsRepOf(D, i, rcr) {
+  if (rcr && rcr.pt >= 0) return rcr.pt;
+  return D.cols.bs_rep && D.cols.bs_rep[i] >= 0 ? D.cols.bs_rep[i] : null;
+}
 function cellTests(D, g, li, sim, sr) {
   const bar = D.man.test && D.man.test.log10_bar != null ? D.man.test.log10_bar : null;
   const blue = new Map(), red = new Map(), comp = D.compTests(g, li); let closest = null;
@@ -1563,7 +1569,7 @@ function drawCophylo(host, D, entry, k, cell, T) {      // T: cellTests, for the
 
 // ------------------------------------------------------------------ the alignment panel (full width, bottom)
 const Sequence = (() => {
-  let cur = null, pps = null, x0 = 0, dots = true, drawFn = null, showTrees = false;
+  let cur = null, pps = null, x0 = 0, dots = true, drawFn = null, showTrees = true;   // the trees dock beside the alignment from the start
   const RULER_H = 18, ROW_H = 18, RULE_H = 7;                                       // the rule between the similarity rows and the divergence block
   const colW = { role: 72, name: 150 }; try { Object.assign(colW, JSON.parse(localStorage.getItem("lm.seqcols") || "{}")); } catch (e) { /* no storage */ }
   function open(g, li) {
@@ -1588,11 +1594,12 @@ const Sequence = (() => {
     // the rows, the same shape for every cell: the focal; its closest match at this locus, the candidate of the similarity
     // test; a rule; its relatives in genome-wide rank order, the divergence test. A taxon in both roles appears twice
     const Y = T.closest !== null ? T.closest.taxon : null, ord = ["closest", "2nd closest", "3rd closest", "4th closest", "5th closest"];
-    const rcr0 = D.rcAt ? D.rcAt(i) : null; const bsRep = rcr0 && rcr0.pt >= 0 ? rcr0.pt : null;   // the sample's biggest-residual sequence
-    const rows = [{ g, role: "focal", tag: "focal", tip: "the focal sequence" },
-      { g: Y, role: "closest", tag: "closest", tip: Y === null ? (D.format >= 7 ? "no taxon shares enough sites with the focal at this locus" : "this report does not record the closest match of a sequence whose closest-match test did not run (it is carried from report format 7)") : `the focal's closest match at this locus${comps.includes(Y) ? ` (also relative ${comps.indexOf(Y) + 1})` : " (not one of its relatives)"}` },
-      { g: bsRep, role: "broad", tag: "comparator", tip: bsRep === null ? "the report carries no broad-sample representative for this cell" : (sr && sr.rc ? sr.note : "the broad comparator with the most extreme standardised residual") }];
-    comps.forEach((c, r) => rows.push({ g: c, role: "comp", tag: `relative ${r + 1}`, tip: `relative ${r + 1}: the ${ord[r] || `${r + 1}th closest`} taxon genome-wide` }));
+    const rcr0 = D.rcAt ? D.rcAt(i) : null; const bsRep = bsRepOf(D, i, rcr0);   // the sample's biggest-residual sequence, always
+    const SQ = LM_STR.seq;
+    const rows = [{ g, role: "focal", tag: SQ.role_focal, tip: "the focal sequence" },
+      { g: Y, role: "closest", tag: Y === null ? "" : comps.includes(Y) ? SQ.role_relative : SQ.role_nonrelative, tip: Y === null ? (D.format >= 7 ? "no taxon shares enough sites with the focal at this locus" : "this report does not record the closest match of a sequence whose closest-match test did not run (it is carried from report format 7)") : `the focal's closest match at this locus${comps.includes(Y) ? ` (also relative ${comps.indexOf(Y) + 1})` : " (not one of its relatives)"}` },
+      { g: bsRep, role: "broad", tag: SQ.role_largest, tip: bsRep === null ? "the report carries no broad-sample representative for this cell" : (sr && sr.rc ? sr.note : "the broad comparator with the most extreme standardised residual") }];
+    comps.forEach((c, r) => rows.push({ g: c, role: "comp", tag: lmFmt(SQ.role_relative_n, { n: r + 1 }), tip: `relative ${r + 1}: the ${ord[r] || `${r + 1}th closest`} taxon genome-wide` }));
     const divAt = rows.findIndex(r => r.role === "comp"), broadAt = rows.findIndex(r => r.role === "broad");
     const ruleAt = new Set([1, broadAt, divAt]);                                  // a rule between each test's block
     const rulesBefore = ri => { let n = 0; for (const q of ruleAt) if (q <= ri) n++; return n; };
@@ -1964,7 +1971,7 @@ const Card = (() => {
     const isGap = b => b === 45 || b === 63 || b === 46 || b === 42 || b === 32;
     const sr = similarRole(D, g, li); const T = cellTests(D, g, li, SIM, sr);
     const comps = D.comps(g, li); const Y = T.closest !== null ? T.closest.taxon : null;
-    const rcr0 = D.rcAt ? D.rcAt(i) : null; const bsRep = rcr0 && rcr0.pt >= 0 ? rcr0.pt : null;
+    const rcr0 = D.rcAt ? D.rcAt(i) : null; const bsRep = bsRepOf(D, i, rcr0);   // the sample's biggest-residual sequence, always
     const rows = [{ g, role: "focal", gut: "" },
       { g: Y, role: "closest", gut: LM_STR.seq.gut_closest },
       { g: bsRep, role: "broad", gut: LM_STR.seq.gut_broad }];
