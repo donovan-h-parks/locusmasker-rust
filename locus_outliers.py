@@ -110,6 +110,10 @@ Method:
 Outputs (in --out; <stem> is the alignment file's name without extension)
   <stem>.masked.<ext>  the alignment in its input format with every masked sequence blanked
   masked.csv           ONE row per masked sequence and why: reason (divergent, similar or both),
+                       mask_test and mask_log10p - the sequence's one significance: the most significant
+                       BAR-HELD p over the tests that masked it (the close-relative decisive p, the fired
+                       closest-match p, the broad-sample stage-1 variance p) and the test it came from;
+                       a rough level of belief, not a combined p -
                        residues_masked (its residues at the locus; the whole stretch is blanked), then
                        one column family per test, each with its effect and its p where the test ran.
                        CLOSE-RELATIVE test: close_relative_fails of close_relative_comparators, the
@@ -2521,7 +2525,7 @@ def fork_map(fn, items, workers, chunksize=1):
     finally: _FORK_FN = None
 
 
-MASKED_COLUMNS = ["locus", "taxon", "reason", "residues_masked",
+MASKED_COLUMNS = ["locus", "taxon", "reason", "mask_test", "mask_log10p", "residues_masked",
                   "close_relative_fails", "close_relative_comparators", "close_relative_observed", "close_relative_expected", "close_relative_excess_m", "close_relative_log10p",
                   "closest_match_partner", "closest_match_arm", "closest_match_role", "closest_match_observed", "closest_match_expected", "closest_match_row_factor", "closest_match_log10p", "closest_match_relatives", "closest_match_partner_excess_m",
                   "broad_sample_partner", "broad_sample_side", "broad_sample_observed", "broad_sample_expected", "broad_sample_log10p",
@@ -2934,8 +2938,12 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
         for q in np.flatnonzero(masked_q).tolist():
             g = int(idx[q]); dv = bool(dflag[q] and mask_hi); sm = bool(sflag[q] and mask_lo)
             reason = "both" if dv and sm else ("divergent" if dv else "similar")
+            mc = []                                                             # the cell's one significance: the most significant
+            if dv and np.isfinite(div_lp[q]): mc.append((float(div_lp[q]), "close_relative"))   # bar-held p over the tests that masked it
+            if sm and q in pair_of: mc.append((float(pair_of[q][0]["lnp"]), "closest_match"))
+            mt, mp = (min(mc)[1], fnum(min(mc)[0] / LN10, 3)) if mc else ("", "")
             s = int(starts[q]); comps = [names[int(c)] for c in ci[s:s + kc[q]]]
-            row_ = [name, names[g], reason, int(nres[g]), int(nf[q]), int(kc[q]), fnum(100 - med_i[q], 2), fnum(100 - med_e[q], 2),
+            row_ = [name, names[g], reason, mt, mp, int(nres[g]), int(nf[q]), int(kc[q]), fnum(100 - med_i[q], 2), fnum(100 - med_e[q], 2),
                     fnum(exm[q], 3), fnum(div_lp[q] / LN10, 3)] + cm_cols(q) + ["", "", "", "", ""] + ["; ".join(comps), fnum(lbar10, 3)]
             mrows_out.append((g, reason, row_))
 
@@ -3444,6 +3452,10 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                 PROG.tick()
                 if out is None: continue
                 name, sites = loci[li]
+                def var_lp10(li_, g_):
+                    """the cell's stage-1 variance p (log10): the broad test's one bar-held number"""
+                    k_ = np.int64(li_) * np.int64(n) + np.int64(g_); p_ = int(np.searchsorted(key_a, k_))
+                    return float(lp1_by[p_]) / LN10 if p_ < len(key_a) and key_a[p_] == k_ else float("nan")
                 for g, sp_i, ep_i, partner, call_i in out["lean"]:              # every gate-passer: both sides' statistics, the call and
                     bs_rows_rep.append((li, g, sp_i, ep_i, partner, call_i))     # its representative, significant or not (the viewer's lean)
                 for g, b2, side_txt, lp_use, partner, obs_, exp_ in out["note"]:
@@ -3454,14 +3466,17 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                         if j is not None and mrows[j][2] == "similar": tally["similar"] -= 1; tally["both"] += 1; mrows[j][2] = "both"
                     j = mrow_at.get((name, names[g]))
                     if j is not None:
-                        mrows[j][19] = names[partner] if partner >= 0 else ""; mrows[j][20] = side_txt
-                        mrows[j][21] = fnum(obs_, 2); mrows[j][22] = fnum(exp_, 2); mrows[j][23] = fnum(lp_use / LN10, 3)
+                        mrows[j][21] = names[partner] if partner >= 0 else ""; mrows[j][22] = side_txt
+                        mrows[j][23] = fnum(obs_, 2); mrows[j][24] = fnum(exp_, 2); mrows[j][25] = fnum(lp_use / LN10, 3)
+                        v10 = var_lp10(li, g)                                   # the broad firing joins the cell's one significance when it is the most significant
+                        if np.isfinite(v10) and (mrows[j][4] == "" or v10 < float(mrows[j][4])):
+                            mrows[j][3] = "broad_sample"; mrows[j][4] = fnum(v10, 3)
                 for g, b2, side_txt, lp_use, partner, obs_, exp_ in out["mask"]:
                     rep["side2"][g, li] |= b2; rep["side"][g, li] |= 2 if b2 & 4 else 1
                     views[g][sites] = 45
                     reason = "similar" if b2 & 4 else "divergent"
                     tally[reason] += 1; tally_bs["close" if b2 & 4 else "divergent"] += 1
-                    mrows.append([name, names[g], reason, int(P.focal_sites[g, li])] + [""] * 6 + [""] * 9
+                    mrows.append([name, names[g], reason, "broad_sample", fnum(var_lp10(li, g), 3), int(P.focal_sites[g, li])] + [""] * 6 + [""] * 9
                                  + [names[partner] if partner >= 0 else "", side_txt, fnum(obs_, 2), fnum(exp_, 2), fnum(lp_use / LN10, 3)]
                                  + ["", fnum(lbar10, 3)])
                     mrow_at[(name, names[g])] = len(mrows) - 1
@@ -3480,9 +3495,9 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                     rep["side2"][g, li] |= 64
                     bs_rows_rep.append((li, g, dp_i, np.nan, partner, 1))
                     j = mrow_at.get((name, names[g]))
-                    if j is not None:                                           # a label on the divergent row: the mask and its reason unchanged
-                        mrows[j][19] = names[partner] if partner >= 0 else ""; mrows[j][20] = "close"
-                        mrows[j][21] = fnum(obs_, 2); mrows[j][22] = fnum(exp_, 2); mrows[j][23] = fnum(dp_i / LN10, 3)
+                    if j is not None:                                           # a label on the divergent row: the mask, its reason and its significance unchanged
+                        mrows[j][21] = names[partner] if partner >= 0 else ""; mrows[j][22] = "close"
+                        mrows[j][23] = fnum(obs_, 2); mrows[j][24] = fnum(exp_, 2); mrows[j][25] = fnum(dp_i / LN10, 3)
                         tally_bs["labels"] += 1
                 if out["broad"]:
                     rep.setdefault("bs_records", {}).setdefault(li, []).extend(out["broad"])

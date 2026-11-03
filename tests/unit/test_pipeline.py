@@ -291,6 +291,8 @@ class TestOutputs:
         for r in masked:
             g, li = R.tx(r["taxon"]), R.lx(r["locus"]); sd = int(side[g, li])
             assert r["reason"] == ("both" if (sd & 3) == 3 else "divergent" if sd & 1 else "similar")
+            assert r["mask_test"] in ("close_relative", "closest_match", "broad_sample")      # the one significance: bar-held, so
+            assert float(r["mask_log10p"]) < R.man["test"]["log10_bar"] + 1e-3                # every masked sequence earns at least one star
             assert int(r["residues_masked"]) == fs[g, li]
             if r["close_relative_fails"] == "":                                  # masked by the broad-sample test alone: its own columns carry the evidence
                 assert r["broad_sample_partner"] != "" and r["broad_sample_side"] != "" and float(r["broad_sample_log10p"]) < 0; continue

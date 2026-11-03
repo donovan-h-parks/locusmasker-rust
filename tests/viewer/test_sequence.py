@@ -33,9 +33,19 @@ class Expect:
         self.red = {c for c, p in self.div.items() if p < self.bar and c not in self.pairs}
         self.divP = R.cell("div_log10p", g, li); self.simP = R.cell("sim_log10p", g, li)
         self.dv, self.sm = bool(side & (1 | 16)), bool(side & (2 | 32 | 128))
+        self.s2 = int(R.arr("cells/side2.npy")[g, li]) if R.has("cells/side2.npy") else 0
+        self.varP = float("nan")
+        if R.has("cells/bs_locus.npy"):
+            for rl, rt, vp in zip(R.arr("cells/bs_locus.npy"), R.arr("cells/bs_taxon.npy"), R.arr("cells/bs_var_log10p.npy")):
+                if int(rl) == li and int(rt) == g: self.varP = float(vp); break
         seq = R.arr(f"seq/{li}.npy"); taxa = R.arr(f"seq/{li}_taxa.npy").tolist(); self.rows = {int(t): bytes(seq[k]) for k, t in enumerate(taxa)}
 
     def focal_stars(self):
+        """the cell's one significance: the most significant bar-held p over the tests that masked it"""
+        if self.side & 3:
+            c = [p for p in (self.divP if self.side & 1 else None, self.simP if self.side & 2 else None,
+                             self.varP if self.s2 & 12 else None) if p is not None and np.isfinite(p)]
+            if c: return stars(min(c), self.bar)
         if self.dv and self.sm: p = min(x for x in (self.divP, self.simP) if x is not None and np.isfinite(x))
         elif self.dv: p = self.divP
         elif self.sm: p = self.simP

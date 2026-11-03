@@ -1,10 +1,10 @@
-locus,taxon,reason,residues_masked,close_relative_fails,close_relative_comparators,close_relative_observed,close_relative_expected,close_relative_excess_m,close_relative_log10p,closest_match_partner,closest_match_arm,closest_match_role,closest_match_observed,closest_match_expected,closest_match_row_factor,closest_match_log10p,closest_match_relatives,closest_match_partner_excess_m,broad_sample_partner,broad_sample_side,broad_sample_observed,broad_sample_expected,broad_sample_log10p,comparators,log10_bar
-locus2,t27,both,169,4,5,35.50,12.18,39.240,-10.756,t10,outside,copy,0.00,35.50,,-22.898,t11; t26; t03; t08; t09,-1.799,t10,close,0.00,35.50,-21.749,t11; t26; t03; t08; t09,-4.764
-locus3,t14,both,284,4,5,33.10,10.62,27.904,-9.249,t12,outside,copy,0.00,33.10,,-17.615,t15; t01; t22; t02; t28,-2.691,,,,,,t15; t01; t22; t02; t28,-4.764
-locus8,t16,divergent,188,5,5,77.13,24.85,258.119,-20.296,t10,outside,,72.34,33.51,,0.000,t17; t00; t22; t29; t14,-2.644,,,,,,t17; t00; t22; t29; t14,-4.764
-locus10,t20,similar,209,0,5,23.92,17.29,4.520,-0.129,t21,relative,uncertain,0.00,16.97,1.000,-10.445,,4.729,,,,,,t08; t21; t09; t03; t11,-4.764
-locus10,t21,similar,209,0,5,23.92,16.97,4.729,-0.217,t20,relative,uncertain,0.00,16.97,1.000,-10.445,,4.520,,,,,,t08; t09; t20; t11; t03,-4.764
-locus11,t01,similar,245,0,5,22.86,16.44,6.008,-1.872,t25,outside,copy,14.29,31.02,,-6.048,t15; t14; t22; t28; t29,-0.615,,,,,,t15; t14; t22; t28; t29,-4.764
-locus11,t18,divergent,179,5,5,75.98,21.84,183.730,-37.521,t16,outside,,67.31,42.86,,0.000,t19; t07; t10; t06; t25,-6.236,,,,,,t19; t07; t10; t06; t25,-4.764
-locus12,t15,similar,197,2,5,14.72,10.30,4.777,-1.337,t23,relative,copy,0.00,16.87,1.000,-13.332,,-2.117,,,,,,t14; t01; t22; t28; t29,-4.764
-locus13,t28,divergent,28,3,3,78.57,11.00,200.323,-11.378,t29,relative,,82.14,1.81,1.000,0.000,,3.261,,,,,,t29; t23; t22,-4.764
+locus,taxon,reason,mask_test,mask_log10p,residues_masked,close_relative_fails,close_relative_comparators,close_relative_observed,close_relative_expected,close_relative_excess_m,close_relative_log10p,closest_match_partner,closest_match_arm,closest_match_role,closest_match_observed,closest_match_expected,closest_match_row_factor,closest_match_log10p,closest_match_relatives,closest_match_partner_excess_m,broad_sample_partner,broad_sample_side,broad_sample_observed,broad_sample_expected,broad_sample_log10p,comparators,log10_bar
+locus2,t27,both,closest_match,-22.898,169,4,5,35.50,12.18,39.240,-10.756,t10,outside,copy,0.00,35.50,,-22.898,t11; t26; t03; t08; t09,-1.799,t10,close,0.00,35.50,-21.749,t11; t26; t03; t08; t09,-4.764
+locus3,t14,both,closest_match,-17.615,284,4,5,33.10,10.62,27.904,-9.249,t12,outside,copy,0.00,33.10,,-17.615,t15; t01; t22; t02; t28,-2.691,,,,,,t15; t01; t22; t02; t28,-4.764
+locus8,t16,divergent,close_relative,-20.296,188,5,5,77.13,24.85,258.119,-20.296,t10,outside,,72.34,33.51,,0.000,t17; t00; t22; t29; t14,-2.644,,,,,,t17; t00; t22; t29; t14,-4.764
+locus10,t20,similar,closest_match,-10.445,209,0,5,23.92,17.29,4.520,-0.129,t21,relative,uncertain,0.00,16.97,1.000,-10.445,,4.729,,,,,,t08; t21; t09; t03; t11,-4.764
+locus10,t21,similar,closest_match,-10.445,209,0,5,23.92,16.97,4.729,-0.217,t20,relative,uncertain,0.00,16.97,1.000,-10.445,,4.520,,,,,,t08; t09; t20; t11; t03,-4.764
+locus11,t01,similar,closest_match,-6.048,245,0,5,22.86,16.44,6.008,-1.872,t25,outside,copy,14.29,31.02,,-6.048,t15; t14; t22; t28; t29,-0.615,,,,,,t15; t14; t22; t28; t29,-4.764
+locus11,t18,divergent,close_relative,-37.521,179,5,5,75.98,21.84,183.730,-37.521,t16,outside,,67.31,42.86,,0.000,t19; t07; t10; t06; t25,-6.236,,,,,,t19; t07; t10; t06; t25,-4.764
+locus12,t15,similar,closest_match,-13.332,197,2,5,14.72,10.30,4.777,-1.337,t23,relative,copy,0.00,16.87,1.000,-13.332,,-2.117,,,,,,t14; t01; t22; t28; t29,-4.764
+locus13,t28,divergent,close_relative,-11.378,28,3,3,78.57,11.00,200.323,-11.378,t29,relative,,82.14,1.81,1.000,0.000,,3.261,,,,,,t29; t23; t22,-4.764

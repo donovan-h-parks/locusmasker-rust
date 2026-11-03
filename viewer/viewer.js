@@ -245,6 +245,19 @@ function stateReason(D, g, li) {
 // identified direction masks nothing; the partner reported is the source when the cell is a recipient, else its strongest
 // partner. Before format 4 only the comparators were tested. Null when the cell has no partner.
 const bsMan = D => D.man.broad_sample || D.man.random_comparators;   // older format-8 manifests use the old key
+// a masked cell's one significance: the most significant BAR-HELD p over the tests that masked it (the close-relative
+// decisive p, the fired closest-match p, the broad-sample stage-1 variance p) - a rough level of belief, not a combined p
+function maskP(D, g, li) {
+  const i = g * D.nloc + li, sd = D.cols.side[i]; if (!(sd & 3)) return null;
+  const s2v = D.s2 ? D.s2(i) : 0, rcr = D.rcAt ? D.rcAt(i) : null, c = [];
+  const dp = D.num("div_log10p", g, li), sp = D.num("sim_log10p", g, li);
+  if ((sd & 1) && dp !== null && !Number.isNaN(dp)) c.push([dp, "close-relative"]);
+  if ((sd & 2) && sp !== null && !Number.isNaN(sp)) c.push([sp, "closest-match"]);
+  if ((s2v & (4 | 8)) && rcr && !Number.isNaN(rcr.var_p)) c.push([rcr.var_p, "broad-sample"]);
+  if (!c.length) return null;
+  c.sort((a, b) => a[0] - b[0]); return { p: c[0][0], test: c[0][1] };
+}
+const starsOf = (D, p) => { const bar = D.man.test && D.man.test.log10_bar != null ? D.man.test.log10_bar : null; return p == null || Number.isNaN(p) || bar === null ? "" : p < bar - Math.log10(50) ? "***" : p < bar - Math.log10(5) ? "**" : p < bar ? "*" : ""; };
 
 function similarRole(D, g, li) {
   const i_ = g * D.nloc + li, s2v = D.s2 ? D.s2(i_) : 0, ns_ = D.cols.n_similar[i_];
@@ -281,8 +294,8 @@ function cellTests(D, g, li, sim, sr) {
   if (comp && bar !== null) for (const [c, t] of comp) if (t.div < bar && !blue.has(c)) red.set(c, t.div);
   const s2v = D.s2 ? D.s2(g * D.nloc + li) : 0, rcr = D.rcAt && D.rcAt(g * D.nloc + li);
   if (rcr && rcr.pt >= 0) {                                             // the broad-sample partner: blue for a close mask or a donor-side
-    if ((s2v & 4 && !(s2v & 32)) || s2v & 64) { if (!blue.has(rcr.pt)) blue.set(rcr.pt, { p: rcr.lo, test: "broad" }); }   // label, red for a divergent call
-    else if (s2v & 8) { if (!red.has(rcr.pt)) red.set(rcr.pt, rcr.hi); }
+    if ((s2v & 4 && !(s2v & 32)) || s2v & 64) { if (!blue.has(rcr.pt)) blue.set(rcr.pt, { p: (s2v & 64) ? rcr.lo : rcr.var_p, test: "broad" }); }   // label, red for a divergent call;
+    else if (s2v & 8) { if (!red.has(rcr.pt)) red.set(rcr.pt, rcr.var_p); }     // a mask's badge is the test's own p: stage 1, bar-held
   }
   const lc = D.num("locus_closest", g, li);
   if (lc !== null && lc >= 0) closest = { taxon: lc, p: D.num("locus_closest_log10p", g, li) };
@@ -715,6 +728,8 @@ function cellHover(g, li, compact) {
   const sd = D.cols.side[i], nf = D.cols.n_fail[i], ns = D.cols.n_similar[i], nc = D.cols.n_comp[i], v4 = D.format >= 4;
   let label = D.cellLabel(code, i); if ((sd & 3) === 3 && D.format < 5) label += v4 ? " · also copied from another taxon" : " · also masked as too similar"; if (sd & 4) label += " · fewer comparators than requested"; if (sd & 16) label += " (flagged; divergent masking was off)"; if (sd & 32) label += v4 ? " · identified as a copy (similar masking was off)" : " · a similar-side fail (similar masking was off)";
   row("state", reason ? `${D.cellLabel(code, i)}: ${reason}` : label);
+  const mp_ = maskP(D, g, li);
+  if (mp_) row("mask significance", `log10 p = ${fmt2(mp_.p)}${starsOf(D, mp_.p) ? " " + starsOf(D, mp_.p) : ""} (the ${mp_.test} test)`);
   if (nc > 0) {
     row("residues", fmtInt(D.cols.focal_sites[i]));
     // ---- the closest-match test (one direction: too similar; two arms by where the expectation comes from)
@@ -1200,9 +1215,10 @@ const Sequence = (() => {
     const dv = sd & (1 | 16), sm = sd & (2 | 32 | 128);
     const s2v = D.s2 ? D.s2(i) : 0, rcr = D.rcAt ? D.rcAt(i) : null;
     const divMain = D.cols.n_comp[i] === D.K ? D.cols.n_fail[i] >= D.M : D.cols.n_fail[i] >= (D.cols.n_comp[i] >> 1) + 1;
-    if (dv) says.push(withStars("significantly too divergent", divP));
+    if (dv && !((s2v & 8) && (divP === null || Number.isNaN(divP)))) says.push(withStars("significantly too divergent", divP));
+    if (sr && sr.rc && Pn && (sd & 1) && (s2v & 8)) says.push(withStars(`significantly too divergent from ${Pn}, a broad-sample comparator`, rcr ? rcr.var_p : null));
     const donorTxt = D.format < 4 ? "" : sd & 8 ? " (donor uncertain: both masked)" : sd & (2 | 32) ? ` (${Pn} looks more likely to be the donor)` : sd & 128 ? ` (${D.taxa.names[g]} looks more likely to be the donor)` : "";
-    if (sr && sr.rc && Pn && sm) says.push(withStars(`significantly too close to ${Pn}, a broad-sample comparator`, rcr ? rcr.lo : null));
+    if (sr && sr.rc && Pn && sm && (s2v & 4)) says.push(withStars(`significantly too close to ${Pn}, a broad-sample comparator`, rcr ? rcr.var_p : null));
     else if (Pn && (D.format < 4 || sm)) says.push(withStars(`significantly too similar to ${Pn}`, simP) + donorTxt);
     if ((s2v & 64) && Pn) says.push(withStars(`the broad sample also calls it too close to ${Pn}'s side`, rcr ? rcr.lo : null));
     const verdict = D.cols.n_comp[i] === 0 ? `Not tested: ${stateReason(D, g, li) || "no comparators"}` : `${masked ? "Masked" : off ? "Not masked (masking was off)" : "Not masked"}${says.length ? ": " + says.join("; ") : ""}${sd & 4 ? " (fewer comparators than requested)" : ""}`;
@@ -1213,7 +1229,7 @@ const Sequence = (() => {
       if (r.role === "focal") return focalNote ? focalNote + barTxt : "";
       if (r.g === null) return "";
       if (r.role === "closest") return lp("too similar to the focal", T.blue.has(r.g) ? T.blue.get(r.g).p : T.closest.p) + barTxt;
-      if (r.role === "broad") return T.blue.has(r.g) ? lp("too close to the focal (the broad-sample test)", T.blue.get(r.g).p) + " · at α" : T.red.has(r.g) ? lp("the strongest lean of the far half (the broad-sample test)", T.red.get(r.g)) + " · at α" : "";
+      if (r.role === "broad") return T.blue.has(r.g) ? lp("too close to the focal (the broad-sample test, stage 1)", T.blue.get(r.g).p) + barTxt : T.red.has(r.g) ? lp("too divergent from the focal (the broad-sample test, stage 1)", T.red.get(r.g)) + barTxt : "";
       const t = T.comp && T.comp.get(r.g); if (!t) return T.blue.has(r.g) ? lp("too similar to the focal", T.blue.get(r.g).p) + barTxt : "";
       return `${lp("too divergent from the focal", t.div)} · ${lp("too similar to the focal", T.blue.has(r.g) ? T.blue.get(r.g).p : t.sim)}${barTxt}`;
     };
@@ -1258,7 +1274,7 @@ const Sequence = (() => {
       cols.names.append(el("div", { class: "seqnm", style: `height:${ROW_H}px`, title: tip }, el("span", { class: "nm" + (r.st ? " st-" + r.st : "") + (r.g === null ? " none" : "") }, nm)));
       if (!T.pcol) return;
       let bg = D.col.passCell, txt = "–", ink = cssVar("--muted");
-      if (r.role === "focal") { const fp = dv && sm ? Math.min(divP ?? Infinity, simP ?? Infinity) : dv ? divP : sm ? simP : null; bg = dv && sm ? D.col.both : dv ? D.col.red : sm ? D.col.blue : D.col.passCell; txt = dv || sm ? T.stars(fp) : "–"; if (dv || sm) ink = "#ffffff"; }
+      if (r.role === "focal") { const mp = maskP(D, g, li); const fp = mp ? mp.p : dv && sm ? Math.min(divP ?? Infinity, simP ?? Infinity) : dv ? divP : sm ? simP : null; bg = dv && sm ? D.col.both : dv ? D.col.red : sm ? D.col.blue : D.col.passCell; txt = dv || sm ? T.stars(fp) : "–"; if (dv || sm) ink = "#ffffff"; }
       else if (r.role === "closest") { if (r.g !== null && T.blue.has(r.g)) { bg = D.col.blue; txt = T.stars(T.blue.get(r.g).p); ink = "#ffffff"; } }
       else if (r.role === "broad") { if (r.g !== null && T.blue.has(r.g)) { bg = D.col.blue; txt = T.stars(T.blue.get(r.g).p); ink = "#ffffff"; } else if (r.g !== null && T.red.has(r.g)) { bg = D.col.red; txt = T.stars(T.red.get(r.g)); ink = "#ffffff"; } }
       else if (r.st === "red") { bg = D.col.red; txt = T.stars(T.red.get(r.g)); ink = "#ffffff"; }

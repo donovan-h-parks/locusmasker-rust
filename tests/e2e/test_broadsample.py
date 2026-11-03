@@ -46,6 +46,7 @@ class TestOnThePlantedFixture:
         (e,) = ds.ev("hiddencontam")
         (row,) = [q for q in rows if (q["locus"], q["taxon"]) == (e["locus"], e["taxon"])]
         assert row["reason"] == "divergent" and row["broad_sample_side"] == "divergent" and broad_masked(row)
+        assert row["mask_test"] == "broad_sample" and float(row["mask_log10p"]) < -5         # the one significance is the stage-1 variance p
         assert float(row["broad_sample_observed"]) > float(row["broad_sample_expected"])
         assert float(row["broad_sample_log10p"]) < -1.3
         g = r.report.taxa["names"].index(e["taxon"]); li = r.report.loci["names"].index(e["locus"])
