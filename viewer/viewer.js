@@ -938,13 +938,19 @@ function minCompSim(D, g, li) {                              // the strongest in
   let m = null; for (let k = 0; k < D.K; k++) { const v = D.tests.sim[base + k]; if (Number.isFinite(v) && (m === null || v < m)) m = v; }
   return m;
 }
-function residualOf(D, g, li, mode) {                        // one residual per cell per TEST ARM, on its own axis
+function cmArms(D, g, li) {                                  // the closest-match test's two evidences for one cell
   const i = g * D.nloc + li;
-  if (mode === "cm_relative") { const v = minCompSim(D, g, li); return v === null ? null : -v; }
-  if (mode === "cm_outside") {
-    if (!(D.cols.side[i] & 64)) return null;                 // the outside test only ran where the locus's closest is not a relative
-    const v = D.num("locus_closest_log10p", g, li); return v === null ? null : -v;
-  }
+  const out = (D.cols.side[i] & 64) ? D.num("locus_closest_log10p", g, li) : null;   // the outside arm ran
+  const pair = D.num("sim_log10p", g, li);                   // the strongest pair, either member's side, either arm
+  const slots = minCompSim(D, g, li);
+  const pairIsOut = pair !== null && out !== null && Math.abs(pair - out) < 1e-4;    // that pair WAS the outside test
+  let rel = pairIsOut ? slots : pair !== null ? (slots !== null ? Math.min(pair, slots) : pair) : slots;
+  return { rel, out };
+}
+function residualOf(D, g, li, mode) {                        // one residual per cell per TEST ARM, on its own axis
+  if (mode === "cm_relative") { const v = cmArms(D, g, li).rel; return v === null ? null : -v; }
+  if (mode === "cm_outside") { const v = cmArms(D, g, li).out; return v === null ? null : -v; }
+  const i = g * D.nloc + li;
   if (mode === "broad_sample") {                             // observed / expected variance, log2
     const v = D.cols.bs_stat ? D.cols.bs_stat[i] : NaN;
     return Number.isFinite(v) && v > 0 ? Math.log2(v) : null;
@@ -959,8 +965,8 @@ function maskKind(D, g, li) {                                // which test maske
   const cr = (sd & 1) !== 0 && (nc === D.K ? nf >= D.M : nf >= (nc >> 1) + 1);
   const cm = (sd & 2) !== 0 && D.cols.n_similar[i] > 0;
   let arm = null;
-  if (cm) { const rel = minCompSim(D, g, li); const out = (sd & 64) ? D.num("locus_closest_log10p", g, li) : null;
-    arm = out !== null && (rel === null || out < rel) ? "out" : "rel"; }
+  if (cm) { const a = cmArms(D, g, li);
+    arm = a.out !== null && (a.rel === null || a.out <= a.rel + 1e-4) ? "out" : "rel"; }
   return { cr, cm, arm, bsC, bsD };
 }
 function ribbonColour(D, g, li, mode) {                      // the mark's colour on this ribbon, null for a grey point
@@ -1752,7 +1758,7 @@ const Card = (() => {
       el("div", { class: "cd-id" }, el("span", { class: "cd-type" }, S()["type_" + kind]), el("b", null, title)),
       verdictBand(D, masks, masks.length, m, seqState, kind === "dataset"),
       extra, spineEl,
-      el("div", { class: "cd-row" }, masks.length && kind !== "sequence" ? problemsTable(D, masks, kind) : null, shape),
+      el("div", { class: "cd-row" }, masks.length && kind !== "sequence" && kind !== "dataset" ? problemsTable(D, masks, kind) : null, shape),
       el("div", { class: "cd-foot" }, lmFmt(S().footer, { dataset: D.man.dataset, version: D.man.version, date: (D.man.date || "").slice(0, 10), bar: lmP(D.man.test.log10_bar) })));
     const bar = el("div", { class: "cd-bar" }, el("button", { onclick: () => window.print() }, S().print), el("button", { onclick: close }, S().close));
     host.replaceChildren(bar, page); host.style.display = ""; document.body.classList.add("card-open");
