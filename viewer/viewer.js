@@ -438,7 +438,7 @@ async function start(bytes) {
   buildShell(); readHash(); renderAll();
   window.addEventListener("resize", () => { Overview.redraw(); for (const p of Object.values(App.panels)) if (p && p.redraw) p.redraw(); });
 }
-window.LM = { start, App, openCell: (g, li) => Sequence.open(g, li), openUnit: (k, i) => Detail.open(k, i), openCopies: (m, k) => Detail.openCopies(m, k), openCard: (k, a, b) => Card.open(k, a, b), setView: v => Overview.setView(v) };   // the tests' API
+window.LM = { start, App, openCell: (g, li) => Sequence.open(g, li), openUnit: (k, i) => Detail.open(k, i), openCopies: (m, k) => Detail.openCopies(m, k), openCard: (k, a, b) => Card.open(k, a, b), setView: v => Overview.setView(v), up: () => Nav.up(), step: d => Nav.step(d) };   // the tests' API
 
 // ------------------------------------------------------------------ shell: topbar, the two panel rows, hover card
 function buildShell() {
@@ -454,19 +454,13 @@ function buildShell() {
   app.append(el("div", { class: "topbar" }, logo ? logo.content.firstElementChild.cloneNode(true) : "",
     el("h1", null, m.dataset || m.input.file), el("span", { class: "sub" }, `${fmtInt(c.masked)} of ${fmtInt(c.cells)} sequences masked (${pct(c.masked, c.cells)}) · ${fmtInt(c.taxa)} taxa × ${fmtInt(c.loci)} loci`),
     el("span", { class: "spacer" }), about));
+  // one stage shows the deepest open level full size; every ancestor collapses to a verdict band above it
   const panels = el("div", { class: "panels", id: "panels" }); app.append(panels);
-  const top = el("div", { class: "top" }), split = el("div", { class: "hsplit", style: "display:none" }), bottom = el("div", { class: "bottom", style: "display:none" });
-  panels.append(top, split, bottom); App.panelsEl = panels; App.topEl = top; App.bottomEl = bottom; App.splitEl = split;
-  let drag = null;
-  split.addEventListener("pointerdown", ev => { split.setPointerCapture(ev.pointerId); drag = { y: ev.clientY, h: bottom.getBoundingClientRect().height }; });
-  split.addEventListener("pointermove", ev => { if (!drag) return; const h = clamp(drag.h - (ev.clientY - drag.y), 120, panels.getBoundingClientRect().height - 160); bottom.style.flexBasis = h + "px"; });
-  split.addEventListener("pointerup", () => { drag = null; Overview.redraw(); for (const p of Object.values(App.panels)) if (p && p.redraw) p.redraw(); });
-  const vs = el("div", { class: "vsplit", style: "display:none" }); App.vsplitEl = vs; let vdrag = null;
-  vs.addEventListener("pointerdown", ev => { vs.setPointerCapture(ev.pointerId); vdrag = { x: ev.clientX, w: App.panels.overview.el.getBoundingClientRect().width }; });
-  vs.addEventListener("pointermove", ev => { if (!vdrag) return; const w = clamp(vdrag.w + (ev.clientX - vdrag.x), 260, top.getBoundingClientRect().width - 260); App.panels.overview.el.style.flex = `0 0 ${w}px`; });
-  vs.addEventListener("pointerup", () => { vdrag = null; relayout(); });
+  const bands = el("div", { class: "bands" }), stage = el("div", { class: "stage" });
+  panels.append(bands, stage); App.panelsEl = panels; App.bandsEl = bands; App.stageEl = stage;
   App.hover = el("div", { class: "hover" }); document.body.append(App.hover);
-  App.panels.overview = Overview.create(); top.append(App.panels.overview.el);
+  App.panels.overview = Overview.create(); stage.append(App.panels.overview.el);
+  Nav.bindKeys(); Nav.layout();
 }
 function renderAll() { Overview.render(); for (const k of ["detail", "sequence"]) if (App.panels[k]) App.panels[k].render(); }
 function showHover(html, x, y) { const h = App.hover; h.innerHTML = ""; h.append(html); h.style.display = "block"; const r = h.getBoundingClientRect(); const px = x + 14 + r.width > innerWidth ? x - r.width - 10 : x + 14; const py = y + 14 + r.height > innerHeight ? Math.max(4, y - r.height - 10) : y + 14; h.style.left = px + "px"; h.style.top = py + "px"; }
@@ -474,7 +468,7 @@ function hideHover() { App.hover.style.display = "none"; }
 function sw(color) { const s = el("span", { class: "sw" }); if (color === "hatch") s.style.background = "var(--hatch)"; else if (color) s.style.background = color; else { s.style.border = "1px solid var(--spine)"; } return s; }
 function relayout() { Overview.redraw(); for (const p of Object.values(App.panels)) if (p && p.redraw) p.redraw(); }
 
-// a panel frame with breadcrumb and the collapse / maximise / close tools
+// a panel frame with its breadcrumb; below the top level, the one tool is the way back up
 function makePanel(key, crumbParts, onClose) {
   const body = el("div", { class: "panel-body" });
   const crumb = el("span", { class: "crumb" });
@@ -482,19 +476,89 @@ function makePanel(key, crumbParts, onClose) {
   setCrumb(crumbParts);
   const frame = el("div", { class: "panel", "data-key": key });
   const tools = el("div", { class: "tools" });
-  const collapse = el("button", { title: "collapse", onclick: () => { frame.classList.toggle("collapsed"); collapse.textContent = frame.classList.contains("collapsed") ? "▸" : "▾"; relayout(); } }, "▾");
-  const maxi = el("button", { title: "maximise", onclick: () => { const on = frame.classList.toggle("maximised"); App.panelsEl.classList.toggle("has-max", on); relayout(); } }, "⤢");
-  tools.append(collapse, maxi);
-  if (onClose) tools.append(el("button", { title: "close", onclick: onClose }, "✕"));
+  if (onClose) tools.append(el("button", { title: LM_STR.nav.up, onclick: onClose }, "✕"));
   frame.append(el("div", { class: "panel-head" }, crumb, tools), body);
   return { el: frame, body, setCrumb, tools };
 }
 function closePanel(key) {
   const p = App.panels[key]; if (!p) return; p.el.remove(); App.panels[key] = null;
-  if (key === "sequence") { App.bottomEl.style.display = "none"; App.splitEl.style.display = "none"; }
-  if (key === "detail") { App.vsplitEl.style.display = "none"; App.panels.overview.el.style.flex = ""; }
-  App.panelsEl.classList.remove("has-max"); writeHash(); relayout();
+  writeHash(); Nav.layout(); relayout();
 }
+// the navigation stack: dataset › unit › sequence. The deepest open level is the stage; each ancestor is a
+// band carrying its verdict (the cards' band anatomy) and a thumbnail: the matrix with the open place flagged,
+// or the unit's close-relative ribbon. Click a band to go back to it; Esc goes up; ← → step between siblings.
+const Nav = (() => {
+  function levels() {
+    const L = [["dataset", App.panels.overview]];
+    if (App.panels.detail) L.push(["unit", App.panels.detail]);
+    if (App.panels.sequence) L.push(["sequence", App.panels.sequence]);
+    return L;
+  }
+  function layout() {
+    const L = levels(); const deep = L[L.length - 1][1];
+    for (const [, p] of L) p.el.style.display = p === deep ? "" : "none";
+    App.bandsEl.replaceChildren(...L.slice(0, -1).map(([lv]) => band(lv)));
+    App.panelsEl.dataset.depth = L[L.length - 1][0];
+  }
+  function flagOf() {                                           // the open place, for the dataset band's thumbnail
+    const sc = Sequence.cur(); if (sc && App.panels.sequence) return { g: sc.g, li: sc.li };
+    const dc = Detail.cur(); if (dc && App.panels.detail && dc.kind !== "copies") return dc.kind === "taxon" ? { g: dc.i } : { li: dc.i };
+    return null;
+  }
+  function band(level) {
+    const D = App.D; const C = LM_STR.card;
+    const b = el("div", { class: "band", "data-level": level, title: LM_STR.nav.up, onclick: () => popTo(level) });
+    if (level === "dataset") {
+      const c = D.man.counts;
+      b.append(el("b", null, D.man.dataset || D.man.input.file),
+        el("span", { class: "line" }, lmFmt(C.verdict_dataset, { n: fmtInt(c.masked), m: fmtInt(c.cells), pct: pct(c.masked, c.cells) })));
+      const cv = el("canvas", { class: "mini" }); b.append(cv);
+      requestAnimationFrame(() => Overview.drawMini(cv, 200, 36, flagOf()));
+      return b;
+    }
+    const dc = Detail.cur(); if (!dc) return b;
+    if (dc.kind === "copies") { b.append(el("b", null, LM_STR.nav.copies)); return b; }
+    const kind = dc.kind, u = dc.i; const cnt = kind === "taxon" ? D.taxCount : D.locCount;
+    b.append(sw(cnt.masked[u] ? (cnt.div[u] >= cnt.sim[u] ? D.col.red : D.col.blue) : null),
+      el("span", { class: "kind" }, C["t_" + kind]), el("b", null, kind === "taxon" ? D.taxa.names[u] : D.loci.names[u]),
+      el("span", { class: "line" }, cnt.masked[u] ? lmFmt(C.verdict_unit, { n: fmtInt(cnt.masked[u]), m: fmtInt(cnt.tested[u]), pct: pct(cnt.masked[u], cnt.tested[u]) }) : C.verdict_clean));
+    const cv = el("canvas", { class: "mini" }); b.append(cv);
+    const sc = Sequence.cur();
+    requestAnimationFrame(() => drawResidualRow(cv, kind, u, 220, 18, { padL: 4, padR: 4, mode: "close_relative", noBand: true, mark: sc && App.panels.sequence ? [sc.g, sc.li] : null }));
+    return b;
+  }
+  function popTo(level) {
+    if (level === "dataset") { if (App.panels.sequence) closePanel("sequence"); if (App.panels.detail) closePanel("detail"); }
+    else if (level === "unit") { if (App.panels.sequence) closePanel("sequence"); }
+  }
+  function up() { if (App.panels.sequence) closePanel("sequence"); else if (App.panels.detail) closePanel("detail"); }
+  function step(dir) {                                          // the next or previous sibling at the open level
+    const D = App.D;
+    if (App.panels.sequence) {
+      const sc = Sequence.cur(); const dc = Detail.cur(); let sib;
+      if (dc && App.panels.detail && dc.kind === "taxon") sib = App.order.loci.filter(li => D.cols.side[dc.i * D.nloc + li] & 3).map(li => [dc.i, li]);
+      else if (dc && App.panels.detail && dc.kind === "locus") sib = App.order.taxa.filter(g => D.cols.side[g * D.nloc + dc.i] & 3).map(g => [g, dc.i]);
+      else sib = maskIndex(D).slice().sort((a, b) => a.p - b.p).map(q => [q.g, q.li]);
+      if (!sib.length) return;
+      let k = sib.findIndex(([g, li]) => g === sc.g && li === sc.li); k = k < 0 ? 0 : clamp(k + dir, 0, sib.length - 1);
+      Sequence.open(sib[k][0], sib[k][1]); return;
+    }
+    const dc = Detail.cur(); if (!dc || !App.panels.detail || dc.kind === "copies") return;
+    const cnt = dc.kind === "taxon" ? D.taxCount : D.locCount; const ord = dc.kind === "taxon" ? App.order.taxa : App.order.loci;
+    const sib = ord.filter(u => cnt.masked[u] > 0); if (!sib.length) return;
+    let k = sib.indexOf(dc.i); k = k < 0 ? 0 : clamp(k + dir, 0, sib.length - 1);
+    Detail.open(dc.kind, sib[k]);
+  }
+  function bindKeys() {
+    document.addEventListener("keydown", ev => {
+      if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT" || ev.target.tagName === "TEXTAREA") return;
+      if (ev.key === "Escape") { up(); return; }
+      if (!App.panels.detail && !App.panels.sequence) return;     // the matrix keeps its own arrows at the top level
+      if (ev.key === "ArrowLeft" || ev.key === "ArrowRight") { ev.preventDefault(); step(ev.key === "ArrowRight" ? 1 : -1); }
+    });
+  }
+  return { layout, popTo, up, step, bindKeys };
+})();
 
 // ------------------------------------------------------------------ the overview panel: one view at a time, sized to the panel
 const Overview = (() => {
@@ -727,15 +791,27 @@ const Overview = (() => {
       for (let k = c0; k <= c1; k++) { c.save(); c.translate((k - V.x0) * V.cw + V.cw / 2, cl - 4); c.rotate(-Math.PI / 2); c.fillStyle = D.loci.status[ol[k]] === "tested" ? cssVar("--ink") : cssVar("--faint"); c.fillText(trunc(c, D.loci.names[ol[k]], cl - 8), 0, 0); c.restore(); } }
   }
   function trunc(c, s, maxw) { if (c.measureText(s).width <= maxw) return s; let lo = 0, hi = s.length; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (c.measureText(s.slice(0, mid) + "…").width <= maxw) lo = mid; else hi = mid - 1; } return s.slice(0, lo) + "…"; }
+  function paintMini(cv, sw_, sh) {                            // the whole matrix at thumbnail size, the worst cell of each bin
+    const D = App.D; const dpr = devicePixelRatio || 1;
+    cv.width = Math.round(sw_ * dpr); cv.height = Math.round(sh * dpr); cv.style.width = sw_ + "px"; cv.style.height = sh + "px";
+    const c2 = cv.getContext("2d"); const img = c2.createImageData(cv.width, cv.height); const px = img.data; const ot = App.order.taxa, ol = App.order.loci, nloc = D.nloc, sev = D.sev, st = D.state, lut = D.lut;
+    for (let y = 0; y < cv.height; y++) { const r0 = Math.floor(y * D.n / cv.height), r1 = Math.max(r0, Math.floor((y + 1) * D.n / cv.height) - 1);
+      for (let x = 0; x < cv.width; x++) { const c0 = Math.floor(x * nloc / cv.width), c1 = Math.max(c0, Math.floor((x + 1) * nloc / cv.width) - 1); let best = -1, code = 0;
+        for (let r = r0; r <= r1; r++) { const g = ot[r] * nloc; for (let c = c0; c <= c1; c++) { const i = g + ol[c]; if (sev[i] > best) { best = sev[i]; code = st[i]; } } }
+        const o = (y * cv.width + x) * 4, l = code * 4; px[o] = lut[l]; px[o + 1] = lut[l + 1]; px[o + 2] = lut[l + 2]; px[o + 3] = 255; } }
+    c2.putImageData(img, 0, 0); return c2;
+  }
+  function drawMini(cv, W, H, flag) {                          // the dataset band's thumbnail: the matrix with the open place flagged
+    const D = App.D; const dpr = devicePixelRatio || 1; const c2 = paintMini(cv, W, H);
+    if (!flag) return;
+    c2.save(); c2.scale(dpr, dpr); c2.strokeStyle = cssVar("--focus"); c2.lineWidth = 1.2;
+    if (flag.g !== undefined) { const y = Math.round(App.order.taxa.indexOf(flag.g) / D.n * H) + 0.5; c2.beginPath(); c2.moveTo(0, y); c2.lineTo(W, y); c2.stroke(); }
+    if (flag.li !== undefined) { const x = Math.round(App.order.loci.indexOf(flag.li) / D.nloc * W) + 0.5; c2.beginPath(); c2.moveTo(x, 0); c2.lineTo(x, H); c2.stroke(); }
+    c2.restore();
+  }
   function drawStrip() {
     const D = App.D; const dpr = devicePixelRatio || 1; const sw_ = Math.min(420, Math.max(160, size().W * 0.35)), sh = 40;
-    strip.width = Math.round(sw_ * dpr); strip.height = Math.round(sh * dpr); strip.style.width = sw_ + "px"; strip.style.height = sh + "px";
-    const img = stripCtx.createImageData(strip.width, strip.height); const px = img.data; const ot = App.order.taxa, ol = App.order.loci, nloc = D.nloc, sev = D.sev, st = D.state, lut = D.lut;
-    for (let y = 0; y < strip.height; y++) { const r0 = Math.floor(y * D.n / strip.height), r1 = Math.max(r0, Math.floor((y + 1) * D.n / strip.height) - 1);
-      for (let x = 0; x < strip.width; x++) { const c0 = Math.floor(x * nloc / strip.width), c1 = Math.max(c0, Math.floor((x + 1) * nloc / strip.width) - 1); let best = -1, code = 0;
-        for (let r = r0; r <= r1; r++) { const g = ot[r] * nloc; for (let c = c0; c <= c1; c++) { const i = g + ol[c]; if (sev[i] > best) { best = sev[i]; code = st[i]; } } }
-        const o = (y * strip.width + x) * 4, l = code * 4; px[o] = lut[l]; px[o + 1] = lut[l + 1]; px[o + 2] = lut[l + 2]; px[o + 3] = 255; } }
-    stripCtx.putImageData(img, 0, 0);
+    paintMini(strip, sw_, sh); const nloc = D.nloc;
     const { w, h } = canvasArea(); stripCtx.save(); stripCtx.scale(dpr, dpr); stripCtx.strokeStyle = cssVar("--focus"); stripCtx.lineWidth = 1.5;
     stripCtx.strokeRect(V.x0 / nloc * sw_, V.y0 / D.n * sh, Math.min(w / V.cw, nloc) / nloc * sw_, Math.min(h / V.ch, D.n) / D.n * sh); stripCtx.restore();
   }
@@ -786,7 +862,7 @@ const Overview = (() => {
     document.addEventListener("keydown", ev => {
       if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT" || ev.target.tagName === "TEXTAREA") { if (ev.key === "Escape") ev.target.blur(); return; }
       if (ev.key === "/") { ev.preventDefault(); const s = $("input[type=search]", P.el); if (s) s.focus(); return; }
-      if (ev.key === "Escape") { if (App.panels.sequence) closePanel("sequence"); else if (App.panels.detail) closePanel("detail"); return; }
+      if (ev.key === "Escape" || App.panels.detail || App.panels.sequence) return;   // Nav's
       if (App.view !== "matrix") return;
       const step = 40;
       if (ev.key === "ArrowLeft") V.x0 -= step / V.cw; else if (ev.key === "ArrowRight") V.x0 += step / V.cw; else if (ev.key === "ArrowUp") V.y0 -= step / V.ch; else if (ev.key === "ArrowDown") V.y0 += step / V.ch;
@@ -833,7 +909,7 @@ const Overview = (() => {
     if (first) { const { w, h } = canvasArea(); if (first[0] === "row") { const r = App.order.taxa.indexOf(first[1]); V.y0 = r - h / V.ch / 2; } else { const c = App.order.loci.indexOf(first[1]); V.x0 = c - w / V.cw / 2; } }
     redraw();
   }
-  return { create, render, redraw, setOrder, setView, refresh, V, highlight, labelSpace, fitAll, viewEl: () => viewEl };
+  return { create, render, redraw, setOrder, setView, refresh, V, highlight, labelSpace, fitAll, drawMini, viewEl: () => viewEl };
 })();
 function debounce(fn, ms) { let t = null; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
@@ -1195,16 +1271,16 @@ const Detail = (() => {
   function ensurePanel() {
     if (App.panels.detail) return;
     const P = makePanel("detail", [], () => closePanel("detail")); App.panels.detail = { el: P.el, P, render, redraw: render };
-    App.topEl.append(App.vsplitEl, P.el); App.vsplitEl.style.display = "";
+    App.stageEl.append(P.el); Nav.layout();
     new ResizeObserver(debounce(() => { if (App.panels.detail && cur) draw(); }, 120)).observe(P.body);
   }
   function open(kind, i) {
     cur = { kind, i }; ensurePanel();
     if (kind === "locus" && view === "matches") view = "scatter";
-    render(); writeHash(); Overview.highlight(kind === "taxon" ? "row" : "col", i);
+    render(); writeHash(); Overview.highlight(kind === "taxon" ? "row" : "col", i); Nav.layout();
   }
   // the copies' site ribbons in blocks by donor, recipient or pair (mode); key: one block alone, null for all
-  function openCopies(mode, key) { cur = { kind: "copies", mode, key: key === undefined ? null : key }; ensurePanel(); render(); writeHash(); }
+  function openCopies(mode, key) { cur = { kind: "copies", mode, key: key === undefined ? null : key }; ensurePanel(); render(); writeHash(); Nav.layout(); }
   function cellsOf() {
     const D = App.D; const out = [];
     if (cur.kind === "taxon") { const g = cur.i; for (let li = 0; li < D.nloc; li++) if (D.cols.n_comp[g * D.nloc + li] > 0) out.push([g, li]); }
@@ -1494,9 +1570,9 @@ const Sequence = (() => {
     cur = { g, li }; pps = null; x0 = 0;
     if (!App.panels.sequence) {
       const P = makePanel("sequence", [], () => closePanel("sequence")); App.panels.sequence = { el: P.el, P, render, redraw: () => drawFn && drawFn() };
-      App.bottomEl.append(P.el); App.bottomEl.style.display = ""; App.splitEl.style.display = ""; if (!App.bottomEl.style.flexBasis) App.bottomEl.style.flexBasis = "42%";
+      App.stageEl.append(P.el); Nav.layout();
     }
-    App.sel.cells.clear(); App.sel.cells.add(g * App.D.nloc + li); Overview.redraw(); render(); writeHash();
+    App.sel.cells.clear(); App.sel.cells.add(g * App.D.nloc + li); Overview.redraw(); render(); writeHash(); Nav.layout();
   }
   const isGap = b => b === 45 || b === 63 || b === 46 || b === 42 || b === 32;      // - ? . * space
   function inkFor(hex) { const L = luminance(hex); return (L + 0.05) / 0.05 >= 1.05 / (L + 0.05) ? "#0b0b0b" : "#ffffff"; }   // the letter colour with the higher contrast
@@ -1649,7 +1725,7 @@ const Sequence = (() => {
       c.strokeStyle = cssVar("--spine"); for (const ri of ruleAt) { c.beginPath(); c.moveTo(0, topOf(ri) - RULE_H / 2 - 0.5); c.lineTo(W, topOf(ri) - RULE_H / 2 - 0.5); c.stroke(); }
       rows.forEach((r, ri) => {
         const y = topOf(ri); const bytes = r.bytes; const isFocal = ri === 0, isCand = ri === 1;
-        if (!bytes) { c.fillStyle = faint; c.font = `11px ${cssVar("--sans")}`; c.textAlign = "left"; c.fillText(r.g === null ? (D.format >= 7 ? "no closest match at this locus" : "closest match not recorded in this report") : "row not carried in this report", 4, y + ROW_H / 2); c.textAlign = "center"; c.font = `${Math.min(13, pps)}px ${cssVar("--mono")}`; return; }
+        if (!bytes) { c.fillStyle = faint; c.font = `11px ${cssVar("--sans")}`; c.textAlign = "left"; c.fillText(r.g === null ? (r.role === "broad" ? "" : D.format >= 7 ? "no closest match at this locus" : "closest match not recorded in this report") : "row not carried in this report", 4, y + ROW_H / 2); c.textAlign = "center"; c.font = `${Math.min(13, pps)}px ${cssVar("--mono")}`; return; }
         if (letters) {
           // the focal is red at a red site and blue at a blue one; the closest match blue where it agrees with the focal at a red
           // site; a relative red where it differs from the focal; every other residue sits on the plain cell

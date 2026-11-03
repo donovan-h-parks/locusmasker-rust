@@ -110,6 +110,13 @@ const LM_STR = {
     broad_none: "none drawn",                        // the broad row's name when the report carries no representative
   },
 
+  // ---- the navigation stack: the deepest open level fills the window; the levels above it collapse to one
+  // band each (click: back to it). These are the only words the stack adds.
+  nav: {
+    up: "back up · Esc",                             // the bands' and the ✕ button's tooltip
+    copies: "copies",                                // the unit band's name when the open unit is the copies panel
+  },
+
   // ---- the copy flow (the overview's summary and the dataset card): donors on the left, recipients on the
   // right, one band per flow, its thickness the attributed copies; {n} in the title is the summary's own picker.
   flow: {

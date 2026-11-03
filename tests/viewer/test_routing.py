@@ -41,18 +41,44 @@ class TestHash:
 
 
 class TestPanelChrome:
-    def test_close_collapse_and_maximise(self, page, report_of):
-        html, R = report_of("dna_small"); open_report(page, html); page.evaluate("() => LM.openUnit('taxon', 1)"); page.wait_for_selector(".panel[data-key=detail]")
-        page.click(".panel[data-key=detail] .tools button[title=collapse]"); page.wait_for_timeout(100); assert page.evaluate("() => document.querySelector('.panel[data-key=detail]').classList.contains('collapsed')")
-        page.click(".panel[data-key=detail] .tools button[title=collapse]"); page.click(".panel[data-key=detail] .tools button[title=maximise]"); page.wait_for_timeout(100)
-        assert page.evaluate("() => document.querySelector('.panel[data-key=detail]').classList.contains('maximised')")
-        page.click(".panel[data-key=detail] .tools button[title=maximise]"); page.click(".panel[data-key=detail] .tools button[title=close]"); page.wait_for_timeout(200)
+    """the navigation stack: the deepest open level is the stage, every level above it a band; a band click,
+    the ✕ or Esc go back up; ← → step between siblings at the open level"""
+    def test_the_deepest_level_is_the_stage_and_its_ancestors_are_bands(self, page, report_of):
+        html, R = report_of("dna_small"); g, li = cells_of_kind(R)["divergent"]; open_report(page, html)
+        shown = lambda key: page.evaluate(f"() => getComputedStyle(document.querySelector('.panel[data-key={key}]')).display !== 'none'")
+        assert shown("overview") and page.query_selector_all(".bands .band") == []
+        page.evaluate(f"() => LM.openUnit('taxon', {g})"); page.wait_for_selector(".panel[data-key=detail]"); page.wait_for_timeout(150)
+        assert shown("detail") and not shown("overview")
+        bands = page.query_selector_all(".bands .band"); assert [b.get_attribute("data-level") for b in bands] == ["dataset"]
+        assert page.query_selector(".band[data-level=dataset] canvas.mini") is not None          # the matrix thumbnail
+        page.evaluate(f"() => LM.openCell({g}, {li})"); page.wait_for_selector(".panel[data-key=sequence] .seq-foot"); page.wait_for_timeout(150)
+        assert shown("sequence") and not shown("detail") and not shown("overview")
+        bands = page.query_selector_all(".bands .band"); assert [b.get_attribute("data-level") for b in bands] == ["dataset", "unit"]
+        assert R.taxa["names"][g] in page.text_content(".band[data-level=unit]")
+        page.click(".band[data-level=unit]"); page.wait_for_timeout(200)                          # back to the unit
+        assert page.query_selector(".panel[data-key=sequence]") is None and shown("detail")
+        page.click(".panel[data-key=detail] .tools button"); page.wait_for_timeout(200)           # the ✕: back to the dataset
+        assert page.query_selector(".panel[data-key=detail]") is None and shown("overview") and page.query_selector_all(".bands .band") == []
+
+    def test_escape_goes_up_and_the_arrows_step_between_siblings(self, page, report_of):
+        html, R = report_of("dna_small"); g, li = cells_of_kind(R)["divergent"]; open_report(page, html)
+        import numpy as np
+        side = R.arr("cells/side.npy"); masked_loci = [int(x) for x in np.nonzero((side[g] & 3) > 0)[0]]
+        page.evaluate(f"() => LM.openUnit('taxon', {g})"); page.wait_for_selector(".panel[data-key=detail]")
+        page.evaluate(f"() => LM.openCell({g}, {li})"); page.wait_for_selector(".panel[data-key=sequence] .seq-foot"); page.wait_for_timeout(150)
+        if len(masked_loci) > 1:                                                                   # → the next masked cell of the open taxon
+            page.keyboard.press("ArrowRight"); page.wait_for_timeout(300)
+            cur = page.evaluate("() => location.hash.match(/c=(\\d+)%2C(\\d+)/).slice(1).map(Number)")
+            k = masked_loci.index(li); assert cur == [g, masked_loci[min(k + 1, len(masked_loci) - 1)]]
+        page.keyboard.press("Escape"); page.wait_for_timeout(200)
+        assert page.query_selector(".panel[data-key=sequence]") is None and page.query_selector(".panel[data-key=detail]") is not None
+        page.keyboard.press("Escape"); page.wait_for_timeout(200)
         assert page.query_selector(".panel[data-key=detail]") is None
 
     def test_the_sequence_panel_closes_and_reopens(self, page, report_of):
         html, R = report_of("dna_small"); g, li = cells_of_kind(R)["divergent"]; open_report(page, html)
         page.evaluate(f"() => LM.openCell({g}, {li})"); page.wait_for_selector(".panel[data-key=sequence] .seq-foot")
-        page.click(".panel[data-key=sequence] .tools button[title=close]"); page.wait_for_timeout(200); assert page.query_selector(".panel[data-key=sequence]") is None
+        page.click(".panel[data-key=sequence] .tools button"); page.wait_for_timeout(200); assert page.query_selector(".panel[data-key=sequence]") is None
         page.evaluate(f"() => LM.openCell({g}, {li})"); page.wait_for_selector(".panel[data-key=sequence] .seq-foot")
 
 
