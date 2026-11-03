@@ -15,16 +15,19 @@ def masked_share(R):
 
 class TestSummary:
     def test_hero_and_cards_are_the_manifest_counts(self, page, report_of):
-        """the landing: the hero holds the masked total, one card per test in the canonical order with each test's
-        mask count (a both-direction cell counts on both of its tests' cards)"""
+        """the landing: the hero holds the masked total, one card per test ARM in the canonical order (the
+        closest-match test splits into its relative and outside arms; their counts sum to the test's)"""
         html, R = report_of("dna_small"); open_report(page, html); c = R.man["counts"]
         share, per_locus, masked = masked_share(R)
         assert page.text_content(".hero-n").replace(",", "") == str(c["masked"])
         bs = R.man.get("broad_sample") or {}
         bsN = (bs.get("close") or 0) + (bs.get("divergent") or 0) + (bs.get("both_sides") or 0)
-        cards = [v.replace(",", "") for v in page.eval_on_selector_all(".cards .card .card-n", "els => els.map(e => e.textContent)")]
-        want = [str(c["masked_divergent"] - (bs.get("divergent") or 0)), str(c["masked_similar"] - (bs.get("close") or 0))] + ([str(bsN)] if R.man.get("broad_sample") else [])
-        assert cards == want
+        cards = [int(v.replace(",", "")) for v in page.eval_on_selector_all(".cards .card .card-n", "els => els.map(e => e.textContent)")]
+        n_cards = 4 if R.man.get("broad_sample") else 3
+        assert len(cards) == n_cards
+        assert cards[0] == c["masked_divergent"] - (bs.get("divergent") or 0)
+        assert cards[1] + cards[2] == c["masked_similar"] - (bs.get("close") or 0)
+        if R.man.get("broad_sample"): assert cards[3] == bsN
         stats = page.text_content(".hero-stats")
         assert f"{int((masked.sum(1) > 0).sum())} / {c['taxa']}" in stats and f"{int((per_locus > 0).sum())} / {c['loci']}" in stats
 

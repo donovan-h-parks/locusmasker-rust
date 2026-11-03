@@ -71,9 +71,9 @@ class TestBroadSampleCells:
 
 
 class TestCards:
-    def test_the_locus_card_shows_the_involved_taxa_as_a_lollipop(self, page, report_of):
-        """one page per locus: verdict band, the four-test spine, and the involved taxa ranked by significance -
-        plots, never tables (the card grammar)"""
+    def test_the_locus_card_shows_each_tests_top_sequences_as_ribbon_rows(self, page, report_of):
+        """one page per locus: verdict band, the four-test spine, then per test its top masked sequences as
+        numbered site-ribbon rows with their p - plots and rows, never tables (the card grammar)"""
         html, R = report_of("dna_rc"); open_report(page, html)
         import numpy as np
         side = R.arr("cells/side.npy"); li = int(np.argmax(((side & 3) > 0).sum(0)))
@@ -81,8 +81,9 @@ class TestCards:
         n = int(((side[:, li] & 3) > 0).sum())
         assert page.query_selector_all("#lm-card .cd-rib canvas") and len(page.query_selector_all("#lm-card .cd-rib")) >= 2
         assert page.query_selector("#lm-card .cd-table") is None               # no cell tables on cards
-        dots = page.query_selector_all("#lm-card .cd-rank circle")
-        assert len(dots) >= min(n, 10)                                         # the involved taxa, one dot each
+        rows = page.query_selector_all("#lm-card .cd-ribrow")
+        assert 1 <= len(rows) and all(r.query_selector(".cd-num") and r.query_selector(".cd-ribp") for r in rows)
+        assert page.query_selector("#lm-card .cd-rank") is None                # no rankings at a single locus
         assert page.query_selector("#lm-card .cd-verdict") is not None and page.query_selector("#lm-card .cd-foot") is not None
         page.evaluate("() => LM.App && document.querySelector('#lm-card .cd-bar button:last-child').click()")
         assert page.query_selector("#lm-card .cd-page") is None
@@ -92,8 +93,10 @@ class TestCards:
         import numpy as np
         s2 = R.arr("cells/side2.npy"); g, li = [(int(a), int(b)) for a, b in zip(*((s2 & 8) > 0).nonzero())][0]
         page.evaluate(f"() => LM.openCard('sequence', {g}, {li})"); page.wait_for_selector("#lm-card .cd-page", timeout=15000)
+        page.wait_for_selector("#lm-card .cd-resrow", timeout=15000)           # the rows arrive with the bundle reads
         assert R.taxa["names"][g] in page.text_content("#lm-card .cd-id")
-        assert page.query_selector("#lm-card .cd-evidence table") is not None
+        assert page.query_selector("#lm-card .cd-evidence") is None            # no hover-table embed: concise result rows
+        assert len(page.query_selector_all("#lm-card .cd-resrow")) >= 1
         assert len(page.query_selector_all("#lm-card .cd-rib")) >= 2
 
     def test_the_dataset_card_counts_match_the_hero(self, page, report_of):
@@ -101,3 +104,19 @@ class TestCards:
         page.evaluate("() => LM.openCard('dataset')"); page.wait_for_selector("#lm-card .cd-page", timeout=15000)
         v = page.text_content("#lm-card .cd-verdict")
         assert str(R.man["counts"]["masked"]) in v.replace(",", "")
+
+    def test_the_copy_flow_joins_donors_to_recipients(self, page, report_of):
+        """when the report holds attributed copies, the summary and the dataset card draw the donor-to-recipient
+        flow: one band per flow, node bars both sides (the sankey that replaced the two lollipops)"""
+        html, R = report_of("dna_rc"); open_report(page, html)
+        n = page.evaluate("""() => { const D = LM.App.D; let n = 0;
+            for (let g = 0; g < D.n; g++) for (let li = 0; li < D.nloc; li++) {
+              const sd = D.cols.side[g * D.nloc + li]; if (!(sd & 34) || (sd & 8)) continue;
+              const p = D.num("partner", g, li); if (p !== null && p >= 0) n++; } return n; }""")
+        flows = page.query_selector_all(".tiles .lm-flow")
+        if n == 0:
+            assert not flows; return
+        assert len(flows) == 1 and page.query_selector_all(".tiles .lm-flow path")
+        page.evaluate("() => LM.openCard('dataset')"); page.wait_for_selector("#lm-card .cd-page", timeout=15000)
+        assert page.query_selector("#lm-card .lm-flow") is not None
+        assert len(page.query_selector_all("#lm-card .lm-flow rect")) >= 2      # a bar each side at least

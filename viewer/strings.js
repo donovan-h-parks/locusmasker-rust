@@ -37,14 +37,20 @@ const LM_STR = {
     hero_excluded: "{n} taxa excluded",                    // only when the run excluded taxa
     hero_skipped: "{n} loci skipped",                      // only when the run skipped loci
 
-    // one card per test: its name, its mask count, and ONE line on what the test asks. Click: the table, filtered.
+    // one card per test ARM (four cards): its name, its mask count, what it asks, and when it is used.
+    // The words "divergent" and "similar" are tinted the design's red and blue wherever they appear on a card.
+    // These cards show on the summary (click: the table, filtered) and again on the dataset card, below the ribbons.
     card_close_relative: "close-relative test",
     card_close_relative_line: "too divergent from its close relatives",
-    card_closest_match: "closest-match test",
-    card_closest_match_line: "too similar to another sequence at the locus",
+    card_cm_rel: "closest-match test",
+    card_cm_rel_line: "too similar to its closest match at this locus",
+    card_cm_rel_when: "used when the closest match is one of the close relatives",
+    card_cm_out: "closest-match test",
+    card_cm_out_line: "too similar to its closest match at this locus",
+    card_cm_out_when: "used when the closest match is not one of the close relatives",
     card_broad_sample: "broad-sample test",
-    card_broad_sample_line: "out of line with a broad sample of taxa",
-    card_divergent_labels: "{n} divergent cells labelled also-too-close",   // the broad card's second line, when any
+    card_broad_close: "{n} sequences too similar to one or more of the broad sample of {k} taxa",
+    card_broad_divergent: "{n} sequences too divergent to one or more of the broad sample of {k} taxa",
 
     worst_taxa: "most masked taxa (share of tested loci)",
     worst_loci: "most masked loci (sequences)",
@@ -104,6 +110,16 @@ const LM_STR = {
     broad_none: "none drawn",                        // the broad row's name when the report carries no representative
   },
 
+  // ---- the copy flow (the overview's summary and the dataset card): donors on the left, recipients on the
+  // right, one band per flow, its thickness the attributed copies; {n} in the title is the summary's own picker.
+  flow: {
+    title: "Top {n} donor and recipient taxa, plus others",
+    sub: "Number of events per taxon and percentage of all sequences for each taxon (or all others) shown. {n} events from others to others not shown.",
+    others: "others",
+    hover: "{don} → {rec} · {n}",                    // the band's hover; {n} = its copies
+    hover_click: "click: the copies' site ribbons",
+  },
+
   // ---- the cards: one printable page per dataset / locus / taxon / sequence, one design language.
   // The verdict band is the "fine / bad / discuss" line; the spine is the three per-test ribbons on dataset-wide
   // axes, so cards compare side by side; the table names what is involved; the footer makes the page traceable.
@@ -118,16 +134,20 @@ const LM_STR = {
     rank_taxa: "% masked per taxon",                 // the dataset card's two rank curves (little titles above each)
     rank_loci: "% masked per locus",
     rank_x: "ranked",                                // the curves' x caption
-    donors: "top {n} donors",                        // who a copy was more likely copied from; {n} = how many are shown
-    recipients: "top {n} recipients",                // who holds the copies
-    flow_x: "% of attributed copies",                // the lollipops' shared axis
-    masked_taxa: "top {n} masked taxa",              // the locus card's lollipop: who is involved, by significance
-    masked_loci: "top {n} masked loci",              // the taxon card's mirror
-    mask_x: "mask p",                                // those lollipops' axis
-    received: "top {n} donors",                      // a taxon card: who this taxon received copies from
-    gave: "top {n} recipients",                      // a taxon card: who received copies from this taxon
-    align_title: "alignment",                        // the sequence card's site strip: red where relatives differ, blue where the partner agrees there
+    // the unit cards' body: per test, the top masked sequences as site ribbons, each with its p; the same
+    // sequences are numbered on the spine's ribbon plots above
+    top_ribbons: "top {n} · {test}",
+    align_title: "alignment",                        // the sequence card's alignment: the sequence tab's rows (focal,
+                                                     // closest, broad, relatives), whole locus, sized to the page
     trees_title: "expected · observed",              // the sequence card's face-to-face trees
+    // the sequence card's results block: one row per test, no interpretation. {p} is the close-relative row's
+    // median over the comparator tests; {call} is empty or one of the two call strings below it.
+    r_cr: "{nf} of {nc} failed · observed {obs}% · expected {exp}% · p {p}",
+    r_cm: "closest match {name} · {arm} · p {p}",
+    r_cm_arm_rel: "a relative", r_cm_arm_out: "outside the relatives",
+    r_bs: "variance {v}× expected · p {p}{call}",
+    r_bs_divergent: " · sequence too divergent",
+    r_bs_close: " · sequence too close",
     footer: "{dataset} · LocusMasker {version} · {date} · every test held to p < {bar}",
   },
 
