@@ -1017,18 +1017,19 @@ function drawResidualRow(cv, kind, u, W, H, opts) {
 }
 function residualAxis(W, padL, padR, mode) {
   const D = App.D; mode = mode || "close_relative"; const xs = residualScale(D, mode, W, padL, padR);
-  const svg = d3.create("svg").attr("width", W).attr("height", 30).attr("class", "resid-axis");
+  const svg = d3.create("svg").attr("width", W).attr("height", 40).attr("class", "resid-axis");
   const S = LM_STR.ribbons;
+  const caption = t => svg.append("text").attr("x", (xs.range()[0] + xs.range()[1]) / 2).attr("y", 37).attr("text-anchor", "middle").attr("fill", cssVar("--muted")).attr("font-size", 10.5).text(t);
   if (mode === "cm_relative" || mode === "cm_outside") {
-    svg.append("g").attr("class", "axis").attr("transform", "translate(0,16)").call(d3.axisTop(xs).ticks(6).tickFormat(d => lmP(-d)));
-    svg.append("text").attr("x", (xs.range()[0] + xs.range()[1]) / 2).attr("y", 29).attr("text-anchor", "middle").attr("fill", cssVar("--muted")).attr("font-size", 10.5).text(S.axis_closest);
+    svg.append("g").attr("class", "axis").attr("transform", "translate(0,2)").call(d3.axisBottom(xs).ticks(5).tickFormat(d => lmP(-d)));
+    caption(S.axis_closest);
   } else if (mode === "broad_sample") {
-    svg.append("g").attr("class", "axis").attr("transform", "translate(0,16)").call(d3.axisTop(xs).ticks(7));
-    svg.append("text").attr("x", xs(0)).attr("y", 29).attr("text-anchor", "middle").attr("fill", cssVar("--muted")).attr("font-size", 10.5).text(S.axis_broad);
+    svg.append("g").attr("class", "axis").attr("transform", "translate(0,2)").call(d3.axisBottom(xs).ticks(7));
+    caption(S.axis_broad);
   } else {
     const tv = [-1000, -100, -10, -1, 0, 1, 10, 100, 1000].filter(v => v >= D.exDomain[0] && v <= D.exDomain[1]);
-    svg.append("g").attr("class", "axis").attr("transform", "translate(0,16)").call(d3.axisTop(xs).tickValues(tv).tickFormat(d3.format(",")));
-    svg.append("text").attr("x", xs(0)).attr("y", 29).attr("text-anchor", "middle").attr("fill", cssVar("--muted")).attr("font-size", 10.5).text(S.axis_close_relative);
+    svg.append("g").attr("class", "axis").attr("transform", "translate(0,2)").call(d3.axisBottom(xs).tickValues(tv).tickFormat(d3.format(",")));
+    caption(S.axis_close_relative);
   }
   return svg.node();
 }
@@ -1665,7 +1666,7 @@ const Card = (() => {
     return (D._spineCounts = c);
   }
   function spine(D, kind, u, cell) {
-    const box = el("div", { class: "cd-spine" }); const W = 620, RH = 26, PAD = 20;
+    const box = el("div", { class: "cd-spine" }); const W = 700, RH = 32, PAD = 24;
     const counts = spineCounts(D);
     for (const mode of ["close_relative", "cm_relative", "cm_outside", "broad_sample"]) {
       if (mode === "broad_sample" && !D.cols.bs_stat) continue;       // old bundles have no variance statistic to place
@@ -1733,13 +1734,51 @@ const Card = (() => {
       if (p) svg.append("circle").attr("cx", xs(p.x)).attr("cy", ys(p.y)).attr("r", 6).attr("fill", "none").attr("stroke", cssVar("--focus")).attr("stroke-width", 1.6); }
     return svg.node();
   }
+  function rankStrip(D, kind, W, H) {                         // every unit's % masked, ranked: the shape of the damage
+    const cnt = kind === "taxon" ? D.taxCount : D.locCount; const names = kind === "taxon" ? D.taxa.names : D.loci.names;
+    const units = [];
+    for (let u = 0; u < (kind === "taxon" ? D.n : D.nloc); u++) if (cnt.tested[u] > 0) units.push([u, 100 * cnt.masked[u] / cnt.tested[u]]);
+    units.sort((a, b) => b[1] - a[1]);
+    const shown = units.slice(0, Math.max(400, Math.min(units.length, 60)));       // thousands of near-zero taxa say nothing:
+    if (units.length > shown.length) units.length = shown.length;                   // the ranked top carries the shape
+    const m = { l: 40, r: 10, t: 16, b: 26 };
+    const p99 = units.length ? units[Math.floor(units.length * 0.01)][1] : 0;      // one extreme taxon must not flatten the curve:
+    const ymax = Math.max(2, Math.min((units[0] ? units[0][1] : 0) * 1.08, Math.max(p99 * 2.5, 5)));   // clip near the 99th percentile, the label carries the top
+    const xs = d3.scaleLinear().domain([0, units.length]).range([m.l, W - m.r]), ys = d3.scaleLinear().domain([0, ymax]).range([H - m.b, m.t]);
+    const svg = d3.create("svg").attr("width", W).attr("height", H).attr("class", "cd-rank");
+    svg.append("g").attr("class", "axis").attr("transform", `translate(${m.l},0)`).call(d3.axisLeft(ys).ticks(4).tickFormat(v => v + "%"));
+    svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(xs).ticks(4).tickFormat(d3.format("~s")));
+    const area = d3.area().x((d, i) => xs(i)).y0(ys(0)).y1(d => ys(d[1]));
+    const step = Math.max(1, Math.floor(units.length / (W - m.l - m.r)));
+    const pts = []; for (let i = 0; i < units.length; i += step) pts.push(units[i]);
+    svg.append("path").attr("d", area(pts)).attr("fill", cssVar("--pass")).attr("opacity", 0.7);
+    if (units.length && units[0][1] > 0) {
+      svg.append("text").attr("x", xs(0) + 3).attr("y", Math.max(m.t + 8, ys(Math.min(units[0][1], ymax)) - 3)).attr("font-size", 10).attr("fill", cssVar("--ink"))
+        .text(`${names[units[0][0]]} ${fmt1(units[0][1])}%`);
+    }
+    svg.append("text").attr("x", (m.l + W - m.r) / 2).attr("y", H - 2).attr("text-anchor", "middle").attr("font-size", 10.5).attr("fill", cssVar("--muted"))
+      .text(lmFmt(kind === "taxon" ? S().rank_taxa : S().rank_loci, {}));
+    return svg.node();
+  }
+  function flowLists(D) {                                     // the dataset's donors and recipients, most copies first
+    const cols = [["donor", S().donors], ["recipient", S().recipients]].map(([mode, title]) => {
+      const groups = copyGroups(D, mode).slice(0, 8);
+      const c = el("div", { class: "cd-flow" }, el("h4", null, title));
+      for (const gr of groups) c.append(el("div", { class: "cd-flowrow" },
+        el("span", { class: "nm" }, gr.label), el("b", null, fmtInt(gr.list.length))));
+      return c;
+    });
+    return el("div", { class: "cd-flows" }, ...cols);
+  }
   function open(kind, a, b) {
     ensure(); const D = App.D;
     const masksAll = maskIndex(D);
     let title, masks, cells, m, spineEl, shape, extra = null, seqState = null;
     if (kind === "dataset") {
       title = D.man.dataset; masks = masksAll; m = D.man.counts.cells;
-      spineEl = spine(D, "dataset"); shape = null;
+      spineEl = spine(D, "dataset");
+      shape = el("div", { class: "cd-row" }, rankStrip(D, "taxon", 330, 150), rankStrip(D, "locus", 330, 150));
+      if (copiesOf(D).length) extra = flowLists(D);
     } else if (kind === "locus" || kind === "taxon") {
       const u = a; title = kind === "locus" ? D.loci.names[u] : D.taxa.names[u];
       masks = masksAll.filter(q => (kind === "locus" ? q.li : q.g) === u);
@@ -1757,7 +1796,7 @@ const Card = (() => {
     const page = el("div", { class: "cd-page" },
       el("div", { class: "cd-id" }, el("span", { class: "cd-type" }, S()["type_" + kind]), el("b", null, title)),
       verdictBand(D, masks, masks.length, m, seqState, kind === "dataset"),
-      extra, spineEl,
+      kind === "dataset" ? null : extra, spineEl, kind === "dataset" ? extra : null,
       el("div", { class: "cd-row" }, masks.length && kind !== "sequence" && kind !== "dataset" ? problemsTable(D, masks, kind) : null, shape),
       el("div", { class: "cd-foot" }, lmFmt(S().footer, { dataset: D.man.dataset, version: D.man.version, date: (D.man.date || "").slice(0, 10), bar: lmP(D.man.test.log10_bar) })));
     const bar = el("div", { class: "cd-bar" }, el("button", { onclick: () => window.print() }, S().print), el("button", { onclick: close }, S().close));
