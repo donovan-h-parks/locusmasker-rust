@@ -54,7 +54,7 @@ class TestHtml:
 
     def test_the_page_size_is_the_data_plus_a_small_viewer(self, runs):
         r = runs("dna_small"); page = os.path.getsize(r.file("report.html")); data = os.path.getsize(r.file("report.npz"))
-        assert data * 4 / 3 < page < data * 4 / 3 + 600_000
+        assert data * 4 / 3 < page < data * 4 / 3 + 1_300_000                 # the viewer, d3, fuse and the embedded Inter face
 
 
 class TestOneFileCeiling:
