@@ -26,9 +26,9 @@ class TestLoads:
         assert page.evaluate("() => Object.keys(window.LM).sort()") == ["App", "openCell", "openUnit", "setView", "start"]
         assert page.evaluate("() => [LM.App.D.n, LM.App.D.nloc, LM.App.D.format, LM.App.D.K, LM.App.D.M]") == [R.n, R.nloc, 9, R.K, R.M]
 
-    def test_the_loading_placeholder_is_gone(self, page, report_of):
+    def test_the_loading_screen_is_gone(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html)
-        assert page.query_selector(".loading") is None and page.query_selector(".topbar") is not None
+        assert page.query_selector(".loading") is None and page.query_selector("#lm-load") is None and page.query_selector(".topbar") is not None
 
     @pytest.mark.parametrize("name", ["aa_small", "dna_dense", "dna_clean", "aa_clean", "cannon_aa", "near_dna"])
     def test_every_fixture_report_opens(self, page, report_of, name):
@@ -56,32 +56,42 @@ class TestRefusals:
     @pytest.mark.allow_errors
     def test_a_newer_format_is_refused_with_the_version(self, page, report_of):
         html, R = report_of("dna_small", "format9"); page.goto("file://" + html); page.wait_for_selector(".error", timeout=30000)
-        txt = page.text_content(".error"); assert "format 10" in txt and "9.9.9" in txt and "formats 1 to 9" in txt
+        txt = page.text_content(".error"); assert "10" in txt and "9.9.9" in txt            # the numbers, never the words: those are Rob's
 
     @pytest.mark.allow_errors
-    def test_corrupted_data_shows_an_error_not_a_blank_page(self, page, report_of, tmp_path):
+    def test_corrupted_data_holds_the_loading_screen_not_a_blank_page(self, page, report_of, tmp_path):
+        """data that does not end like the tool's ZIP: the loading screen holds in its incomplete state (words are
+        Rob's to change - the tests pin structure, never text)"""
         html, R = report_of("dna_small"); b64 = base64.b64encode(b"this is not a zip file" * 100).decode()
-        out = inline_viewer(b64, str(tmp_path / "bad.html")); page.goto("file://" + out); page.wait_for_selector(".error", timeout=30000)
-        assert "incomplete" in page.text_content(".error")                    # data that does not end like the tool's ZIP: the same message as a cut file
+        out = inline_viewer(b64, str(tmp_path / "bad.html"))
+        page.add_init_script("try { sessionStorage.lmRetry = 9 } catch (e) {}")   # hold the auto-retry off while we look
+        page.goto("file://" + out); page.wait_for_selector('#lm-load[data-state="incomplete"]', timeout=30000)
+        assert page.query_selector("#lm-load .ls-track") is not None
 
     @pytest.mark.allow_errors
-    def test_a_truncated_file_says_it_is_incomplete(self, page, report_of, tmp_path):
-        """a page cut inside the bundle still boots (the viewer now sits before the data) and says the file is
-        incomplete, with how far its data reaches"""
+    def test_a_truncated_file_holds_the_loading_screen_with_the_figures(self, page, report_of, tmp_path):
+        """a page cut inside the bundle still boots (the viewer sits before the data): the loading screen holds in
+        its incomplete state with the title, a partly filled bar and the X / Y figure, and retries by itself"""
         html, R = report_of("dna_small"); txt = open(html, encoding="utf-8").read()
         b = txt.index('id="lm-bundle"'); cut = str(tmp_path / "cut_bundle.html")
-        open(cut, "w", encoding="utf-8").write(txt[:b + (len(txt) - b) // 2]); page.goto("file://" + cut)
-        page.wait_for_selector(".error", timeout=30000)
-        body = page.text_content("body"); assert "incomplete" in body and "stops after" in body and "Loading the report" not in body
+        open(cut, "w", encoding="utf-8").write(txt[:b + (len(txt) - b) // 2])
+        page.add_init_script("try { sessionStorage.lmRetry = 9 } catch (e) {}")
+        page.goto("file://" + cut); page.wait_for_selector('#lm-load[data-state="incomplete"]', timeout=30000)
+        assert page.text_content("#lm-load .ls-title") == "dna_small"
+        w = page.evaluate("() => parseFloat(document.querySelector('#lm-load .ls-fill').style.width)")
+        assert 0 < w < 100
+        num = page.text_content("#lm-load .ls-num"); assert "/" in num and ("MB" in num or "KB" in num)
 
     @pytest.mark.allow_errors
-    def test_a_page_cut_inside_the_viewer_falls_to_the_watchdog(self, page, report_of, tmp_path):
-        """cut before the viewer script ends, nothing can boot: the template's head watchdog replaces the silent
-        loading line and says to open the file in a regular browser"""
+    def test_a_page_cut_inside_the_viewer_falls_to_the_loader(self, page, report_of, tmp_path):
+        """cut before the viewer script ends, nothing can boot: the head loader shows the screen with the title and
+        calls the short file incomplete (a re-copy fixes it, so it retries by itself)"""
         html, R = report_of("dna_small"); txt = open(html, encoding="utf-8").read()
         v = txt.index("LocusMasker report viewer. One classic"); cut = str(tmp_path / "cut_viewer.html")
-        open(cut, "w", encoding="utf-8").write(txt[:v + 2000]); page.goto("file://" + cut)
-        page.wait_for_function("() => document.querySelector('#app') && document.querySelector('#app').textContent.includes('regular browser')", timeout=30000)
+        open(cut, "w", encoding="utf-8").write(txt[:v + 2000])
+        page.add_init_script("try { sessionStorage.lmRetry = 9 } catch (e) {}")
+        page.goto("file://" + cut); page.wait_for_selector('#lm-load[data-state="incomplete"]', timeout=30000)
+        assert page.text_content("#lm-load .ls-title") == "dna_small"
 
     def test_nothing_in_the_page_reads_undefined_or_nan(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html); page.wait_for_timeout(300)
@@ -91,7 +101,7 @@ class TestRefusals:
     def test_a_page_without_data_says_so(self, page, tmp_path):
         """the viewer template without a report: a message, no file picker (the browser version is gone)"""
         out = inline_viewer("", str(tmp_path / "empty.html")); page.goto("file://" + out); page.wait_for_selector(".error", timeout=30000)
-        assert "carries no data" in page.text_content(".error") and page.query_selector("input[type=file]") is None
+        assert page.query_selector("input[type=file]") is None
 
 
 class TestOlderFormats:

@@ -1,6 +1,7 @@
 """A headless Chromium for the report viewer: one browser per worker, a fresh page per test that collects script and
 console errors, and helpers that build variant reports (older formats, corrupted or truncated files) from a run."""
-import base64, fcntl, json, os, re, zipfile
+import base64
+import json, fcntl, json, os, re, zipfile
 import numpy as np
 import pytest
 from tests.conftest import ROOT, Report, dataset, run_tool
@@ -41,6 +42,7 @@ def inline_viewer(b64, out):
     """report.html exactly as the tool writes it, around a given base64 bundle"""
     html = open(os.path.join(VIEWER, "viewer.html"), encoding="utf-8").read()
     html = html.replace("@@BUNDLE@@", b64)
+    html = html.replace("@@META@@", json.dumps(dict(dataset="test_report", bundle_bytes=len(b64) * 3 // 4, version="test")), 1)
     html = re.sub(r'<script src="([^"]+)"></script>', lambda m: "<script>\n" + open(os.path.join(VIEWER, m.group(1)), encoding="utf-8").read() + "\n</script>", html)
     html = re.sub(r'<link rel="stylesheet" href="([^"]+)">', lambda m: "<style>\n" + open(os.path.join(VIEWER, m.group(1)), encoding="utf-8").read() + "\n</style>", html)
     def icon(m):

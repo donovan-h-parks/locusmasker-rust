@@ -93,7 +93,7 @@ async function loadBundle(bytes) {
   const json = async name => JSON.parse(td.decode(await zip.read(name)));
   const npy = async name => parseNpy(await zip.read(name));
   const man = await json("manifest.json");
-  if (man.format_version > 9) throw new Error(`this report was written in bundle format ${man.format_version}; this viewer reads formats 1 to 9. Please use the viewer that came with the tool version ${man.version}.`);
+  if (man.format_version > 9) throw new Error(lmFmt(LM_STR.fatal.newer_format, { found: man.format_version, max: 9, version: man.version }));
   const taxa = await json("taxa.json"), loci = await json("loci.json");
   const D = { zip, man, format: man.format_version || 1, taxa, loci, n: taxa.names.length, nloc: loci.names.length, K: man.options.K_eff, M: man.options.M_eff, cols: {}, cache: { codes: new Map(), seq: new Map() } };
   const byteCols = ["n_comp", "n_fail", "n_similar", "side", "focal_sites"];
@@ -338,25 +338,29 @@ function testSummary(T) {
 const App = { D: null, panels: {}, hover: null, sel: { rows: new Set(), cols: new Set(), cells: new Set() }, order: { taxa: null, loci: null, taxaMode: "input", lociMode: "input" }, hidePass: false, view: "summary" };
 
 function boot() {
-  window.__lmBooted = true;                                          // the template's watchdog stands down: from here every stall has its own message
   const tag = document.getElementById("lm-bundle"); const b64 = tag ? tag.textContent.trim() : "";
   if (b64 && b64 !== "@@" + "BUNDLE@@") {                            // the marker the tool replaces, split so this file never carries it
     let bytes = null; try { bytes = b64ToBytes(b64); } catch (e) { /* a cut inside the base64 */ }
     if (!bytes || !zipEnds(bytes)) { showIncomplete(b64.length); return; }     // the page was read before its file was complete
     start(bytes).catch(showError); return;
   }
-  $("#app").replaceChildren(el("div", { class: "error" }, "This page carries no data: it is the viewer template without a report. Run locus_outliers.py; the report.html it writes has the data inside it."));
+  window.__lmBooted = true;
+  $("#app").replaceChildren(el("div", { class: "error" }, LM_STR.fatal.no_data));
 }
-function showError(e) { console.error(e); $("#app").replaceChildren(el("div", { class: "error" }, "The report could not be read.\n\n" + (e && e.stack || e))); }
+function showError(e) { console.error(e); window.__lmBooted = true; $("#app").replaceChildren(el("div", { class: "error" }, LM_STR.fatal.unreadable + "\n\n" + (e && e.stack || e))); }
 // a complete bundle ends with the ZIP's end-of-central-directory record; a page cut before its end does not
 function zipEnds(u8) { const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength); for (let i = u8.length - 22; i >= Math.max(0, u8.length - 22 - 65536); i--) if (dv.getUint32(i, true) === 0x06054b50) return true; return false; }
-function showIncomplete(n) {
-  $("#app").replaceChildren(el("div", { class: "error" }, `This report file is incomplete: its data stops after ${(n * 3 / 4 / 1e6).toFixed(1)} MB. It was probably copied or downloaded before it was whole, or the viewer opened it before it finished arriving. Reload once the file is complete.`,
-    el("div", { style: "margin-top: 12px" }, el("button", { onclick: () => location.reload() }, "reload"))));
+function showIncomplete(n) {                                          // the file on disk is short or damaged: the loading screen holds and retries by itself
+  if (window.__lmRetryShort) { window.__lmRetryShort(n * 3 / 4, (window.__LM_META && __LM_META.bundle_bytes) || n * 3 / 4 + 1); return; }
+  location.reload();                                                   // no loader on the page (an odd embed): the retry is a plain reload
 }
 async function start(bytes) {
-  $("#app").replaceChildren(el("div", { class: "loading" }, "Reading the report…"));
+  const load = document.getElementById("lm-load");                     // the loading screen's last stop: the bar is full, the data is decoding
+  const noteEl = load && load.querySelector(".ls-note"); if (noteEl) noteEl.textContent = LM_STR.loading.reading;
+  await new Promise(r => setTimeout(r, 0));                            // let the note paint before the decode blocks the thread
+  try { sessionStorage.removeItem("lmRetry"); } catch (e) { }
   const D = await loadBundle(bytes); App.D = D;
+  window.__lmBooted = true;
   App.order.taxa = d3.range(D.n); App.order.loci = d3.range(D.nloc);
   buildShell(); readHash(); renderAll();
   window.addEventListener("resize", () => { Overview.redraw(); for (const p of Object.values(App.panels)) if (p && p.redraw) p.redraw(); });

@@ -7,19 +7,58 @@
 <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png">
 <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
 <link rel="stylesheet" href="viewer.css">
-<script>/* the watchdog: the viewer script is the last thing in this (large) file, so if the page stalls on the static
-"Loading" line, either the file has not finished arriving or the host never runs its scripts. Say so, instead of
-sitting silent, and say how far the page got. The viewer script clears the flag the moment it runs. */
+<script src="strings.js"></script>
+<script>window.__LM_META = @@META@@;</script>
+<script>/* the loading screen: runs from the first parsed byte, renders the logo, the report's title and a live
+progress bar, and keeps updating while the rest of this (large) file arrives. The bundle is the file's last
+element, so its current length IS the arrival progress. The viewer stands this down the moment it boots; if the
+whole file has parsed and the viewer never ran, this is also the last line of defence (data-state=stalled). */
 (() => {
-  const t0 = Date.now(); window.__lmBooted = false;
+  window.__lmBooted = false;
+  const S = (typeof LM_STR !== "undefined" && LM_STR.loading) || {}; const fmt = typeof lmFmt !== "undefined" ? lmFmt : (s => s);
+  const M = (typeof window.__LM_META === "object" && window.__LM_META) || null;
+  const big = (typeof __LM_META === "object" && __LM_META && __LM_META.bundle_bytes >= 1e6);
+  const mb = n => big ? (n / 1e6).toFixed(1) : String(Math.round(n / 1e3));
+  const unit = big ? "MB" : "KB";
+  let box = null, fill = null, num = null, note = null;
+  const build = app => {
+    box = document.createElement("div"); box.className = "loadscreen"; box.id = "lm-load"; box.dataset.state = "arriving";
+    const tpl = document.getElementById("lm-logo");
+    if (tpl) box.appendChild(tpl.content.firstElementChild.cloneNode(true));
+    const h = document.createElement("div"); h.className = "ls-title"; h.textContent = M && M.dataset ? M.dataset : (S.no_title || "LocusMasker report"); box.appendChild(h);
+    const track = document.createElement("div"); track.className = "ls-track";
+    fill = document.createElement("div"); fill.className = "ls-fill"; track.appendChild(fill); box.appendChild(track);
+    num = document.createElement("div"); num.className = "ls-num"; box.appendChild(num);
+    note = document.createElement("div"); note.className = "ls-note"; box.appendChild(note);
+    if (M && M.dataset && S.tab_title) document.title = fmt(S.tab_title, { dataset: M.dataset });
+    app.replaceChildren(box);
+  };
   const iv = setInterval(() => {
     if (window.__lmBooted) { clearInterval(iv); return; }
-    const box = document.querySelector("#app .loading"); if (!box) return;
-    const s = Math.round((Date.now() - t0) / 1000); if (s < 5) return;
-    box.textContent = window.LM
-      ? `Loading the report… ${s}s. The whole report lives inside this one file and it is still arriving. A regular browser reads even the largest report in a few seconds; an embedded preview (an IDE pane, a markdown preview, a remote viewer) may stall on a file this size — open report.html in a regular browser (Chrome or Firefox).`
-      : `Loading the report… ${s}s. The viewer inside this page has not run: scripts are blocked here, or the page was cut short very early. Open report.html in a regular browser (Chrome or Firefox).`;
-  }, 1000);
+    const app = document.getElementById("app"); if (!app) return;
+    if (!box || !app.contains(box)) build(app);
+    const tag = document.getElementById("lm-bundle");
+    const x = tag ? tag.textContent.length * 3 / 4 : 0; const y = M && M.bundle_bytes ? M.bundle_bytes : 0;
+    if (y) { fill.style.width = Math.min(100, 100 * x / y).toFixed(2) + "%"; num.textContent = fmt(S.progress || "{x} / {y} {u}", { x: mb(x), y: mb(y), u: unit }); }
+    else if (x) { num.textContent = mb(x) + " " + unit; }
+    if (document.readyState === "complete" && !window.LM) {           // the whole page parsed and the viewer never ran
+      if (y && x < y) retry(x, y);                                     // the file is short: the viewer script was cut with it
+      else { box.dataset.state = "stalled"; note.textContent = S.stalled || ""; }
+    }
+  }, 150);
+  let retrying = false;
+  const retry = (x, y) => {                                           // the file on disk is short: re-read it by itself, backing off gently
+    if (retrying) return; retrying = true;
+    const app = document.getElementById("app"); if (app && (!box || !app.contains(box))) build(app);
+    if (fill && y) fill.style.width = Math.min(100, 100 * x / y).toFixed(2) + "%";
+    if (num && y) num.textContent = fmt(S.progress || "{x} / {y} {u}", { x: mb(x), y: mb(y), u: unit });
+    box.dataset.state = "incomplete";
+    let n = 0; try { n = +sessionStorage.lmRetry || 0; sessionStorage.lmRetry = n + 1; } catch (e) { }
+    let s = Math.min(Math.round(2 * Math.pow(2, n)), 15);
+    const tick = () => { note.textContent = fmt(S.incomplete || "", { s, x: mb(x), y: mb(y) }); if (s-- <= 0) location.reload(); else setTimeout(tick, 1000); };
+    tick();
+  };
+  window.__lmRetryShort = retry;                                      // the viewer hands the cut-bundle case back here
 })();
 </script>
 <script src="vendor/d3.v7.min.js"></script>

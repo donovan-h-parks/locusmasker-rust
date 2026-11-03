@@ -1481,6 +1481,8 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
         part = re.sub(r'<link rel="stylesheet" href="([^"]+)">', inline_style, part)
         return re.sub(r'(href|src)="(icons/[^"]+)"', inline_icon, part)
     before, after = text("viewer.html").split("@@BUNDLE@@", 1)      # the template is split at the marker first, so nothing inlined can carry one
+    meta_js = json.dumps(dict(dataset=manifest["dataset"], bundle_bytes=size, version=__version__))
+    before = before.replace("@@META@@", meta_js, 1)                  # the loading screen's title and total, known before the data arrives
     page = f"{a.out}/report.html"
     with open(page + ".part", "w", encoding="utf-8") as out, open(npz, "rb") as src:   # the bundle as base64 in 3-byte multiples: no copy of it in memory
         out.write(inlined(before))
