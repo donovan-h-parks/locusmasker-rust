@@ -53,19 +53,23 @@ class Expect:
         return stars(p, self.bar)
 
     def site_colours(self):
-        """per site: the focal's cell (red, blue, plain), the candidate's, and each relative's"""
-        f = self.rows[self.g]; L = len(f); counting = [c for c in self.comps if c != self.Y and c in self.rows]; cand = self.rows.get(self.Y)
+        """per site: None where the focal has a gap, else (most, n, d): n relatives present, d of them differing from the
+        focal, most = more than half of at least 3. The one rule for every other row: red where it differs from the
+        focal, blue where it agrees and most relatives differ, plain otherwise; the focal is never coloured"""
+        f = self.rows[self.g]; L = len(f); rel = [self.rows[c] for c in self.comps if c in self.rows]
         out = []
         for s in range(L):
             if f[s] in GAP: out.append(None); continue
             n = d = 0
-            for c in counting:
-                b = self.rows[c][s]
+            for r in rel:
+                b = r[s]
                 if b in GAP: continue
                 n += 1; d += b != f[s]
-            red = n >= 3 and d >= math.ceil(n / 2); blue = red and cand is not None and cand[s] == f[s]
-            out.append(("blue" if blue else "red" if red else "plain", n, d))
+            out.append((n >= 3 and 2 * d > n, n, d))
         return out
+
+    def expect_colour(self, b, f, most):
+        return "red" if b != f else ("blue" if most else "cell")
 
 
 def rgb(hexs): return [int(hexs[i:i + 2], 16) for i in (1, 3, 5)]
@@ -88,7 +92,7 @@ class TestLayout:
         names = page.eval_on_selector_all(".seq-names .seqnm .nm", "els => els.map(e => e.textContent)")
         assert names[0] == R.taxa["names"][g] and names[1] == R.taxa["names"][int(R.cell("locus_closest", g, li))] and names[3:] == [R.taxa["names"][c] for c in R.comps(g, li)]   # names[2] is the broad row
         assert len(page.query_selector_all(".seq-col .rule")) == 12                     # one rule per column between each of the three test blocks
-        assert page.text_content(".seq-key").startswith("focal") and "half or more of its relatives differ" in page.text_content(".seq-key")
+        assert len(page.query_selector_all(".seq-key .sw")) == 2 and page.text_content(".seq-key").count("·") == 2   # the key: focal · red · blue
 
     def test_crumb_and_hash(self, page, ctx):
         R = ctx["R"]; g, li = ctx["kinds"]["copy"]; open_report(page, ctx["html"]); open_cell(page, g, li)
@@ -161,19 +165,19 @@ class TestSites:
             sites = E.site_colours(); f = E.rows[g]; cand = E.rows.get(E.Y)
             for s in range(nvis):
                 if sites[s] is None: continue
-                kind_s = sites[s][0]; assert px[0][s] == (col["blue"] if kind_s == "blue" else col["red"] if kind_s == "red" else col["cell"]), (kind, "focal", s, sites[s])
+                most = sites[s][0]; assert px[0][s] == col["cell"], (kind, "focal is never coloured", s)
                 if cand is not None and cand[s] not in GAP:
-                    assert px[1][s] == (col["blue"] if (kind_s != "plain" and cand[s] == f[s]) else col["cell"]), (kind, "closest", s)
+                    assert px[1][s] == col[E.expect_colour(cand[s], f[s], most)], (kind, "closest", s)
                 for k, c in enumerate(E.comps):
                     b = E.rows[c][s]
                     if b in GAP: continue
-                    assert px[3 + k][s] == (col["red"] if b != f[s] else col["cell"]), (kind, "relative", k, s)
+                    assert px[3 + k][s] == col[E.expect_colour(b, f[s], most)], (kind, "relative", k, s)
 
     def test_site_hover_counts_the_relatives(self, page, ctx):
         R = ctx["R"]; g, li = ctx["kinds"]["divergent"]; E = Expect(R, g, li); open_report(page, ctx["html"]); open_cell(page, g, li)
         page.click(".seq-ctl button:has-text('letters')"); page.wait_for_timeout(200)
         box = page.evaluate("() => { const r = document.querySelector('.seq-canvas-wrap canvas').getBoundingClientRect(); return [r.x, r.y]; }")
-        sites = E.site_colours(); s = next(i for i, v in enumerate(sites[:60]) if v and v[0] != "plain")
+        sites = E.site_colours(); s = next(i for i, v in enumerate(sites[:60]) if v and v[0])
         page.mouse.move(box[0] + s * 12 + 6, box[1] + top_of(0) + 9); page.wait_for_timeout(200)
         txt = hover_text(page); assert txt and f"{sites[s][2]} of {sites[s][1]} relatives differ from the focal" in txt and f"site{s + 1}" in txt.replace(" ", "")
 
@@ -209,5 +213,6 @@ class TestTrees:
         R = ctx["R"]; g, li = ctx["kinds"]["copy"]; open_report(page, ctx["html"]); open_cell(page, g, li)
         page.wait_for_selector(".trees-pane svg"); page.wait_for_timeout(200)
         titles = page.evaluate("() => Array.from(document.querySelectorAll('.trees-pane svg text title')).map(t => t.textContent)")
-        assert any(t.endswith("focal sequence") for t in titles) and any("closest match at locus; significantly closer than expected" in t for t in titles)
-        assert all(("inside focal group" in t) or ("outside focal group" in t) or t.endswith("focal sequence") for t in titles)
+        tips = page.evaluate("() => Array.from(document.querySelectorAll('.trees-pane svg text')).filter(t => t.getAttribute('font-size') === '11.5').length")
+        assert len(titles) == tips and all(": " in t for t in titles)                    # every tip: its name, then what its colour means
+        assert sum(1 for t in titles if t.startswith(R.taxa["names"][g] + ":")) == 2     # the focal, once per tree

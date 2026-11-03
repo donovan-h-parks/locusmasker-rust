@@ -1466,6 +1466,40 @@ const Detail = (() => {
 })();
 
 // site-code helpers shared by the ribbons and the alignment panel
+// the alignment's one site rule (Rob, 4 Nov 2026): the focal is the reference and is never coloured; every other row is
+// red at a site where it differs from the focal and blue where it agrees with the focal while most relatives differ
+// from it. "Most": more than half of the relatives present at the site, at least 3 of them; the closest-match and
+// broad-sample rows are not relatives. A site where either sequence has a gap is not compared.
+const SEQ_GAP = b => b === 45 || b === 63 || b === 46 || b === 42 || b === 32;      // - ? . * space
+function alnSites(focal, relRows, len) {                    // per site: relatives present (n), differing (d), and the majority flag
+  const n = new Uint8Array(len), d = new Int16Array(len).fill(-1), most = new Uint8Array(len);
+  if (focal) for (let s = 0; s < len; s++) {
+    if (SEQ_GAP(focal[s])) continue; let nn = 0, dd = 0;
+    for (const r of relRows) { const b = r[s]; if (SEQ_GAP(b)) continue; nn++; if (b !== focal[s]) dd++; }
+    n[s] = nn; d[s] = dd; most[s] = nn >= 3 && dd * 2 > nn ? 1 : 0;
+  }
+  return { n, d, most };
+}
+function siteColour(focal, bytes, most, s) {                // a non-focal row at one site: -1 not compared, 0 plain, 1 red, 2 blue
+  const b = bytes[s]; if (SEQ_GAP(b) || !focal || SEQ_GAP(focal[s])) return -1;
+  return b !== focal[s] ? 1 : most[s] ? 2 : 0;
+}
+function paintAlnBlock(c, D, rows, focal, most, len, W, x0, pps, topOf, ROW) {   // zoomed out: a pixel takes the more frequent of its
+  const cellCol = D.col.cell, redT = D.col.redTint, blueT = D.col.blueTint;     // red and blue sites, as opaque as their share
+  rows.forEach((r, ri) => {
+    const y = topOf(ri); const bytes = r.bytes; if (!bytes) return; const isFocal = ri === 0;
+    for (let x = 0; x < W; x++) {
+      const a = Math.floor(x0 + x / pps), b = Math.min(len - 1, Math.max(a, Math.ceil(x0 + (x + 1) / pps) - 1)); if (a > b) break;
+      let pres = 0, red = 0, blue = 0;
+      for (let s = a; s <= b; s++) { if (SEQ_GAP(bytes[s])) continue; pres++; if (isFocal) continue;
+        const k = siteColour(focal, bytes, most, s); if (k === 1) red++; else if (k === 2) blue++; }
+      if (!pres) continue;
+      c.fillStyle = cellCol; c.fillRect(x, y + 1, 1, ROW - 2);
+      const hi = red + blue; if (!hi) continue;
+      c.globalAlpha = 0.3 + 0.7 * hi / pres; c.fillStyle = red >= blue ? redT : blueT; c.fillRect(x, y + 1, 1, ROW - 2); c.globalAlpha = 1;
+    }
+  });
+}
 function codeSeverity(D, c) { if (c === 255) return 0; if (c === 254) return 5; if (c >= 128) return 30 + (c - 128); if (c >= D.M) return 20 + c; return 2 + c; }
 function codeHex(D, c) {                                    // the alignment's grades by k; blue where the partner agrees with the focal
   if (c === 255) return null; if (c === 254) return cssVar("--muted");
@@ -1515,8 +1549,7 @@ function drawCophylo(host, D, entry, k, cell, T, Wmax) { // T: cellTests, for th
   // a tip's hover: inside or outside the focal group (the comparators) and, for the closest match at the locus, whether it is
   // significantly closer than expected. The closest match: the partner when it was tested as the closest match (from format 5,
   // a partner outside the comparators), else the best match
-  const closestTip = Pn !== null && D.format >= 5 && !comps.has(partner) ? Pn : bm !== null && bm >= 0 ? String(bm) : Pn;
-  const tipTitle = t => +t === g ? `${name(t)}: focal sequence` : `${name(t)}: ${comps.has(+t) ? "inside" : "outside"} focal group${t === closestTip ? `; closest match at locus; ${sigPair && t === Pn ? "" : "not "}significantly closer than expected` : ""}`;
+  const tipTitle = t => `${name(t)}: ${+t === g ? LM_STR.seq.tip_focal : T.blue.has(+t) ? LM_STR.seq.tip_blue : T.red.has(+t) ? LM_STR.seq.tip_red : LM_STR.seq.tip_plain}`;
   const clos = entry.closest ? entry.closest[k] : null;                                                       // [expected, observed]: the tip closest to the focal in each tree, by that tree's own distances
   const closName = j => clos && clos[j] >= 0 ? String(entry.tips[k][clos[j]]) : null;
   const meas = document.createElement("canvas").getContext("2d"); meas.font = `bold 11.5px ${cssVar("--sans")}`; const LAB = Math.ceil(d3.max(tipsOf(exp), t => meas.measureText(labelOf(t.name)).width) + 10);
@@ -1613,18 +1646,8 @@ const Sequence = (() => {
     // significantly too divergent from it (the trees colour a taxon by whichever test fired: blue, red or black)
     const s2v0 = D.s2 ? D.s2(i) : 0; const bsC0 = (s2v0 & 4) && !(s2v0 & 32), bsD0 = (s2v0 & 8) && !(s2v0 & 32);
     for (const r of rows) r.st = r.role === "focal" ? "focal" : r.g === null ? null : r.role === "closest" ? (T.blue.has(r.g) ? "blue" : null) : r.role === "broad" ? (bsC0 || s2v0 & 64 ? "blue" : bsD0 ? "red" : null) : (T.red.has(r.g) ? "red" : null);
-    // per site: n, the relatives present (the closest match is never counted), and d, those that differ from the focal. A red
-    // site has n >= 3 and d >= half of n, rounded up; a blue site is a red site where the closest match agrees with the focal.
-    // From the rows when they are carried, else roughly from the tool's site codes
-    const countRows = rows.filter(r => r.role === "comp" && r.g !== Y && r.bytes), candRow = rows[1].bytes ? rows[1] : null;
-    const nRow = new Uint8Array(len), dRow = new Int16Array(len).fill(-1), siteRed = new Uint8Array(len), siteBlue = new Uint8Array(len);
-    if (focal) for (let s = 0; s < len; s++) {
-      if (isGap(focal[s])) continue; let n = 0, d = 0;
-      for (const r of countRows) { const b = r.bytes[s]; if (isGap(b)) continue; n++; if (b !== focal[s]) d++; }
-      nRow[s] = n; dRow[s] = d; siteRed[s] = n >= 3 && d >= Math.ceil(n / 2) ? 1 : 0;
-      if (siteRed[s] && candRow && candRow.bytes[s] === focal[s]) siteBlue[s] = 1;
-    }
-    else if (codeRow) for (let s = 0; s < len; s++) { const cc = codeRow[s]; if (cc === 255 || cc === 254) continue; const k = cc >= 128 ? cc - 128 : cc; nRow[s] = D.K; dRow[s] = k; siteRed[s] = k >= D.M ? 1 : 0; siteBlue[s] = cc >= 128 && k >= D.M ? 1 : 0; }
+    // the one site rule (alnSites / siteColour): the relatives are the comparator rows that are carried
+    const { n: nRow, d: dRow, most } = alnSites(focal, rows.filter(r => r.role === "comp" && r.bytes).map(r => r.bytes), len);
     // header: the verdict in the fewest words, with the stars; the numbers are in the hovers and the output files
     const head = el("div", { class: "seq-head" });
     const Pn = sr ? D.taxa.names[sr.pt] : partner !== null && partner >= 0 ? D.taxa.names[partner] : null;
@@ -1706,8 +1729,7 @@ const Sequence = (() => {
       cols.p.append(el("div", { class: "pcell", style: `height:${ROW_H}px`, title: note || "" }, el("span", { style: `background:${bg}; color:${ink}` }, txt)));
     });
     const swc = c => el("span", { class: "sw", style: `background:${c}` });
-    const key = el("span", { class: "seq-key", title: "a red site: of the focal's relatives present there (at least 3; its closest match is never counted), half or more differ from the focal; hover a site for the count" },
-      "focal ", swc(D.col.redTint), " half or more of its relatives differ ", swc(D.col.blueTint), " and its closest match agrees · closest ", swc(D.col.blueTint), " agrees with the focal at such a site · relatives ", swc(D.col.redTint), " differ from the focal");
+    const key = el("span", { class: "seq-key" }, LM_STR.seq.key_focal, " · ", swc(D.col.redTint), " ", LM_STR.seq.key_red, " · ", swc(D.col.blueTint), " ", LM_STR.seq.key_blue);
     const foot = el("div", { class: "seq-foot" }, key, el("span", null, `${fmtInt(len)} sites · pinch or ctrl+wheel: zoom · drag: move · letters from 7 px per site`), el("span", { class: "k", style: "margin-left:auto" }, S ? "" : "sequences were not carried for this locus"));
     P.body.replaceChildren(head, mid, foot);
     if (!S && !codeRow) { cwrap.append(el("div", { class: "note", style: "padding: 10px" }, "neither sequences nor site codes were carried for this cell in this report")); return; }
@@ -1729,38 +1751,23 @@ const Sequence = (() => {
       c.strokeStyle = cssVar("--grid"); c.beginPath(); c.moveTo(0, RULER_H + 0.5); c.lineTo(W, RULER_H + 0.5); c.stroke();
       // sequence rows
       const cellCol = D.col.cell, faint = cssVar("--faint"), redT = D.col.redTint, blueT = D.col.blueTint;
-      c.font = `${Math.min(13, pps)}px ${cssVar("--mono")}`; c.textBaseline = "middle"; c.textAlign = "center";
+      c.font = `${Math.min(13, pps)}px ${cssVar("--mono")}`; c.textBaseline = "middle"; c.textAlign = "center";   // eslint-disable-line
       c.strokeStyle = cssVar("--spine"); for (const ri of ruleAt) { c.beginPath(); c.moveTo(0, topOf(ri) - RULE_H / 2 - 0.5); c.lineTo(W, topOf(ri) - RULE_H / 2 - 0.5); c.stroke(); }
       rows.forEach((r, ri) => {
-        const y = topOf(ri); const bytes = r.bytes; const isFocal = ri === 0, isCand = ri === 1;
+        const y = topOf(ri); const bytes = r.bytes; const isFocal = ri === 0;
         if (!bytes) { c.fillStyle = faint; c.font = `11px ${cssVar("--sans")}`; c.textAlign = "left"; c.fillText(r.g === null ? (r.role === "broad" ? "" : D.format >= 7 ? "no closest match at this locus" : "closest match not recorded in this report") : "row not carried in this report", 4, y + ROW_H / 2); c.textAlign = "center"; c.font = `${Math.min(13, pps)}px ${cssVar("--mono")}`; return; }
-        if (letters) {
-          // the focal is red at a red site and blue at a blue one; the closest match blue where it agrees with the focal at a red
-          // site; a relative red where it differs from the focal; every other residue sits on the plain cell
+        if (letters) {                                           // the one site rule, residue by residue; the focal plain
           for (let s = s0; s <= s1; s++) {
             const b = bytes[s]; if (isGap(b)) continue; const ch = String.fromCharCode(b).toUpperCase(); const x = sx(s);
-            const fp = !isFocal && focal && !isGap(focal[s]), same = fp && focal[s] === b;
-            const bg = isFocal ? (siteBlue[s] ? blueT : siteRed[s] ? redT : cellCol) : isCand ? (same && siteRed[s] ? blueT : cellCol) : fp && !same ? redT : cellCol;
+            const k = isFocal ? -1 : siteColour(focal, bytes, most, s); const same = k === 0 || k === 2;
+            const bg = k === 1 ? redT : k === 2 ? blueT : cellCol;
             c.fillStyle = bg; c.fillRect(x, y + 1, pps, ROW_H - 2);
             if (same && dots) { c.fillStyle = faint; c.fillText("·", x + pps / 2, y + ROW_H / 2); }
             else { c.fillStyle = inkFor(bg); c.fillText(ch, x + pps / 2, y + ROW_H / 2); }
           }
-        } else {
-          // block zoom, per pixel: the focal blue when any of its sites is blue, else red when any is red; the closest match blue
-          // where it agrees at a red site; a relative as red as the share of its sites that differ from the focal
-          for (let x = 0; x < W; x++) {
-            const a = Math.floor(x0 + x / pps), b = Math.min(len - 1, Math.max(a, Math.ceil(x0 + (x + 1) / pps) - 1)); if (a > b) break;
-            let pres = 0, diff = 0, red = false, blue = false;
-            for (let s = a; s <= b; s++) { const bb = bytes[s]; if (isGap(bb)) continue; pres++;
-              if (isFocal) { if (siteBlue[s]) blue = true; else if (siteRed[s]) red = true; continue; }
-              if (!focal || isGap(focal[s])) continue;
-              if (focal[s] !== bb) diff++; else if (isCand && siteRed[s]) blue = true; }
-            if (!pres) continue;
-            c.fillStyle = blue ? blueT : red ? redT : cellCol; c.fillRect(x, y + 1, 1, ROW_H - 2);
-            if (!isFocal && !isCand && diff) { c.globalAlpha = 0.3 + 0.7 * diff / pres; c.fillStyle = redT; c.fillRect(x, y + 1, 1, ROW_H - 2); c.globalAlpha = 1; }
-          }
         }
       });
+      if (!letters) paintAlnBlock(c, D, rows, focal, most, len, W, x0, pps, topOf, ROW_H);
     };
     drawFn = draw; drawNow = draw; draw();
     // zoom with a pinch (ctrl+wheel) or two-pointer spread; scroll with the wheel or a drag
@@ -1778,7 +1785,7 @@ const Sequence = (() => {
       if (drag) { x0 = drag.x0 - (ev.clientX - drag.x) / pps; draw(); return; }
       const r = cv.getBoundingClientRect(); const s = Math.floor(x0 + (ev.clientX - r.left) / pps); if (s < 0 || s >= len) { hideHover(); return; }
       const t = el("table"); t.append(el("tr", null, el("td", { class: "k" }, "site"), el("td", null, `${s + 1} of ${fmtInt(len)} · alignment position ${fmtInt(alignmentPos(D, li, s) + 1)}`)));
-      if (dRow[s] >= 0) t.append(el("tr", null, el("td", { class: "k" }, "difference"), el("td", null, `${dRow[s]} of ${nRow[s]} relatives differ from the focal${siteRed[s] ? " (half or more)" : nRow[s] < 3 ? " (fewer than 3 present)" : ""}${siteBlue[s] ? `; its closest match${candRow ? ` ${D.taxa.names[candRow.g]}` : ""} agrees with it` : ""}`)));
+      if (dRow[s] >= 0) t.append(el("tr", null, el("td", { class: "k" }, "difference"), el("td", null, `${dRow[s]} of ${nRow[s]} relatives differ from the focal${most[s] ? " (most)" : nRow[s] < 3 ? " (fewer than 3 present)" : ""}`)));
       for (const rr of rows) if (rr.bytes) t.append(el("tr", null, el("td", { class: "k" }, `${rr.tag} · ${D.taxa.names[rr.g]}`), el("td", { style: "font-family: var(--mono)" }, String.fromCharCode(rr.bytes[s]))));
       showHover(t, ev.clientX, ev.clientY);
     });
@@ -1969,7 +1976,6 @@ const Card = (() => {
   }
   function seqOverview(D, g, li, C, S, SIM) {                 // the sequence tab's rows (focal, closest, broad, relatives),
     const i = g * D.nloc + li;                                 // whole locus, static, sized to the page
-    const isGap = b => b === 45 || b === 63 || b === 46 || b === 42 || b === 32;
     const sr = similarRole(D, g, li); const T = cellTests(D, g, li, SIM, sr);
     const comps = D.comps(g, li); const Y = T.closest !== null ? T.closest.taxon : null;
     const rcr0 = D.rcAt ? D.rcAt(i) : null; const bsRep = bsRepOf(D, i, rcr0);   // the sample's biggest-residual sequence, always
@@ -1978,22 +1984,13 @@ const Card = (() => {
       { g: bsRep, role: "broad", gut: LM_STR.seq.gut_broad }];
     comps.forEach((c2, r) => rows.push({ g: c2, role: "comp", gut: r === 0 ? LM_STR.seq.gut_relatives : "" }));
     const seqRow = gg => { if (!S) return null; for (let k = 0; k < S.taxa.length; k++) if (S.taxa[k] === gg) return S.blk.subarray(k * S.len, (k + 1) * S.len); return null; };
-    let codeRow = null; if (C) for (let k = 0; k < C.cells.length; k++) if (C.cells[k] === g) codeRow = C.blk.subarray(k * C.len, (k + 1) * C.len);
     const len = D.loci.length[li]; for (const r of rows) r.bytes = r.g === null ? null : seqRow(r.g);
     const focal = rows[0].bytes;
-    if (!focal && !codeRow) return null;
-    // the sites and the row states, exactly as the sequence tab computes them
+    if (!focal) return null;
+    // the row states, exactly as the sequence tab computes them, and the one site rule
     const s2v0 = D.s2 ? D.s2(i) : 0; const bsC0 = (s2v0 & 4) && !(s2v0 & 32), bsD0 = (s2v0 & 8) && !(s2v0 & 32);
     for (const r of rows) r.st = r.role === "focal" ? "focal" : r.g === null ? null : r.role === "closest" ? (T.blue.has(r.g) ? "blue" : null) : r.role === "broad" ? (bsC0 || s2v0 & 64 ? "blue" : bsD0 ? "red" : null) : (T.red.has(r.g) ? "red" : null);
-    const countRows = rows.filter(r => r.role === "comp" && r.g !== Y && r.bytes), candRow = rows[1].bytes ? rows[1] : null;
-    const siteRed = new Uint8Array(len), siteBlue = new Uint8Array(len);
-    if (focal) for (let st = 0; st < len; st++) {
-      if (isGap(focal[st])) continue; let n = 0, d = 0;
-      for (const r of countRows) { const b = r.bytes[st]; if (isGap(b)) continue; n++; if (b !== focal[st]) d++; }
-      siteRed[st] = n >= 3 && d >= Math.ceil(n / 2) ? 1 : 0;
-      if (siteRed[st] && candRow && candRow.bytes[st] === focal[st]) siteBlue[st] = 1;
-    }
-    else for (let st = 0; st < len; st++) { const cc = codeRow[st]; if (cc === 255 || cc === 254) continue; const k = cc >= 128 ? cc - 128 : cc; siteRed[st] = k >= D.M ? 1 : 0; siteBlue[st] = cc >= 128 && k >= D.M ? 1 : 0; }
+    const { most } = alnSites(focal, rows.filter(r => r.role === "comp" && r.bytes).map(r => r.bytes), len);
     const ROW = 14, RULE = 6; const ruleAt = new Set([1, 2, 3]);
     const rulesBefore = ri => { let n = 0; for (const q of ruleAt) if (q <= ri) n++; return n; };
     const topOf = ri => ri * ROW + RULE * rulesBefore(ri);
@@ -2011,22 +2008,7 @@ const Card = (() => {
       const dpr = devicePixelRatio || 1; cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
       cv.style.width = W + "px"; cv.style.height = H + "px";
       const c = cv.getContext("2d"); c.setTransform(dpr, 0, 0, dpr, 0, 0);
-      const pps = W / len; const cellCol = D.col.cell, redT = D.col.redTint, blueT = D.col.blueTint;
-      rows.forEach((r, ri) => {
-        const y = topOf(ri); const bytes = r.bytes; if (!bytes) return;
-        const isFocal = ri === 0, isCand = ri === 1;
-        for (let x = 0; x < W; x++) {
-          const a = Math.floor(x / pps), b = Math.min(len - 1, Math.max(a, Math.ceil((x + 1) / pps) - 1)); if (a > b) break;
-          let pres = 0, diff = 0, red = false, blue = false;
-          for (let st = a; st <= b; st++) { const bb = bytes[st]; if (isGap(bb)) continue; pres++;
-            if (isFocal) { if (siteBlue[st]) blue = true; else if (siteRed[st]) red = true; continue; }
-            if (!focal || isGap(focal[st])) continue;
-            if (focal[st] !== bb) diff++; else if (isCand && siteRed[st]) blue = true; }
-          if (!pres) continue;
-          c.fillStyle = blue ? blueT : red ? redT : cellCol; c.fillRect(x, y + 1, 1, ROW - 2);
-          if (!isFocal && !isCand && diff) { c.globalAlpha = 0.3 + 0.7 * diff / pres; c.fillStyle = redT; c.fillRect(x, y + 1, 1, ROW - 2); c.globalAlpha = 1; }
-        }
-      });
+      paintAlnBlock(c, D, rows, focal, most, len, W, 0, W / len, topOf, ROW);
     });
     return wrap;
   }

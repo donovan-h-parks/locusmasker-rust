@@ -117,6 +117,15 @@ const LM_STR = {
     // the two trees under the alignment: their titles
     tree_left: "distances across the alignment",     // the expected tree: genome-wide divergences, scaled to this locus
     tree_right: "distances at this locus",           // the observed tree: this locus's own divergences
+    // the alignment's key (one rule for every row; the focal is the reference): focal · red · blue
+    key_focal: "focal: the reference",
+    key_red: "differs from the focal",
+    key_blue: "agrees with the focal where most relatives differ",
+    // a tree tip's hover: its name, then what its colour means (the row's p<α colour)
+    tip_focal: "focal",
+    tip_red: "significantly too divergent from the focal",
+    tip_blue: "significantly too similar to the focal",
+    tip_plain: "neither test fired",
   },
 
   // ---- the navigation stack: the deepest open level fills the window; the levels above it collapse to one
