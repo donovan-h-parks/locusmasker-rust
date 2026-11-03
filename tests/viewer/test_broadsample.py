@@ -71,16 +71,18 @@ class TestBroadSampleCells:
 
 
 class TestCards:
-    def test_the_locus_card_lists_every_mask_with_its_test(self, page, report_of):
-        """one page per locus: verdict band, the three-test spine, and a problems table naming the taxa involved"""
+    def test_the_locus_card_shows_the_involved_taxa_as_a_lollipop(self, page, report_of):
+        """one page per locus: verdict band, the four-test spine, and the involved taxa ranked by significance -
+        plots, never tables (the card grammar)"""
         html, R = report_of("dna_rc"); open_report(page, html)
         import numpy as np
         side = R.arr("cells/side.npy"); li = int(np.argmax(((side & 3) > 0).sum(0)))
         page.evaluate(f"() => LM.openCard('locus', {li})"); page.wait_for_selector("#lm-card .cd-page", timeout=15000)
         n = int(((side[:, li] & 3) > 0).sum())
         assert page.query_selector_all("#lm-card .cd-rib canvas") and len(page.query_selector_all("#lm-card .cd-rib")) >= 2
-        rows = page.query_selector_all("#lm-card .cd-table tr")
-        assert len(rows) - 1 == min(n, 18)                                     # the header row, then one per mask (cut to a page)
+        assert page.query_selector("#lm-card .cd-table") is None               # no cell tables on cards
+        dots = page.query_selector_all("#lm-card .cd-rank circle")
+        assert len(dots) >= min(n, 10)                                         # the involved taxa, one dot each
         assert page.query_selector("#lm-card .cd-verdict") is not None and page.query_selector("#lm-card .cd-foot") is not None
         page.evaluate("() => LM.App && document.querySelector('#lm-card .cd-bar button:last-child').click()")
         assert page.query_selector("#lm-card .cd-page") is None

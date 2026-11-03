@@ -114,17 +114,18 @@ const LM_STR = {
     verdict_clean: "No problems found",              // the calm verdict when nothing is masked
     verdict_unit: "{n} of {m} sequences masked ({pct})",   // locus and taxon cards
     verdict_dataset: "{n} of {m} sequences masked ({pct})",
-    worst: "worst p {p}",                      // beside the verdict, with its stars (not on the dataset card)
     t_taxon: "taxon", t_locus: "locus", t_test: "test", t_p: "p", t_obs: "observed %", t_exp: "expected %", t_partner: "partner",
-    more_rows: "… and {n} more",                     // when the problems table is cut to a page
-    shape_title: "observed vs expected divergence to the close relatives",
     rank_taxa: "% masked per taxon",                 // the dataset card's two rank curves (little titles above each)
     rank_loci: "% masked per locus",
     rank_x: "ranked",                                // the curves' x caption
     donors: "top {n} donors",                        // who a copy was more likely copied from; {n} = how many are shown
     recipients: "top {n} recipients",                // who holds the copies
     flow_x: "% of attributed copies",                // the lollipops' shared axis
-    table_title: "masked sequences",                 // above the locus and taxon cards' problems table
+    masked_taxa: "top {n} masked taxa",              // the locus card's lollipop: who is involved, by significance
+    masked_loci: "top {n} masked loci",              // the taxon card's mirror
+    mask_x: "mask p",                                // those lollipops' axis
+    received: "top {n} donors",                      // a taxon card: who this taxon received copies from
+    gave: "top {n} recipients",                      // a taxon card: who received copies from this taxon
     align_title: "alignment",                        // the sequence card's site strip: red where relatives differ, blue where the partner agrees there
     trees_title: "expected · observed",              // the sequence card's face-to-face trees
     footer: "{dataset} · LocusMasker {version} · {date} · every test held to p < {bar}",

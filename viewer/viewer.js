@@ -1648,13 +1648,11 @@ const Card = (() => {
     let best = 0; for (const q of masks) if (q.code > best) best = q.code;
     return best ? sw(D.colorOf(D.famOf(best) === ST.BOTH ? ST.BOTH : best)) : sw(null);
   }
-  function verdictBand(D, masks, n, m, stateLine, noWorst) {
-    const w = noWorst ? null : worstOf(masks);
+  function verdictBand(D, masks, n, m, stateLine) {
     const line = stateLine !== null && stateLine !== undefined ? stateLine
       : masks.length === 0 ? S().verdict_clean : lmFmt(S().verdict_unit, { n: fmtInt(masks.length), m: fmtInt(m), pct: pct(masks.length, m) });
     return el("div", { class: "cd-verdict" + (masks.length ? "" : " clean") }, famChip(D, masks),
-      el("span", { class: "cd-line" }, line),
-      w !== null ? el("span", { class: "cd-worst" }, lmFmt(S().worst, { p: lmP(w) }), el("i", { class: "stars" }, " " + starsOf(D, w))) : null);
+      el("span", { class: "cd-line" }, line));
   }
   function spineCounts(D, kind, u) {                          // per test arm: how many masks it made WITHIN this card's scope
     const key = kind + ":" + u; D._spineCounts = D._spineCounts || {};
@@ -1699,44 +1697,44 @@ const Card = (() => {
       c.fillStyle = col;
       c.beginPath(); c.arc(xs(v), cy + jit(), 2.6, 0, 2 * Math.PI); c.fill(); c.strokeStyle = cssVar("--surface"); c.lineWidth = 0.6; c.stroke(); }
   }
-  function problemsTable(D, masks, kind) {
-    const rows = masks.slice().sort((a, b) => (Number.isFinite(a.p) ? a.p : 1) - (Number.isFinite(b.p) ? b.p : 1));
-    const cut = rows.slice(0, 18);
-    const t = el("table", { class: "cd-table" });
-    const heads = kind === "locus" ? [S().t_taxon] : kind === "taxon" ? [S().t_locus] : [S().t_taxon, S().t_locus];
-    t.append(el("tr", null, ...heads.map(h => el("th", null, h)), el("th", null, S().t_test), el("th", null, S().t_p), el("th", null, S().t_obs), el("th", null, S().t_exp), el("th", null, S().t_partner)));
-    for (const q of cut) {
-      const mi = D.num("med_identity", q.g, q.li), me = D.num("med_expected", q.g, q.li); const pt = D.num("partner", q.g, q.li);
-      const names = kind === "locus" ? [D.taxa.names[q.g]] : kind === "taxon" ? [D.loci.names[q.li]] : [D.taxa.names[q.g], D.loci.names[q.li]];
-      t.append(el("tr", null, ...names.map(nm => el("td", null, nm)),
-        el("td", null, sw(D.colorOf(q.code)), q.test), el("td", { class: "num" }, Number.isFinite(q.p) ? lmP(q.p) + " " + starsOf(D, q.p) : ""),
-        el("td", { class: "num" }, mi === null ? "" : fmt2(100 - mi)), el("td", { class: "num" }, me === null ? "" : fmt2(100 - me)),
-        el("td", null, pt !== null && pt >= 0 ? D.taxa.names[pt] : "")));
-    }
-    const box = el("div", { class: "cd-plotrow" }, el("h4", null, S().table_title), t);
-    if (rows.length > cut.length) box.append(el("div", { class: "cd-more" }, lmFmt(S().more_rows, { n: fmtInt(rows.length - cut.length) })));
-    return box;
+  function maskLollipop(D, masks, kind, W, N) {               // who is involved, by significance: the card grammar's ranked form
+    const rows = masks.filter(q => Number.isFinite(q.p)).sort((a, b) => a.p - b.p).slice(0, N);
+    if (!rows.length) return null;
+    const RH = 21, m = { l: 10, r: 46, t: 4, b: 36 }, nameW = 170; const H = m.t + rows.length * RH + m.b;
+    const vmax = Math.max(6, -rows[0].p * 1.08);
+    const xs = d3.scaleLinear().domain([0, vmax]).range([m.l + nameW, W - m.r]);
+    const svg = d3.create("svg").attr("width", W).attr("height", H).attr("class", "cd-rank");
+    svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(xs).ticks(3).tickFormat(v => lmP(-v)));
+    rows.forEach((q, i) => {
+      const y = m.t + i * RH + RH / 2;
+      const nm = kind === "locus" ? D.taxa.names[q.g] : D.loci.names[q.li];
+      svg.append("text").attr("x", m.l + nameW - 8).attr("y", y + 3.5).attr("text-anchor", "end").attr("font-size", 11).attr("fill", cssVar("--ink")).text(nm);
+      svg.append("line").attr("x1", xs(0)).attr("x2", xs(-q.p)).attr("y1", y).attr("y2", y).attr("stroke", cssVar("--spine")).attr("stroke-width", 1.4);
+      const col = D.colorOf(q.code); svg.append("circle").attr("cx", xs(-q.p)).attr("cy", y).attr("r", 4).attr("fill", col === "hatch" || !col ? cssVar("--pass") : col);
+      svg.append("text").attr("x", xs(-q.p) + 8).attr("y", y + 3.5).attr("font-size", 10.5).attr("fill", cssVar("--muted")).text(starsOf(D, q.p));
+    });
+    svg.append("text").attr("x", (m.l + nameW + W - m.r) / 2).attr("y", H - 3).attr("text-anchor", "middle").attr("font-size", 10).attr("fill", cssVar("--faint")).text(S().mask_x);
+    return el("div", { class: "cd-plotrow half" }, el("h4", null, lmFmt(kind === "locus" ? S().masked_taxa : S().masked_loci, { n: fmtInt(rows.length) })), svg.node());
   }
-  function shapeScatter(D, cells, highlight) {                 // observed vs expected divergence: the close-relative shape
-    const W = 330, H = 270, m = { l: 42, r: 10, t: 8, b: 34 };
-    const pts = []; let lim = 5;
-    for (const [g, li] of cells) { const mi = D.num("med_identity", g, li), me = D.num("med_expected", g, li);
-      if (mi === null || me === null) continue; const x = 100 - me, y = 100 - mi; lim = Math.max(lim, x, y);
-      pts.push({ g, li, x, y, code: D.state[g * D.nloc + li] }); }
-    lim *= 1.08;
-    const xs = d3.scaleLinear().domain([0, lim]).range([m.l, W - m.r]), ys = d3.scaleLinear().domain([0, lim]).range([H - m.b, m.t]);
-    const svg = d3.create("svg").attr("width", W).attr("height", H).attr("class", "cd-shape");
-    svg.append("g").attr("class", "axis").attr("transform", `translate(${m.l},0)`).call(d3.axisLeft(ys).ticks(5));
-    svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(xs).ticks(5));
-    svg.append("line").attr("x1", xs(0)).attr("y1", ys(0)).attr("x2", xs(lim)).attr("y2", ys(lim)).attr("stroke", cssVar("--spine"));
-
-    for (const p of pts) { const masked = p.code >= ST.RED;
-      svg.append("circle").attr("cx", xs(p.x)).attr("cy", ys(p.y)).attr("r", masked ? 3 : 1.6)
-        .attr("fill", masked ? D.colorOf(p.code) : cssVar("--pass")).attr("opacity", masked ? 0.95 : 0.4)
-        .attr("stroke", masked ? cssVar("--surface") : "none").attr("stroke-width", 0.6); }
-    if (highlight) { const p = pts.find(q => q.g === highlight[0] && q.li === highlight[1]);
-      if (p) svg.append("circle").attr("cx", xs(p.x)).attr("cy", ys(p.y)).attr("r", 6).attr("fill", "none").attr("stroke", cssVar("--focus")).attr("stroke-width", 1.6); }
-    return el("div", { class: "cd-plotrow half" }, el("h4", null, S().shape_title), svg.node());
+  function scopedFlowPlot(D, entries, groupBy, title, W, N) { // donors into / recipients out of this card's subject
+    const nm = D.taxa.names;
+    const groups = d3.groups(entries, e => String(groupBy(e))).map(([k, v]) => ({ label: nm[+k], n: v.length }))
+      .sort((a, b) => b.n - a.n || a.label.localeCompare(b.label)).slice(0, N);
+    if (!groups.length) return null;
+    const total = entries.length || 1; const RH = 21, m = { l: 10, r: 46, t: 4, b: 36 }, nameW = 170; const H = m.t + groups.length * RH + m.b;
+    const vmax = Math.max(5, 100 * groups[0].n / total * 1.12);
+    const xs = d3.scaleLinear().domain([0, vmax]).range([m.l + nameW, W - m.r]);
+    const svg = d3.create("svg").attr("width", W).attr("height", H).attr("class", "cd-rank");
+    svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(xs).ticks(4).tickFormat(v => v + "%"));
+    groups.forEach((gr, i) => {
+      const y = m.t + i * RH + RH / 2; const v = 100 * gr.n / total;
+      svg.append("text").attr("x", m.l + nameW - 8).attr("y", y + 3.5).attr("text-anchor", "end").attr("font-size", 11).attr("fill", cssVar("--ink")).text(gr.label);
+      svg.append("line").attr("x1", xs(0)).attr("x2", xs(v)).attr("y1", y).attr("y2", y).attr("stroke", cssVar("--spine")).attr("stroke-width", 1.4);
+      svg.append("circle").attr("cx", xs(v)).attr("cy", y).attr("r", 4).attr("fill", D.col.blue);
+      svg.append("text").attr("x", xs(v) + 8).attr("y", y + 3.5).attr("font-size", 10.5).attr("fill", cssVar("--muted")).text(fmtInt(gr.n));
+    });
+    svg.append("text").attr("x", (m.l + nameW + W - m.r) / 2).attr("y", H - 3).attr("text-anchor", "middle").attr("font-size", 10).attr("fill", cssVar("--faint")).text(S().flow_x);
+    return el("div", { class: "cd-plotrow half" }, el("h4", null, lmFmt(title, { n: fmtInt(groups.length) })), svg.node());
   }
   function rankStrip(D, kind, W, H) {                         // every unit's % masked, ranked: the shape of the damage, one row, a little title
     const cnt = kind === "taxon" ? D.taxCount : D.locCount; const names = kind === "taxon" ? D.taxa.names : D.loci.names;
@@ -1812,12 +1810,22 @@ const Card = (() => {
       cells = []; const N = kind === "locus" ? D.n : D.nloc;
       for (let k = 0; k < N; k++) { const g = kind === "locus" ? k : u, li = kind === "locus" ? u : k; if (D.cols.n_comp[g * D.nloc + li] > 0) cells.push([g, li]); }
       m = cells.length;
-      spineEl = spine(D, kind, u); shape = shapeScatter(D, cells);
+      spineEl = spine(D, kind, u);
+      const plots = [maskLollipop(D, masks, kind, 400, 10)];
+      const cps = copiesOf(D);
+      if (kind === "locus") {
+        const here = cps.filter(e => e.li === u);
+        plots.push(scopedFlowPlot(D, here, e => e.don, S().donors, 400, 10), scopedFlowPlot(D, here, e => e.rec, S().recipients, 400, 10));
+      } else {
+        plots.push(scopedFlowPlot(D, cps.filter(e => e.rec === u), e => e.don, S().received, 400, 10),
+                   scopedFlowPlot(D, cps.filter(e => e.don === u), e => e.rec, S().gave, 400, 10));
+      }
+      shape = el("div", { class: "cd-row" }, ...plots.filter(Boolean));
     } else {
       const g = a, li = b; title = `${D.taxa.names[g]} · ${D.loci.names[li]}`;
       masks = masksAll.filter(q => q.g === g && q.li === li); m = 1; seqState = D.cellLabel(D.state[g * D.nloc + li], g * D.nloc + li);
       cells = []; for (let gg = 0; gg < D.n; gg++) if (D.cols.n_comp[gg * D.nloc + li] > 0) cells.push([gg, li]);
-      spineEl = spine(D, "sequence", null, [g, li]); shape = shapeScatter(D, cells, [g, li]);
+      spineEl = spine(D, "sequence", null, [g, li]); shape = null;
       const alignSlot = el("div", { class: "cd-plotrow cd-align" }), treesSlot = el("div", { class: "cd-plotrow cd-trees" });
       extra = el("div", null, el("div", { class: "cd-evidence" }, cellHover(g, li, false)), alignSlot, treesSlot);
       (async () => {                                                   // the alignment strip and the trees arrive from the bundle
@@ -1838,9 +1846,9 @@ const Card = (() => {
     }
     const page = el("div", { class: "cd-page" },
       el("div", { class: "cd-id" }, el("span", { class: "cd-type" }, S()["type_" + kind]), el("b", null, title)),
-      verdictBand(D, masks, masks.length, m, seqState, kind === "dataset"),
+      verdictBand(D, masks, masks.length, m, seqState),
       kind === "dataset" ? null : extra, spineEl, kind === "dataset" ? extra : null,
-      el("div", { class: "cd-row" }, masks.length && kind !== "sequence" && kind !== "dataset" ? problemsTable(D, masks, kind) : null, shape),
+      shape,
       el("div", { class: "cd-foot" }, lmFmt(S().footer, { dataset: D.man.dataset, version: D.man.version, date: (D.man.date || "").slice(0, 10), bar: lmP(D.man.test.log10_bar) })));
     const bar = el("div", { class: "cd-bar" }, el("button", { onclick: () => window.print() }, S().print), el("button", { onclick: close }, S().close));
     host.replaceChildren(bar, page); host.style.display = ""; document.body.classList.add("card-open");
