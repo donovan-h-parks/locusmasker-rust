@@ -315,3 +315,7 @@ kbd { font: 11px var(--mono); background: var(--surface-3); border-radius: 4px; 
 
 .cd-plotrow { padding-top: 10px; }
 .cd-plotrow h4 { margin: 0 0 2px; font-size: 12px; font-weight: 650; color: var(--ink); }
+
+.cd-align canvas { display: block; border: 1px solid var(--grid); }
+.cd-trees svg { display: block; }
+.cd-trees .tangle text:not([fill]) { fill: var(--ink); }

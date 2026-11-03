@@ -995,7 +995,7 @@ function drawResidualRow(cv, kind, u, W, H, opts) {
     pts.push({ g, li, x, code: D.state[i], col: ribbonColour(D, g, li, mode), px: xs(x), py: 0 });
   }
   // the saturation band for a locus: where a saturated sequence would land, from the plateau, the rate and the expectation
-  if (mode === "close_relative" && kind === "locus" && D.loci.rate[u]) {
+  if (mode === "close_relative" && kind === "locus" && !opts.noBand && D.loci.rate[u]) {
     const P = D.loci.plateau[u], rate = D.loci.rate[u]; const corr = p => -P * Math.log(1 - Math.min(Math.max(p, 0), 0.98 * P) / P);
     const ce = pts.map(p => { const me = D.num("med_expected", p.g, p.li); return me === null ? NaN : (corr(0.98 * P) - corr(100 - me)) / rate; }).filter(Number.isFinite).sort(d3.ascending);
     if (ce.length) { const c10 = d3.quantileSorted(ce, 0.1); c.fillStyle = cssVar("--surface-3"); c.fillRect(xs(c10), 1, Math.max(0, W - xs(c10)), H - 2); }
@@ -1656,25 +1656,29 @@ const Card = (() => {
       el("span", { class: "cd-line" }, line),
       w !== null ? el("span", { class: "cd-worst" }, lmFmt(S().worst, { p: lmP(w) }), el("i", { class: "stars" }, " " + starsOf(D, w))) : null);
   }
-  function spineCounts(D) {                                   // per test arm: how many masks it made (the ribbons' own colours)
-    if (D._spineCounts) return D._spineCounts;
+  function spineCounts(D, kind, u) {                          // per test arm: how many masks it made WITHIN this card's scope
+    const key = kind + ":" + u; D._spineCounts = D._spineCounts || {};
+    if (D._spineCounts[key]) return D._spineCounts[key];
     const c = { close_relative: 0, cm_relative: 0, cm_outside: 0, broad_sample: 0 };
-    for (const q of maskIndex(D)) { const mk = maskKind(D, q.g, q.li); if (!mk) continue;
+    for (const q of maskIndex(D)) {
+      if (kind === "locus" && q.li !== u) continue;
+      if (kind === "taxon" && q.g !== u) continue;
+      const mk = maskKind(D, q.g, q.li); if (!mk) continue;
       if (mk.cr) c.close_relative++;
       if (mk.cm) c[mk.arm === "out" ? "cm_outside" : "cm_relative"]++;
       if (mk.bsC || mk.bsD) c.broad_sample++; }
-    return (D._spineCounts = c);
+    return (D._spineCounts[key] = c);
   }
   function spine(D, kind, u, cell) {
     const box = el("div", { class: "cd-spine" }); const W = 700, RH = 32, PAD = 24;
-    const counts = spineCounts(D);
+    const counts = kind === "sequence" ? null : spineCounts(D, kind, u);
     for (const mode of ["close_relative", "cm_relative", "cm_outside", "broad_sample"]) {
       if (mode === "broad_sample" && !D.cols.bs_stat) continue;       // old bundles have no variance statistic to place
       const row = el("div", { class: "cd-rib" },
-        el("span", { class: "cd-ribname" }, LM_STR.ribbons["test_" + mode], el("i", { class: "cd-ribn" }, fmtInt(counts[mode]))));
+        el("span", { class: "cd-ribname" }, LM_STR.ribbons["test_" + mode], counts ? el("i", { class: "cd-ribn" }, fmtInt(counts[mode])) : null));
       const cv = el("canvas"); row.append(cv); box.append(row);
       if (kind === "dataset") drawResidualAll(cv, W, RH, mode);
-      else drawResidualRow(cv, kind === "sequence" ? "locus" : kind, kind === "sequence" ? cell[1] : u, W, RH, { padL: PAD, padR: PAD, mode, mark: kind === "sequence" ? cell : null });
+      else drawResidualRow(cv, kind === "sequence" ? "locus" : kind, kind === "sequence" ? cell[1] : u, W, RH, { padL: PAD, padR: PAD, mode, noBand: true, mark: kind === "sequence" ? cell : null });
       box.append(el("div", { class: "cd-axis" }, residualAxis(W, PAD, PAD, mode)));
     }
     return box;
@@ -1709,7 +1713,7 @@ const Card = (() => {
         el("td", { class: "num" }, mi === null ? "" : fmt2(100 - mi)), el("td", { class: "num" }, me === null ? "" : fmt2(100 - me)),
         el("td", null, pt !== null && pt >= 0 ? D.taxa.names[pt] : "")));
     }
-    const box = el("div", null, t);
+    const box = el("div", { class: "cd-plotrow" }, el("h4", null, S().table_title), t);
     if (rows.length > cut.length) box.append(el("div", { class: "cd-more" }, lmFmt(S().more_rows, { n: fmtInt(rows.length - cut.length) })));
     return box;
   }
@@ -1725,14 +1729,14 @@ const Card = (() => {
     svg.append("g").attr("class", "axis").attr("transform", `translate(${m.l},0)`).call(d3.axisLeft(ys).ticks(5));
     svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(xs).ticks(5));
     svg.append("line").attr("x1", xs(0)).attr("y1", ys(0)).attr("x2", xs(lim)).attr("y2", ys(lim)).attr("stroke", cssVar("--spine"));
-    svg.append("text").attr("x", (m.l + W - m.r) / 2).attr("y", H - 3).attr("text-anchor", "middle").attr("font-size", 10.5).attr("fill", cssVar("--muted")).text(S().shape_title_unit);
+
     for (const p of pts) { const masked = p.code >= ST.RED;
       svg.append("circle").attr("cx", xs(p.x)).attr("cy", ys(p.y)).attr("r", masked ? 3 : 1.6)
         .attr("fill", masked ? D.colorOf(p.code) : cssVar("--pass")).attr("opacity", masked ? 0.95 : 0.4)
         .attr("stroke", masked ? cssVar("--surface") : "none").attr("stroke-width", 0.6); }
     if (highlight) { const p = pts.find(q => q.g === highlight[0] && q.li === highlight[1]);
       if (p) svg.append("circle").attr("cx", xs(p.x)).attr("cy", ys(p.y)).attr("r", 6).attr("fill", "none").attr("stroke", cssVar("--focus")).attr("stroke-width", 1.6); }
-    return svg.node();
+    return el("div", { class: "cd-plotrow half" }, el("h4", null, S().shape_title), svg.node());
   }
   function rankStrip(D, kind, W, H) {                         // every unit's % masked, ranked: the shape of the damage, one row, a little title
     const cnt = kind === "taxon" ? D.taxCount : D.locCount; const names = kind === "taxon" ? D.taxa.names : D.loci.names;
@@ -1775,7 +1779,23 @@ const Card = (() => {
       svg.append("text").attr("x", xs(v) + 8).attr("y", y + 3.5).attr("font-size", 10.5).attr("fill", cssVar("--muted")).attr("font-variant", "tabular-nums").text(fmtInt(gr.list.length));
     });
     svg.append("text").attr("x", (m.l + nameW + W - m.r) / 2).attr("y", H - 3).attr("text-anchor", "middle").attr("font-size", 10).attr("fill", cssVar("--faint")).text(S().flow_x);
-    return el("div", { class: "cd-plotrow half" }, el("h4", null, mode === "donor" ? S().donors : S().recipients), svg.node());
+    return el("div", { class: "cd-plotrow half" }, el("h4", null, lmFmt(mode === "donor" ? S().donors : S().recipients, { n: fmtInt(top.length) })), svg.node());
+  }
+  function drawRibbonInto(cv, C, g, li) {                     // the focal's sites along the locus: red where relatives differ,
+    const D = App.D;                                           // blue where the partner agrees at such a site
+    let r = -1; for (let k = 0; k < C.cells.length; k++) if (C.cells[k] === g) { r = k; break; }
+    if (r < 0) { cv.remove(); return; }
+    const len = C.len; const W = Math.max(300, Math.floor(cv.getBoundingClientRect().width || 700));
+    cv.width = W; cv.height = 1; cv.style.height = "12px"; cv.style.imageRendering = "pixelated";
+    const img = cv.getContext("2d").createImageData(W, 1); const px = img.data; const base = r * len;
+    for (let x = 0; x < W; x++) {
+      const s0 = Math.floor(x * len / W), s1 = Math.max(s0, Math.ceil((x + 1) * len / W) - 1);
+      let best = -1, code = 255;
+      for (let sdx = s0; sdx <= Math.min(s1, len - 1); sdx++) { const c = C.blk[base + sdx]; const sv = codeSeverity(D, c); if (sv > best) { best = sv; code = c; } }
+      const rgb = codeRgb(D, code);
+      px[x * 4] = rgb[0]; px[x * 4 + 1] = rgb[1]; px[x * 4 + 2] = rgb[2]; px[x * 4 + 3] = 255;
+    }
+    cv.getContext("2d").putImageData(img, 0, 0);
   }
   function open(kind, a, b) {
     ensure(); const D = App.D;
@@ -1798,7 +1818,23 @@ const Card = (() => {
       masks = masksAll.filter(q => q.g === g && q.li === li); m = 1; seqState = D.cellLabel(D.state[g * D.nloc + li], g * D.nloc + li);
       cells = []; for (let gg = 0; gg < D.n; gg++) if (D.cols.n_comp[gg * D.nloc + li] > 0) cells.push([gg, li]);
       spineEl = spine(D, "sequence", null, [g, li]); shape = shapeScatter(D, cells, [g, li]);
-      extra = el("div", { class: "cd-evidence" }, cellHover(g, li, false));
+      const alignSlot = el("div", { class: "cd-plotrow cd-align" }), treesSlot = el("div", { class: "cd-plotrow cd-trees" });
+      extra = el("div", null, el("div", { class: "cd-evidence" }, cellHover(g, li, false)), alignSlot, treesSlot);
+      (async () => {                                                   // the alignment strip and the trees arrive from the bundle
+        const [C, SIM, entry] = await Promise.all([D.codes(li), D.similar(li), D.trees(li)]);
+        if (!host || host.style.display === "none") return;
+        if (C) {
+          alignSlot.append(el("h4", null, S().align_title));
+          const cv = el("canvas", { style: "width: 100%" }); alignSlot.append(cv);
+          requestAnimationFrame(() => drawRibbonInto(cv, C, g, li));
+        }
+        let k = -1; if (entry) for (let q = 0; q < entry.cells.length; q++) if (entry.cells[q] === g) { k = q; break; }
+        if (k >= 0) {
+          treesSlot.append(el("h4", null, S().trees_title));
+          const T = cellTests(App.D, g, li, SIM, similarRole(App.D, g, li));
+          treesSlot.append(drawCophylo(treesSlot, App.D, entry, k, { g, li }, T));
+        }
+      })();
     }
     const page = el("div", { class: "cd-page" },
       el("div", { class: "cd-id" }, el("span", { class: "cd-type" }, S()["type_" + kind]), el("b", null, title)),

@@ -117,13 +117,16 @@ const LM_STR = {
     worst: "worst p {p}",                      // beside the verdict, with its stars (not on the dataset card)
     t_taxon: "taxon", t_locus: "locus", t_test: "test", t_p: "p", t_obs: "observed %", t_exp: "expected %", t_partner: "partner",
     more_rows: "… and {n} more",                     // when the problems table is cut to a page
-    shape_title_unit: "observed vs expected divergence to the close relatives",
+    shape_title: "observed vs expected divergence to the close relatives",
     rank_taxa: "% masked per taxon",                 // the dataset card's two rank curves (little titles above each)
     rank_loci: "% masked per locus",
     rank_x: "ranked",                                // the curves' x caption
-    donors: "top donors",                            // who a copy was more likely copied from
-    recipients: "top recipients",                    // who holds the copies
+    donors: "top {n} donors",                        // who a copy was more likely copied from; {n} = how many are shown
+    recipients: "top {n} recipients",                // who holds the copies
     flow_x: "% of attributed copies",                // the lollipops' shared axis
+    table_title: "masked sequences",                 // above the locus and taxon cards' problems table
+    align_title: "alignment",                        // the sequence card's site strip: red where relatives differ, blue where the partner agrees there
+    trees_title: "expected · observed",              // the sequence card's face-to-face trees
     footer: "{dataset} · LocusMasker {version} · {date} · every test held to p < {bar}",
   },
 
