@@ -375,7 +375,7 @@ async function start(bytes) {
   buildShell(); readHash(); renderAll();
   window.addEventListener("resize", () => { Overview.redraw(); for (const p of Object.values(App.panels)) if (p && p.redraw) p.redraw(); });
 }
-window.LM = { start, App, openCell: (g, li) => Sequence.open(g, li), openUnit: (k, i) => Detail.open(k, i), openCopies: (m, k) => Detail.openCopies(m, k), setView: v => Overview.setView(v) };   // the tests' API
+window.LM = { start, App, openCell: (g, li) => Sequence.open(g, li), openUnit: (k, i) => Detail.open(k, i), openCopies: (m, k) => Detail.openCopies(m, k), openCard: (k, a, b) => Card.open(k, a, b), setView: v => Overview.setView(v) };   // the tests' API
 
 // ------------------------------------------------------------------ shell: topbar, the two panel rows, hover card
 function buildShell() {
@@ -453,7 +453,8 @@ const Overview = (() => {
     const controls = el("div", { class: "controls one-row" },
       el("label", null, "view ", viewSel), viewCtl,
       el("button", { title: "download the cell table as TSV", onclick: Table.download }, "⤓ cells.tsv"),
-      el("button", { title: "export the matrix as PNG", onclick: exportPng }, "⤓ PNG"));
+      el("button", { title: "export the matrix as PNG", onclick: exportPng }, "⤓ PNG"),
+      el("button", { class: "cardbtn", onclick: () => Card.open("dataset") }, "⎙ " + LM_STR.card.button));
     viewEl.matrixCtl = [el("label", null, "taxa ", taxaSel), el("label", null, "loci ", lociSel), search];
     P.body.append(controls);
     // the summary view: stat tiles and the worst-ten lists
@@ -956,11 +957,15 @@ function drawResidualRow(cv, kind, u, W, H, opts) {
   const jit = d3.randomUniform.source(d3.randomLcg(0.31 + (u % 97) / 100))(-(H / 2 - 4), H / 2 - 4); const cy = H / 2;
   pts.sort((a, b) => D.sev[a.g * D.nloc + a.li] - D.sev[b.g * D.nloc + b.li]);
   const many = pts.length > 400, ring = cssVar("--surface");
+  const mark = opts.mark || null;
   for (const p of pts) {
     p.py = cy + jit(); const col = D.pointColorOf(p.code) || cssVar("--grey-1");
-    c.globalAlpha = p.code >= ST.RED ? 1 : many ? 0.35 : 0.7; c.fillStyle = col; c.beginPath(); c.arc(p.px, p.py, many ? 1.8 : 2.4, 0, 2 * Math.PI); c.fill(); c.globalAlpha = 1;
-    if (p.code >= ST.RED) { c.strokeStyle = ring; c.lineWidth = 0.6; c.stroke(); }   // one size; a fine white ring on the masked points only
+    const dim = mark && !(p.g === mark[0] && p.li === mark[1]);
+    c.globalAlpha = dim ? 0.25 : p.code >= ST.RED ? 1 : many ? 0.35 : 0.7; c.fillStyle = col; c.beginPath(); c.arc(p.px, p.py, many ? 1.8 : 2.4, 0, 2 * Math.PI); c.fill(); c.globalAlpha = 1;
+    if (!dim && p.code >= ST.RED) { c.strokeStyle = ring; c.lineWidth = 0.6; c.stroke(); }   // one size; a fine white ring on the masked points only
   }
+  if (mark) { const p = pts.find(q => q.g === mark[0] && q.li === mark[1]);
+    if (p) { c.beginPath(); c.arc(p.px, p.py, 5, 0, 2 * Math.PI); c.strokeStyle = cssVar("--focus"); c.lineWidth = 1.6; c.stroke(); } }
   return { pts, identical, xs };
 }
 function residualAxis(W, padL, padR, mode) {
@@ -1055,7 +1060,7 @@ const Detail = (() => {
     const views = [["scatter", "observed vs expected"], ...(kind === "taxon" ? [["matches", "best matches"]] : []), ["ribbons", "site ribbons"]];
     viewSel = el("select", { onchange: e => { view = e.target.value; draw(); } }, ...views.map(([v, t]) => el("option", { value: v, selected: v === view ? "" : null }, t)));
     const q = el("span", { class: "help-q", title: "what this plot shows", onmouseenter: ev => { if (note) showHover(note, ev.clientX, ev.clientY); }, onmouseleave: hideHover }, "?");
-    P.setCrumb([el("span", null, kind, " ", el("b", null, name)), el("span", { class: "sub" }, `${fmtInt(cnt.masked[i])} of ${fmtInt(cnt.tested[i])} sequences masked (${pct(cnt.masked[i], cnt.tested[i])})`), el("label", { class: "crumb-ctl" }, "view ", viewSel, q)]);
+    P.setCrumb([el("span", null, kind, " ", el("b", null, name)), el("span", { class: "sub" }, `${fmtInt(cnt.masked[i])} of ${fmtInt(cnt.tested[i])} sequences masked (${pct(cnt.masked[i], cnt.tested[i])})`), el("label", { class: "crumb-ctl" }, "view ", viewSel, q, el("button", { class: "cardbtn", onclick: () => Card.open(kind, i) }, "⎙ " + LM_STR.card.button))]);
     P.body.replaceChildren(); body = P.body; body.classList.add("detail-body");
     draw();
   }
@@ -1402,7 +1407,8 @@ const Sequence = (() => {
     const dotsBox = el("input", { type: "checkbox", checked: dots ? "" : null, onchange: e => { dots = e.target.checked; redrawNow(); } });
     const treesBtn = el("button", { title: "the expected and the observed distances among these sequences as two neighbour-joining trees, face to face", onclick: () => toggleTrees() }, "trees");
     const ctl = el("span", { class: "seq-ctl" }, el("label", null, dotsBox, " dots where a sequence matches the focal residue"),
-      el("button", { onclick: () => { pps = fitPps(); x0 = 0; redrawNow(); } }, "whole locus"), el("button", { onclick: () => { pps = 12; redrawNow(); } }, "letters"), treesBtn);
+      el("button", { onclick: () => { pps = fitPps(); x0 = 0; redrawNow(); } }, "whole locus"), el("button", { onclick: () => { pps = 12; redrawNow(); } }, "letters"), treesBtn,
+      el("button", { class: "cardbtn", onclick: () => Card.open("sequence", g, li) }, "⎙ " + LM_STR.card.button));
     head.append(el("div", { class: "seq-line" }, ...parts), ctl);
     // the body: test type · sequence · Taxon name · p<α · the alignment; the two name columns resize by their header's edge
     const body = el("div", { class: "seq-body" + (T.pcol ? " with-p" : "") }); body.style.setProperty("--wrole", colW.role + "px"); body.style.setProperty("--wname", colW.name + "px");
@@ -1594,6 +1600,138 @@ const SigHist = (() => {
     box.append(svg.node()); root.append(box);
   }
   return { render };
+})();
+
+// ------------------------------------------------------------------ the cards: one printable page per dataset,
+// locus, taxon or sequence. One design language: identity strip, the verdict band, the three per-test ribbons on
+// dataset-wide axes (the spine every card shares, so pages compare), the problems table, one true-axed shape plot,
+// a traceable footer. The preview overlays the app; print CSS shows the card alone
+const Card = (() => {
+  let host = null;
+  const S = () => LM_STR.card;
+  function ensure() {
+    if (host) return;
+    host = el("div", { id: "lm-card", style: "display:none" });
+    document.body.append(host);
+  }
+  function close() { host.style.display = "none"; host.replaceChildren(); document.body.classList.remove("card-open"); }
+  function worstOf(masks) { let w = null; for (const q of masks) if (Number.isFinite(q.p) && (w === null || q.p < w)) w = q.p; return w; }
+  function famChip(D, masks) {
+    let best = 0; for (const q of masks) if (q.code > best) best = q.code;
+    return best ? sw(D.colorOf(D.famOf(best) === ST.BOTH ? ST.BOTH : best)) : sw(null);
+  }
+  function verdictBand(D, masks, n, m, stateLine) {
+    const w = worstOf(masks);
+    const line = stateLine !== null && stateLine !== undefined ? stateLine
+      : masks.length === 0 ? S().verdict_clean : lmFmt(S().verdict_unit, { n: fmtInt(masks.length), m: fmtInt(m), pct: pct(masks.length, m) });
+    return el("div", { class: "cd-verdict" + (masks.length ? "" : " clean") }, famChip(D, masks),
+      el("span", { class: "cd-line" }, line),
+      w !== null ? el("span", { class: "cd-worst" }, lmFmt(S().worst, { p: fmt1(w) }), el("i", { class: "stars" }, " " + starsOf(D, w))) : null);
+  }
+  function spine(D, kind, u, cell) {
+    const box = el("div", { class: "cd-spine" }); const W = 640, RH = 26;
+    for (const mode of ["close_relative", "closest_match", "broad_sample"]) {
+      if (mode === "broad_sample" && !D.cols.bs_stat && !D.rcRows) continue;
+      const row = el("div", { class: "cd-rib" }, el("span", { class: "cd-ribname" }, LM_STR.ribbons["test_" + mode]));
+      const cv = el("canvas"); row.append(cv); box.append(row);
+      if (kind === "dataset") drawResidualAll(cv, W, RH, mode);
+      else { const drawn = drawResidualRow(cv, kind === "sequence" ? "locus" : kind, kind === "sequence" ? cell[1] : u, W, RH, { padL: 8, padR: 8, mode, mark: kind === "sequence" ? cell : null }); }
+      box.append(el("div", { class: "cd-axis" }, residualAxis(W, 8, 8, mode)));
+    }
+    box.append(el("div", { class: "cd-note" }, S().spine_note));
+    return box;
+  }
+  function drawResidualAll(cv, W, H, mode) {                   // the dataset card's strip: every cell once
+    const D = App.D; const dpr = devicePixelRatio || 1; cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.width = W + "px"; cv.style.height = H + "px";
+    const c = cv.getContext("2d"); c.scale(dpr, dpr);
+    const xs = residualScale(D, mode, W, 8, 8); const cy = H / 2; const jit = d3.randomUniform.source(d3.randomLcg(0.41))(-(H / 2 - 4), H / 2 - 4);
+    c.strokeStyle = cssVar("--model"); c.beginPath(); c.moveTo(xs(0) + 0.5, 1); c.lineTo(xs(0) + 0.5, H - 1); c.stroke();
+    const N = D.n * D.nloc; const step = Math.max(1, Math.floor(N / 30000));
+    c.fillStyle = cssVar("--pass"); c.globalAlpha = 0.25;
+    for (let i = 0; i < N; i += step) { if (D.cols.n_comp[i] === 0 || (D.cols.side[i] & 3)) continue;
+      const v = residualOf(D, Math.floor(i / D.nloc), i % D.nloc, mode); if (v === null) continue;
+      c.beginPath(); c.arc(xs(v), cy + jit(), 1.5, 0, 2 * Math.PI); c.fill(); }
+    c.globalAlpha = 1;
+    for (const q of maskIndex(D)) { const v = residualOf(D, q.g, q.li, mode); if (v === null) continue;
+      const col = D.colorOf(q.code); c.fillStyle = col === "hatch" || !col ? cssVar("--pass") : col;
+      c.beginPath(); c.arc(xs(v), cy + jit(), 2.4, 0, 2 * Math.PI); c.fill(); c.strokeStyle = cssVar("--surface"); c.lineWidth = 0.6; c.stroke(); }
+  }
+  function problemsTable(D, masks, kind) {
+    const rows = masks.slice().sort((a, b) => (Number.isFinite(a.p) ? a.p : 1) - (Number.isFinite(b.p) ? b.p : 1));
+    const cut = rows.slice(0, 18);
+    const t = el("table", { class: "cd-table" });
+    const heads = kind === "locus" ? [S().t_taxon] : kind === "taxon" ? [S().t_locus] : [S().t_taxon, S().t_locus];
+    t.append(el("tr", null, ...heads.map(h => el("th", null, h)), el("th", null, S().t_test), el("th", null, S().t_p), el("th", null, S().t_obs), el("th", null, S().t_exp), el("th", null, S().t_partner)));
+    for (const q of cut) {
+      const mi = D.num("med_identity", q.g, q.li), me = D.num("med_expected", q.g, q.li); const pt = D.num("partner", q.g, q.li);
+      const names = kind === "locus" ? [D.taxa.names[q.g]] : kind === "taxon" ? [D.loci.names[q.li]] : [D.taxa.names[q.g], D.loci.names[q.li]];
+      t.append(el("tr", null, ...names.map(nm => el("td", null, nm)),
+        el("td", null, sw(D.colorOf(q.code)), q.test), el("td", { class: "num" }, Number.isFinite(q.p) ? fmt1(q.p) + " " + starsOf(D, q.p) : ""),
+        el("td", { class: "num" }, mi === null ? "" : fmt2(100 - mi)), el("td", { class: "num" }, me === null ? "" : fmt2(100 - me)),
+        el("td", null, pt !== null && pt >= 0 ? D.taxa.names[pt] : "")));
+    }
+    const box = el("div", null, t);
+    if (rows.length > cut.length) box.append(el("div", { class: "cd-more" }, lmFmt(S().more_rows, { n: fmtInt(rows.length - cut.length) })));
+    return box;
+  }
+  function shapeScatter(D, cells, highlight) {                 // observed vs expected divergence: the close-relative shape
+    const W = 330, H = 270, m = { l: 42, r: 10, t: 8, b: 34 };
+    const pts = []; let lim = 5;
+    for (const [g, li] of cells) { const mi = D.num("med_identity", g, li), me = D.num("med_expected", g, li);
+      if (mi === null || me === null) continue; const x = 100 - me, y = 100 - mi; lim = Math.max(lim, x, y);
+      pts.push({ g, li, x, y, code: D.state[g * D.nloc + li] }); }
+    lim *= 1.08;
+    const xs = d3.scaleLinear().domain([0, lim]).range([m.l, W - m.r]), ys = d3.scaleLinear().domain([0, lim]).range([H - m.b, m.t]);
+    const svg = d3.create("svg").attr("width", W).attr("height", H).attr("class", "cd-shape");
+    svg.append("g").attr("class", "axis").attr("transform", `translate(${m.l},0)`).call(d3.axisLeft(ys).ticks(5));
+    svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(xs).ticks(5));
+    svg.append("line").attr("x1", xs(0)).attr("y1", ys(0)).attr("x2", xs(lim)).attr("y2", ys(lim)).attr("stroke", cssVar("--spine"));
+    svg.append("text").attr("x", (m.l + W - m.r) / 2).attr("y", H - 3).attr("text-anchor", "middle").attr("font-size", 10.5).attr("fill", cssVar("--muted")).text(S().shape_title_unit);
+    for (const p of pts) { const masked = p.code >= ST.RED;
+      svg.append("circle").attr("cx", xs(p.x)).attr("cy", ys(p.y)).attr("r", masked ? 3 : 1.6)
+        .attr("fill", masked ? D.colorOf(p.code) : cssVar("--pass")).attr("opacity", masked ? 0.95 : 0.4)
+        .attr("stroke", masked ? cssVar("--surface") : "none").attr("stroke-width", 0.6); }
+    if (highlight) { const p = pts.find(q => q.g === highlight[0] && q.li === highlight[1]);
+      if (p) svg.append("circle").attr("cx", xs(p.x)).attr("cy", ys(p.y)).attr("r", 6).attr("fill", "none").attr("stroke", cssVar("--focus")).attr("stroke-width", 1.6); }
+    return svg.node();
+  }
+  function open(kind, a, b) {
+    ensure(); const D = App.D;
+    const masksAll = maskIndex(D);
+    let title, masks, cells, m, spineEl, shape, extra = null, seqState = null;
+    if (kind === "dataset") {
+      title = D.man.dataset; masks = masksAll; m = D.man.counts.cells;
+      spineEl = spine(D, "dataset");
+      shape = el("div", { class: "cd-shapebox" });
+      extra = el("div", { class: "cd-counts" }, lmFmt(S().counts_line, {
+        a: fmtInt(masksAll.filter(q => q.test === "close-relative").length),
+        b: fmtInt(masksAll.filter(q => q.test === "closest-match").length),
+        c: fmtInt(masksAll.filter(q => q.test === "broad-sample").length) }));
+    } else if (kind === "locus" || kind === "taxon") {
+      const u = a; title = kind === "locus" ? D.loci.names[u] : D.taxa.names[u];
+      masks = masksAll.filter(q => (kind === "locus" ? q.li : q.g) === u);
+      cells = []; const N = kind === "locus" ? D.n : D.nloc;
+      for (let k = 0; k < N; k++) { const g = kind === "locus" ? k : u, li = kind === "locus" ? u : k; if (D.cols.n_comp[g * D.nloc + li] > 0) cells.push([g, li]); }
+      m = cells.length;
+      spineEl = spine(D, kind, u); shape = shapeScatter(D, cells);
+    } else {
+      const g = a, li = b; title = `${D.taxa.names[g]} · ${D.loci.names[li]}`;
+      masks = masksAll.filter(q => q.g === g && q.li === li); m = 1; seqState = D.cellLabel(D.state[g * D.nloc + li], g * D.nloc + li);
+      cells = []; for (let gg = 0; gg < D.n; gg++) if (D.cols.n_comp[gg * D.nloc + li] > 0) cells.push([gg, li]);
+      spineEl = spine(D, "sequence", null, [g, li]); shape = shapeScatter(D, cells, [g, li]);
+      extra = el("div", { class: "cd-evidence" }, cellHover(g, li, false));
+    }
+    const page = el("div", { class: "cd-page" },
+      el("div", { class: "cd-id" }, el("span", { class: "cd-type" }, S()["type_" + kind]), el("b", null, title)),
+      verdictBand(D, masks, masks.length, m, seqState),
+      extra, spineEl,
+      el("div", { class: "cd-row" }, masks.length && kind !== "sequence" ? problemsTable(D, masks, kind) : null, shape),
+      el("div", { class: "cd-foot" }, lmFmt(S().footer, { dataset: D.man.dataset, version: D.man.version, date: (D.man.date || "").slice(0, 10), bar: fmt2(D.man.test.log10_bar) })));
+    const bar = el("div", { class: "cd-bar" }, el("button", { onclick: () => window.print() }, S().print), el("button", { onclick: close }, S().close));
+    if (kind === "dataset") { const sh = page.querySelector(".cd-shapebox"); if (sh) SigHist.render(sh, 330, 250); }
+    host.replaceChildren(bar, page); host.style.display = ""; document.body.classList.add("card-open");
+  }
+  return { open, close };
 })();
 
 // ------------------------------------------------------------------ the table view (virtualised)

@@ -257,3 +257,37 @@ kbd { font: 11px var(--mono); background: var(--surface-3); border-radius: 4px; 
 .mx-hint { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff; border-radius: 999px; padding: 4px 14px; font-size: 12px; opacity: 0.85; pointer-events: none; z-index: 3; }
 
 .matrix-wrap .matrix-gl { grid-column: 2; grid-row: 2; pointer-events: none; }
+
+/* ---- the cards: an on-screen preview; in print, the card alone */
+#lm-card { position: fixed; inset: 0; z-index: 50; background: rgba(20,20,18,0.45); overflow: auto; padding: 24px 0; }
+#lm-card .cd-bar { position: sticky; top: 0; display: flex; gap: 8px; justify-content: flex-end; max-width: 760px; margin: 0 auto 8px; padding: 0 8px; }
+#lm-card .cd-bar button { border: 1px solid var(--spine); background: var(--surface); border-radius: 6px; padding: 4px 14px; cursor: pointer; }
+.cd-page { background: var(--surface); max-width: 760px; margin: 0 auto; padding: 26px 32px; border-radius: 8px; box-shadow: 0 12px 40px rgba(0,0,0,0.3); font-size: 12.5px; }
+.cd-id { display: flex; align-items: baseline; gap: 10px; border-bottom: 1px solid var(--spine); padding-bottom: 6px; }
+.cd-id .cd-type { color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+.cd-id b { font-size: 17px; }
+.cd-verdict { display: flex; align-items: baseline; gap: 8px; padding: 12px 0 10px; font-size: 16px; font-weight: 650; }
+.cd-verdict.clean { color: var(--muted); font-weight: 500; }
+.cd-verdict .cd-worst { margin-left: auto; font-size: 12.5px; font-weight: 500; color: var(--muted); }
+.cd-verdict .stars { font-style: normal; color: var(--accent); }
+.cd-spine { padding: 6px 0 2px; }
+.cd-rib { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 8px; }
+.cd-ribname { font-size: 11.5px; color: var(--muted); text-align: right; }
+.cd-axis { margin-left: 118px; }
+.cd-note { font-size: 10.5px; color: var(--faint); text-align: right; padding-top: 2px; }
+.cd-counts { font-size: 12px; color: var(--muted); padding: 2px 0 6px; }
+.cd-row { display: flex; gap: 18px; align-items: flex-start; padding-top: 10px; flex-wrap: wrap; }
+.cd-table { border-collapse: collapse; font-size: 11.5px; }
+.cd-table th { text-align: left; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--spine); padding: 2px 8px 2px 0; }
+.cd-table td { border-bottom: 1px solid var(--grid); padding: 2px 8px 2px 0; }
+.cd-table td.num { font-variant-numeric: tabular-nums; }
+.cd-more { color: var(--faint); font-size: 11px; padding-top: 3px; }
+.cd-evidence table { font-size: 11.5px; }
+.cd-foot { border-top: 1px solid var(--spine); margin-top: 14px; padding-top: 6px; color: var(--faint); font-size: 10.5px; }
+@media print {
+  body.card-open > #app, body.card-open .topbar, #lm-card .cd-bar { display: none !important; }
+  #lm-card { position: static; background: none; padding: 0; overflow: visible; }
+  .cd-page { box-shadow: none; border-radius: 0; max-width: none; padding: 0; }
+}
+#lm-card .more { display: none; }                 /* no interactive hints on a printable card */
+.cd-verdict .cd-line::first-letter { text-transform: uppercase; }

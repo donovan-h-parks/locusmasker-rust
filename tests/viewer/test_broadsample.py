@@ -68,3 +68,34 @@ class TestBroadSampleCells:
     def test_a_clean_report_shows_no_broad_rows(self, page, report_of):
         html, R = report_of("dna_clean"); open_report(page, html)
         s2 = R.arr("cells/side2.npy"); assert not np.any(s2 & (4 | 64))
+
+
+class TestCards:
+    def test_the_locus_card_lists_every_mask_with_its_test(self, page, report_of):
+        """one page per locus: verdict band, the three-test spine, and a problems table naming the taxa involved"""
+        html, R = report_of("dna_rc"); open_report(page, html)
+        import numpy as np
+        side = R.arr("cells/side.npy"); li = int(np.argmax(((side & 3) > 0).sum(0)))
+        page.evaluate(f"() => LM.openCard('locus', {li})"); page.wait_for_selector("#lm-card .cd-page", timeout=15000)
+        n = int(((side[:, li] & 3) > 0).sum())
+        assert page.query_selector_all("#lm-card .cd-rib canvas") and len(page.query_selector_all("#lm-card .cd-rib")) >= 2
+        rows = page.query_selector_all("#lm-card .cd-table tr")
+        assert len(rows) - 1 == min(n, 18)                                     # the header row, then one per mask (cut to a page)
+        assert page.query_selector("#lm-card .cd-verdict") is not None and page.query_selector("#lm-card .cd-foot") is not None
+        page.evaluate("() => LM.App && document.querySelector('#lm-card .cd-bar button:last-child').click()")
+        assert page.query_selector("#lm-card .cd-page") is None
+
+    def test_the_sequence_card_carries_the_state_and_the_marked_spine(self, page, report_of):
+        html, R = report_of("dna_rc"); open_report(page, html)
+        import numpy as np
+        s2 = R.arr("cells/side2.npy"); g, li = [(int(a), int(b)) for a, b in zip(*((s2 & 8) > 0).nonzero())][0]
+        page.evaluate(f"() => LM.openCard('sequence', {g}, {li})"); page.wait_for_selector("#lm-card .cd-page", timeout=15000)
+        assert R.taxa["names"][g] in page.text_content("#lm-card .cd-id")
+        assert page.query_selector("#lm-card .cd-evidence table") is not None
+        assert len(page.query_selector_all("#lm-card .cd-rib")) >= 2
+
+    def test_the_dataset_card_counts_match_the_hero(self, page, report_of):
+        html, R = report_of("dna_rc"); open_report(page, html)
+        page.evaluate("() => LM.openCard('dataset')"); page.wait_for_selector("#lm-card .cd-page", timeout=15000)
+        v = page.text_content("#lm-card .cd-verdict")
+        assert str(R.man["counts"]["masked"]) in v.replace(",", "")

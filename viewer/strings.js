@@ -99,6 +99,25 @@ const LM_STR = {
     absent: "absent",
   },
 
+  // ---- the cards: one printable page per dataset / locus / taxon / sequence, one design language.
+  // The verdict band is the "fine / bad / discuss" line; the spine is the three per-test ribbons on dataset-wide
+  // axes, so cards compare side by side; the table names what is involved; the footer makes the page traceable.
+  card: {
+    button: "card",                                  // on each panel: opens the printable card
+    print: "print", close: "close",                  // the preview's two buttons
+    type_dataset: "dataset card", type_locus: "locus card", type_taxon: "taxon card", type_sequence: "sequence card",
+    verdict_clean: "No problems found",              // the calm verdict when nothing is masked
+    verdict_unit: "{n} of {m} sequences masked ({pct})",   // locus and taxon cards
+    verdict_dataset: "{n} of {m} sequences masked ({pct})",
+    worst: "worst log10 p {p}",                      // beside the verdict, with its stars
+    spine_note: "every card in a report shares these axes",   // under the ribbons, once
+    t_taxon: "taxon", t_locus: "locus", t_test: "test", t_p: "log10 p", t_obs: "observed %", t_exp: "expected %", t_partner: "partner",
+    more_rows: "… and {n} more",                     // when the problems table is cut to a page
+    counts_line: "close-relative {a} · closest-match {b} · broad-sample {c}",   // the dataset card's per-test counts
+    shape_title_unit: "observed vs expected divergence to the close relatives",
+    footer: "{dataset} · LocusMasker {version} · {date} · every test held to log10 p < {bar}",
+  },
+
   // ---- fatal states: shown in #app in place of the report.
   fatal: {
     no_data: "This page carries no data: it is the viewer template without a report. Run locus_outliers.py; the report.html it writes has the data inside it.",
