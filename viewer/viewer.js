@@ -539,7 +539,7 @@ async function start(bytes) {
   buildShell(); readHash(); renderAll();
   window.addEventListener("resize", () => { Overview.redraw(); for (const p of Object.values(App.panels)) if (p && p.redraw) p.redraw(); });
 }
-window.LM = { start, App, openCell: (g, li) => Sequence.open(g, li), openUnit: (k, i) => Detail.open(k, i), openCopies: (m, k) => Detail.openCopies(m, k), openCard: (k, a, b) => Card.open(k, a, b), setView: v => Overview.setView(v), up: () => Nav.up(), step: d => Nav.step(d), get masks() { return Masks; } };   // the tests' API (Masks is defined later)
+window.LM = { start, App, openCell: (g, li) => Sequence.open(g, li), openUnit: (k, i) => Detail.open(k, i), openCopies: (m, k) => Detail.openCopies(m, k), openCard: (k, a, b) => Card.open(k, a, b), setView: v => Overview.setView(v), up: () => Nav.up(), step: d => Nav.step(d), get masks() { return Masks; }, get brush() { return Brush; } };   // the tests' API (Masks and Brush are defined later)
 
 // ------------------------------------------------------------------ shell: topbar, the two panel rows, hover card
 function buildShell() {
@@ -637,12 +637,28 @@ const Nav = (() => {
   function bindKeys() {
     document.addEventListener("keydown", ev => {
       if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT" || ev.target.tagName === "TEXTAREA") return;
-      if (ev.key === "Escape") { up(); return; }
+      if (ev.key === "Escape") { if (App.brushPinned) { Brush.clear(); return; } up(); return; }
       if (!App.panels.detail && !App.panels.sequence && App.view === "matrix") return;     // the matrix keeps its own arrows at the top level
       if (ev.key === "ArrowLeft" || ev.key === "ArrowRight") { ev.preventDefault(); step(ev.key === "ArrowRight" ? 1 : -1); }
     });
   }
   return { layout, popTo, up, step, bindKeys };
+})();
+
+// ------------------------------------------------------------------ the brush: one taxon lit on every surface at once. Hovering a name in
+// the alignment, a tree tip or a ribbon point sets it; a click pins it (a second click unpins); Esc clears a pin.
+const Brush = (() => {
+  App.brush = null; App.brushPinned = false;
+  function apply() {
+    if (App.panels.sequence && App.panels.sequence.applyBrush) App.panels.sequence.applyBrush();
+    if (App.panels.overview) Overview.redraw();
+    if (App.view === "table") Table.repaint();
+  }
+  function hover(g) { if (App.brushPinned) return; if (App.brush === g) return; App.brush = g; apply(); }
+  function unhover() { if (App.brushPinned || App.brush === null) return; App.brush = null; apply(); }
+  function pin(g) { if (App.brushPinned && App.brush === g) { App.brushPinned = false; App.brush = null; } else { App.brush = g; App.brushPinned = true; } apply(); }
+  function clear() { const had = App.brush !== null; App.brush = null; App.brushPinned = false; if (had) apply(); return had; }
+  return { hover, unhover, pin, clear, apply };
 })();
 
 // ------------------------------------------------------------------ the masks list: ONE filter and ONE order, shown in the bar under the
@@ -953,6 +969,7 @@ const Overview = (() => {
     if (App.sel.rows.size || App.sel.cells.size) ot.forEach((g, r) => rowOf.set(g, r));
     if (App.sel.cols.size || App.sel.cells.size) ol.forEach((l, c) => colOf.set(l, c));
     for (const g of App.sel.rows) { const r = rowOf.get(g); const y = (r - V.y0) * V.ch; if (y > -V.ch && y < h) { ctx.fillRect(0, y, w, Math.max(V.ch, 1)); ctx.strokeRect(0.5, y + 0.5, w - 1, Math.max(V.ch, 2) - 1); } }
+    if (App.brush !== null) { const r = ot.indexOf(App.brush); const y = (r - V.y0) * V.ch; if (r >= 0 && y > -V.ch && y < h) { ctx.strokeStyle = cssVar("--orange"); ctx.lineWidth = 2; ctx.strokeRect(0.5, y + 0.5, w - 1, Math.max(V.ch, 3) - 1); } }
     for (const l of App.sel.cols) { const c = colOf.get(l); const x = (c - V.x0) * V.cw; if (x > -V.cw && x < w) { ctx.fillRect(x, 0, Math.max(V.cw, 1), h); ctx.strokeRect(x + 0.5, 0.5, Math.max(V.cw, 2) - 1, h - 1); } }
     for (const key of App.sel.cells) { const g = Math.floor(key / D.nloc), l = key % D.nloc; const r = rowOf.get(g), c = colOf.get(l); const x = (c - V.x0) * V.cw, y = (r - V.y0) * V.ch; ctx.strokeRect(x - 1, y - 1, Math.max(V.cw, 2) + 2, Math.max(V.ch, 2) + 2); }
     ctx.restore();
@@ -1362,12 +1379,25 @@ function drawResidualRow(cv, kind, u, W, H, opts) {
   const jit = d3.randomUniform.source(d3.randomLcg(0.31 + (u % 97) / 100))(-(H / 2 - 4), H / 2 - 4); const cy = H / 2;
   pts.sort((a, b) => (a.col ? 1 : 0) - (b.col ? 1 : 0));                     // this test's masks paint last, on top
   const many = pts.length > 400, ring = cssVar("--surface");
-  const mark = opts.mark || null;
+  const mark = opts.mark || null; const marked = opts.marks ? new Set(opts.marks.map(m => m.g * D.nloc + m.li)) : null;
   for (const p of pts) {
     p.py = cy + jit(); const col = p.col || cssVar("--pass");
-    const dim = mark && !(p.g === mark[0] && p.li === mark[1]);
-    c.globalAlpha = dim ? 0.25 : p.col ? 1 : many ? 0.35 : 0.7; c.fillStyle = col; c.beginPath(); c.arc(p.px, p.py, p.col ? 2.6 : many ? 1.8 : 2.4, 0, 2 * Math.PI); c.fill(); c.globalAlpha = 1;
+    const dim = (mark && !(p.g === mark[0] && p.li === mark[1])) || (opts.dim && !(marked && marked.has(p.g * D.nloc + p.li)));   // backgrounded: the rest of the data
+    c.globalAlpha = dim ? (opts.dim ? (p.col ? 0.3 : 0.12) : 0.25) : p.col ? 1 : many ? 0.35 : 0.7; c.fillStyle = col; c.beginPath(); c.arc(p.px, p.py, p.col ? 2.6 : many ? 1.8 : 2.4, 0, 2 * Math.PI); c.fill(); c.globalAlpha = 1;
     if (!dim && p.col) { c.strokeStyle = ring; c.lineWidth = 0.6; c.stroke(); }   // a fine white ring on this test's masks only
+  }
+  if (opts.marks) {                                              // the alignment's rows, in their own colours, numbered by row
+    c.font = `650 9px ${cssVar("--sans")}`; c.textAlign = "center";
+    const placed = []; const hits = opts.marks.map(m => ({ m, p: pts.find(q => q.g === m.g && q.li === m.li) })).filter(x => x.p).sort((a, b) => a.p.px - b.p.px);
+    for (const { m, p } of hits) {
+      const big = App.brush === m.g;
+      c.beginPath(); c.arc(p.px, p.py, big ? 7 : 5, 0, 2 * Math.PI); c.strokeStyle = m.col; c.lineWidth = big ? 2.4 : 1.6; c.stroke();
+      if (!m.label) continue;
+      let ty = Math.max(9, p.py - 8);                              // a label within 9px of a placed one steps up a line
+      while (placed.some(([x, y]) => Math.abs(x - p.px) < 9 && Math.abs(y - ty) < 9)) ty -= 9;
+      if (ty < 8) ty = 8; placed.push([p.px, ty]);
+      c.strokeStyle = ring; c.lineWidth = 3; c.strokeText(m.label, p.px, ty); c.fillStyle = m.col; c.fillText(m.label, p.px, ty);
+    }
   }
   if (mark) { const p = pts.find(q => q.g === mark[0] && q.li === mark[1]);
     if (p) { c.beginPath(); c.arc(p.px, p.py, 5, 0, 2 * Math.PI); c.strokeStyle = cssVar("--focus"); c.lineWidth = 1.6; c.stroke(); } }
@@ -1403,11 +1433,20 @@ function residualAxis(W, padL, padR, mode) {
 }
 function bindResidualHover(cv, getPts) {
   cv.addEventListener("mousemove", ev => { const r = cv.getBoundingClientRect(); const mx = ev.clientX - r.left, my = ev.clientY - r.top; let best = null, bd = 64; for (const p of getPts()) { const d = (p.px - mx) ** 2 + (p.py - my) ** 2; if (d < bd) { bd = d; best = p; } }
-    if (best) { showHover(cellHover(best.g, best.li), ev.clientX, ev.clientY); App.sel.cells.clear(); App.sel.cells.add(best.g * App.D.nloc + best.li); cv.style.cursor = "pointer"; } else { hideHover(); cv.style.cursor = ""; } });
-  cv.addEventListener("mouseleave", () => { hideHover(); App.sel.cells.clear(); });
+    if (best) { showHover(cellHover(best.g, best.li), ev.clientX, ev.clientY); App.sel.cells.clear(); App.sel.cells.add(best.g * App.D.nloc + best.li); cv.style.cursor = "pointer"; Brush.hover(best.g); } else { hideHover(); cv.style.cursor = ""; Brush.unhover(); } });
+  cv.addEventListener("mouseleave", () => { hideHover(); App.sel.cells.clear(); Brush.unhover(); });
   cv.addEventListener("click", ev => { const r = cv.getBoundingClientRect(); const mx = ev.clientX - r.left, my = ev.clientY - r.top; let best = null, bd = 64; for (const p of getPts()) { const d = (p.px - mx) ** 2 + (p.py - my) ** 2; if (d < bd) { bd = d; best = p; } } if (best) Sequence.open(best.g, best.li); });
 }
 
+function miniAxis(W, padL, padR, mode) {                     // the context ribbons' axis: end ticks and the zero, no caption
+  const D = App.D; const xs = residualScale(D, mode, W, padL, padR);
+  const svg = d3.create("svg").attr("width", W).attr("height", 14).attr("class", "resid-axis mini");
+  const [a, b] = xs.domain(); const tv = mode === "cm_relative" || mode === "cm_outside" ? [a, b] : [a, 0, b];
+  const fmt = mode === "cm_relative" || mode === "cm_outside" ? (d => lmP(-d)) : mode === "broad_sample" ? (d => d3.format(".0f")(d)) : (d => d3.format(",")(Math.round(d)));
+  svg.append("g").attr("class", "axis").attr("transform", "translate(0,1)").call(d3.axisBottom(xs).tickValues(tv).tickSize(3).tickFormat(fmt));
+  svg.selectAll(".tick text").attr("text-anchor", (d, i, n) => i === 0 ? "start" : i === n.length - 1 ? "end" : "middle");   // the end labels stay inside
+  return svg.node();
+}
 // all loci or all taxa as residual ribbons, one row each, virtualised
 const Ribbons = (() => {
   let root, kind, sortMode = "masked", mode = "close_relative", units = [], list, inner, W = 600, axisBox;
@@ -1757,7 +1796,8 @@ function drawCophylo(host, D, entry, k, cell, T, Wmax) { // T: cellTests, for th
         if (og) gg.append("rect").attr("x", xb - 3).attr("y", yOf(c) - 3).attr("width", 6).attr("height", 6).attr("fill", cssVar("--surface")).attr("stroke", cssVar("--muted")).attr("stroke-width", 1.2);
         else gg.append("circle").attr("cx", xb).attr("cy", yOf(c)).attr("r", hollow ? 3.4 : isP ? 4 : 3.2).attr("fill", hollow ? cssVar("--surface") : dot).attr("stroke", dot).attr("stroke-width", hollow ? 1.6 : 1);
         const lab = gg.append("text").attr("x", xb + dir * 6).attr("y", yOf(c) + 4).attr("text-anchor", dir > 0 ? "start" : "end").attr("font-size", 11.5).attr("fill", og ? cssVar("--muted") : isF ? cssVar("--orange-ink") : st === "blue" ? partnerCol : st === "red" ? D.col.red : inSet || isP ? cssVar("--ink") : outCol).attr("font-weight", (isF || isBold || st) && !og ? 700 : 400).text(labelOf(c.name));
-        lab.append("title").text(tipTitle(c.name)); }
+        lab.append("title").text(tipTitle(c.name));
+        lab.attr("data-g", +c.name).classed("tip", true).style("cursor", "pointer").on("mouseenter", () => Brush.hover(+c.name)).on("mouseleave", () => Brush.unhover()).on("click", () => Brush.pin(+c.name)); }
       walk(c); } }; walk(root); return gg; };
   draw(exp, 8, 1, obsSplits, closName(0)); draw(obs, W - 8, -1, expSplits, closName(1));
   const obsTips = new Map(); tipsOf(obs).forEach(t => obsTips.set(t.name, t));
@@ -1863,7 +1903,33 @@ const Sequence = (() => {
     // the body: test type · sequence · Taxon name · p<α · the alignment; the two name columns resize by their header's edge
     const body = el("div", { class: "seq-body" + (T.pcol ? " with-p" : "") }); body.style.setProperty("--wrole", colW.role + "px"); body.style.setProperty("--wname", colW.name + "px");
     const treesPane = el("div", { class: "trees-pane", style: "display:none" });
-    const mid = el("div", { class: "seq-mid" }, body, treesPane);
+    // the context under the alignment: the focal taxon's four ribbons (its cell ringed), the trees, the locus's four
+    // ribbons with every alignment row highlighted in its own colour and numbered by row; every point hovers and opens
+    const nameCol = r => r.role === "focal" ? cssVar("--orange-ink") : r.st === "blue" ? D.col.blue : r.st === "red" ? D.col.red : cssVar("--ink");
+    const ctxCol = (kind, u, marks) => {
+      const col = el("div", { class: "ctx-col", "data-kind": kind, "data-marks": String(marks.length) });
+      col.append(el("div", { class: "ctx-head" }, el("span", { class: "k" }, LM_STR.card["t_" + kind]), " ", el("b", null, kind === "taxon" ? D.taxa.names[u] : D.loci.names[u])));
+      const counts = spineCounts(D, kind, u); const strips = [];
+      for (const mode of ["close_relative", "cm_relative", "cm_outside", "broad_sample"]) {
+        if (mode === "broad_sample" && !D.hasBS) continue;
+        const cv = el("canvas"); const ax = el("div", { class: "ctx-axis" });
+        col.append(el("div", { class: "ctx-rib" }, el("span", { class: "ctx-nm" }, LM_STR.ribbons["test_" + mode], el("i", { class: "cd-ribn" }, fmtInt(counts[mode]))), el("div", { class: "ctx-strip" }, cv, ax)));
+        strips.push({ mode, cv, ax });
+      }
+      col.draw = () => { const W = Math.max(160, Math.floor(col.getBoundingClientRect().width) - 118);
+        for (const st of strips) { const drawn = drawResidualRow(st.cv, kind, u, W, 30, { padL: 8, padR: 8, mode: st.mode, noBand: true, dim: true, marks }); st.ax.replaceChildren(miniAxis(W, 8, 8, st.mode)); bindResidualHover(st.cv, () => drawn.pts); } };
+      return col;
+    };
+    const marksL = rows.filter(r => r.g !== null).map((r, k) => ({ g: r.g, li, col: nameCol(r), label: String(k + 1) }));
+    const ctxTaxon = ctxCol("taxon", g, [{ g, li, col: cssVar("--orange-ink"), label: "" }]), ctxLocus = ctxCol("locus", li, marksL);
+    const ctx = el("div", { class: "seq-ctx" }, ctxTaxon, treesPane, ctxLocus);
+    const mid = el("div", { class: "seq-mid" }, body, ctx);
+    const drawCtx = () => { ctxTaxon.draw(); ctxLocus.draw(); }; requestAnimationFrame(drawCtx);
+    App.panels.sequence.applyBrush = () => {                           // the brushed taxon: its name, its tips, its ribbon marks
+      for (const d of cols.names.children) d.classList.toggle("brushed", d.dataset.g !== "" && +d.dataset.g === App.brush);
+      treesPane.querySelectorAll("text.tip").forEach(t => t.classList.toggle("brushed", +t.dataset.g === App.brush));
+      drawCtx();
+    };
     const cols = { gut: el("div", { class: "seq-col seq-gut" }), role: el("div", { class: "seq-col seq-role" }), names: el("div", { class: "seq-col seq-names" }), p: el("div", { class: "seq-col seq-p" }) };
     const cwrap = el("div", { class: "seq-canvas-wrap" }); const cv = el("canvas"); cwrap.append(cv);
     body.append(cols.gut, cols.role, cols.names, ...(T.pcol ? [cols.p] : []), cwrap);
@@ -1882,7 +1948,7 @@ const Sequence = (() => {
       const entry = await D.trees(li); if (treesPane.style.display === "none") return; treesPane.replaceChildren();
       let k = -1; if (entry) for (let q = 0; q < entry.cells.length; q++) if (entry.cells[q] === g) { k = q; break; }
       if (k < 0) { treesPane.append(el("div", { class: "note", style: "padding: 8px" }, "trees were not carried for this cell")); return; }
-      treesPane.append(drawCophylo(treesPane, D, entry, k, { g, li }, T, treesPane.getBoundingClientRect().width - 40));
+      treesPane.append(drawCophylo(treesPane, D, entry, k, { g, li }, T, 460)); requestAnimationFrame(drawCtx);
     };
     if (showTrees) setTimeout(toggleTrees, 0);
     // one row per sequence in every column; the focal's p cell is its outcome as a colour (gold: both tests) with the stars of
@@ -1894,7 +1960,9 @@ const Sequence = (() => {
       cols.gut.append(el("div", { class: "seqnm gut", style: `height:${ROW_H}px` },
         r.role === "closest" ? LM_STR.seq.gut_closest : r.role === "broad" ? LM_STR.seq.gut_broad : ri === divAt ? LM_STR.seq.gut_relatives : ""));
       cols.role.append(el("div", { class: "seqnm role", style: `height:${ROW_H}px`, title: tip }, r.tag));
-      cols.names.append(el("div", { class: "seqnm", style: `height:${ROW_H}px`, title: tip }, el("span", { class: "nm" + (r.st ? " st-" + r.st : "") + (r.g === null ? " none" : "") }, nm)));
+      cols.names.append(el("div", { class: "seqnm", style: `height:${ROW_H}px`, title: tip, "data-g": r.g === null ? "" : r.g,
+        onmouseenter: () => { if (r.g !== null) Brush.hover(r.g); }, onmouseleave: () => Brush.unhover(), onclick: () => { if (r.g !== null) Brush.pin(r.g); } },
+        el("span", { class: "nm" + (r.st ? " st-" + r.st : "") + (r.g === null ? " none" : "") }, nm)));
       if (!T.pcol) return;
       let bg = D.col.passCell, txt = "–", ink = cssVar("--muted");
       if (r.role === "focal") { const mp = maskP(D, g, li); const fp = mp ? mp.p : dv && sm ? Math.min(divP ?? Infinity, simP ?? Infinity) : dv ? divP : sm ? simP : null; bg = dv && sm ? D.col.both : dv ? D.col.red : sm ? D.col.blue : D.col.passCell; txt = dv || sm ? T.stars(fp) : "–"; if (dv || sm) ink = "#ffffff"; }
@@ -2309,12 +2377,14 @@ const Table = (() => {
     root.append(head, body, foot);
     const RH = 22;
     const paint = () => { inner.style.height = rows.length * RH + "px"; inner.style.position = "relative"; inner.replaceChildren(); const top = body.scrollTop; const i0 = Math.max(0, Math.floor(top / RH) - 5), i1 = Math.min(rows.length, i0 + Math.ceil(body.clientHeight / RH) + 10);
-      for (let i = i0; i < i1; i++) { const r = rows[i]; const st = starsOf(D, r.p); inner.append(el("div", { class: "trow", style: `position:absolute; top:${i * RH}px; left:0; right:0`, onclick: () => Sequence.open(r.g, r.li), onmouseenter: () => { App.sel.cells.clear(); App.sel.cells.add(r.g * D.nloc + r.li); } },
+      for (let i = i0; i < i1; i++) { const r = rows[i]; const st = starsOf(D, r.p); inner.append(el("div", { class: "trow" + (r.g === App.brush ? " brushed" : ""), style: `position:absolute; top:${i * RH}px; left:0; right:0`, onclick: () => Sequence.open(r.g, r.li), onmouseenter: () => { App.sel.cells.clear(); App.sel.cells.add(r.g * D.nloc + r.li); Brush.hover(r.g); }, onmouseleave: () => Brush.unhover() },
         el("span", null, sw(D.colorOf(r.code)), r.taxon), el("span", null, r.locus), el("span", null, r.test), el("span", { class: "pcol" }, r.p === null ? "" : lmP(r.p), st ? el("i", { class: "stars" }, " " + st) : null),
         el("span", null, r.obs === null ? "" : fmt2(r.obs)), el("span", null, r.exp === null ? "" : fmt2(r.exp)), el("span", null, r.excess_m === null ? "" : fmt2(r.excess_m)), el("span", null, r.partner), el("span", null, r.bm))); }
       $(".n", foot).textContent = lmFmt(T().foot, { n: fmtInt(rows.length) }); };
-    body.addEventListener("scroll", paint); paint();
+    body.addEventListener("scroll", paint); paint(); repaintFn = paint;
   }
+  let repaintFn = null;
+  function repaint() { if (repaintFn && root && root.isConnected) repaintFn(); }
   function download() {
     const D = App.D; build();
     const v4 = D.format >= 4;                                 // from format 4: the cell's role in its reported pair and the tests' log10 p, in the tests' names
@@ -2326,7 +2396,7 @@ const Table = (() => {
       lines.push([r.taxon, r.locus, D.labelOf(r.code), r.test, p6(r.p), r.n_fail, r.n_similar, r.obs ?? "", r.exp ?? "", r.excess_m ?? "", bm !== null && bm >= 0 ? D.taxa.names[bm] : "", r.bm_id ?? "", pt !== null && pt >= 0 ? D.taxa.names[pt] : "", r.lam ?? "", ...(v4 ? [sr ? sr.role : "", p6(D.num("div_log10p", r.g, r.li)), p6(D.num("sim_log10p", r.g, r.li)), p6(bsp)] : [])].join("\t")); }
     const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/tab-separated-values" })); a.download = `${D.man.dataset || "report"}_cells.tsv`; a.click(); build();
   }
-  return { render, download, open };
+  return { render, download, open, repaint };
 })();
 
 // ------------------------------------------------------------------ URL hash: view, ordering, viewport, open panels

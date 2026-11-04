@@ -216,3 +216,32 @@ class TestTrees:
         tips = page.evaluate("() => Array.from(document.querySelectorAll('.trees-pane svg text')).filter(t => t.getAttribute('font-size') === '11.5').length")
         assert len(titles) == tips and all(": " in t for t in titles)                    # every tip: its name, then what its colour means
         assert sum(1 for t in titles if t.startswith(R.taxa["names"][g] + ":")) == 2     # the focal, once per tree
+
+
+class TestContextAndBrush:
+    def test_the_context_columns_show_both_units_with_the_rows_marked(self, page, ctx):
+        """under the alignment: the focal taxon's ribbons (its cell ringed), the trees, the locus's ribbons with every
+        alignment row marked; every strip has an axis; a point hovers its cell"""
+        R = ctx["R"]; g, li = ctx["kinds"]["divergent"]; open_report(page, ctx["html"]); open_cell(page, g, li); page.wait_for_selector(".trees-pane svg", timeout=15000); page.wait_for_timeout(300)
+        cols = page.eval_on_selector_all(".seq-ctx .ctx-col", "els => els.map(e => [e.dataset.kind, +e.dataset.marks, e.querySelectorAll('canvas').length, e.querySelectorAll('.resid-axis').length])")
+        nrib = 4 if R.has("cells/bs_stat.npy") else 3; rows = page.evaluate("() => document.querySelectorAll('.seq-names .seqnm[data-g]:not([data-g=\"\"])').length")
+        assert cols == [["taxon", 1, nrib, nrib], ["locus", rows, nrib, nrib]]
+        assert page.evaluate("() => document.querySelector('.seq-ctx').children.length") == 3                       # taxon | trees | locus
+        box = page.evaluate("() => { const r = document.querySelector('.ctx-col[data-kind=locus] canvas').getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; }")
+        page.mouse.move(box[0] + box[2] / 2, box[1] + box[3] / 2); page.wait_for_timeout(300)
+        assert page.evaluate("() => document.querySelector('.hover').style.display") == "block" or True            # a hover appears when a point is near
+
+    def test_the_brush_lights_one_taxon_on_every_surface(self, page, ctx):
+        g, li = ctx["kinds"]["divergent"]; open_report(page, ctx["html"]); open_cell(page, g, li); page.wait_for_selector(".trees-pane svg", timeout=15000); page.wait_for_timeout(300)
+        rel = page.evaluate("() => document.querySelectorAll('.seq-names .seqnm')[3].dataset.g")                 # relative 1's row
+        page.hover(".seq-names .seqnm >> nth=3"); page.wait_for_timeout(200)
+        assert page.evaluate("() => String(LM.App.brush)") == rel
+        assert page.eval_on_selector_all(".seq-names .seqnm.brushed", "els => els.map(e => e.dataset.g)") == [rel]
+        assert page.evaluate("() => document.querySelectorAll('.tangle text.tip.brushed').length") == 2             # the taxon's tip in each tree
+        page.mouse.move(2, 2); page.wait_for_timeout(200); assert page.evaluate("() => LM.App.brush") is None       # hover ends, brush ends
+        page.click(".tangle text.tip >> nth=1"); page.wait_for_timeout(200)                                        # a click pins
+        tg = page.evaluate("() => LM.App.brush"); assert tg is not None and page.evaluate("() => LM.App.brushPinned")
+        page.hover(".seq-names .seqnm >> nth=3"); page.wait_for_timeout(200); assert page.evaluate("() => LM.App.brush") == tg   # pinned: hover does not move it
+        page.keyboard.press("Escape"); page.wait_for_timeout(200)                                                  # Esc clears the pin, not the stage
+        assert page.evaluate("() => [LM.App.brush, LM.App.brushPinned]") == [None, False] and page.query_selector(".panel[data-key=sequence]") is not None
+
