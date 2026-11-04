@@ -112,7 +112,8 @@ const Chunks = (() => {
   return { load, index };
 })();
 const CELL_COLS = ["med_identity", "med_expected", "excess_m", "closest", "closest_overlap", "closest_identity", "closest_expected", "best_match", "best_match_identity", "partner",
-  "div_log10p", "sim_log10p", "locus_closest", "locus_closest_log10p", "focal_sites", "bs_log10p", "bs_rho", "bs_stat", "bs_rep"];
+  "div_log10p", "sim_log10p", "locus_closest", "locus_closest_log10p", "focal_sites", "bs_log10p", "bs_rho", "bs_stat", "bs_rep",
+  "bs_close_log10p", "bs_div_log10p", "bs_closest", "bs_closest_mis", "bs_closest_exp", "bs_nt", "bs_nfail", "bs_obs_pct", "bs_exp_pct"];   // the broad test's card members (0.14)
 async function loadBundle(bytes) {
   const zip = new Zip(bytes); const td = new TextDecoder();
   const json = async name => JSON.parse(td.decode(await zip.read(name)));
@@ -150,7 +151,7 @@ async function loadBundle(bytes) {
     for (let j = 0; j < cl.length; j++) D.core.map.set(cg[j] * D.nloc + cl[j], j);
     // the sample: a fixed random set of cells carrying the ribbons' inputs, for the dataset-wide drawings
     const sl = (await npy("sample/locus.npy")).data, sg = (await npy("sample/taxon.npy")).data;
-    const scols = await readCols(zip, "sample/", ["excess_m", "sim_log10p", "locus_closest_log10p", "min_comp_sim", "bs_stat"]);
+    const scols = await readCols(zip, "sample/", ["excess_m", "sim_log10p", "locus_closest_log10p", "min_comp_sim", "bs_stat", "bs_log10p"]);
     D.sample = { map: new Map(), cols: scols, g: sg, li: sl };
     for (let j = 0; j < sl.length; j++) D.sample.map.set(sg[j] * D.nloc + sl[j], j);
     D.chunks = { locus: new Map(), taxa: new Map(), pending: new Map() };
@@ -587,6 +588,7 @@ function makePanel(key, crumbParts, onClose) {
 }
 function closePanel(key) {
   const p = App.panels[key]; if (!p) return; p.el.remove(); App.panels[key] = null;
+  if (key === "detail") Masks.setCells(null);
   writeHash(); Nav.layout(); relayout(); Masks.refresh();
 }
 // the navigation stack: dataset › unit › sequence. The deepest open level is the stage; each ancestor is a
@@ -622,7 +624,18 @@ const Nav = (() => {
       return b;
     }
     const dc = Detail.cur(); if (!dc) return b;
-    if (dc.kind === "copies") { b.append(el("b", null, LM_STR.nav.copies)); return b; }
+    if (dc.kind === "copies") {
+      const U = LM_STR.unit; const n = copiesOf(D).length; const one = dc.key === null ? null : copyGroups(D, dc.mode).find(gr => gr.k === String(dc.key));
+      b.append(el("span", { class: "kind" }, LM_STR.nav.copies), one ? el("b", null, one.label) : "",
+        el("span", { class: "line" }, one ? lmFmt(U.copies_of, { k: fmtInt(one.list.length), n: fmtInt(n) }) : lmFmt(U.copies_n, { n: fmtInt(n) })));
+      const sc = Sequence.cur();
+      if (sc && App.panels.sequence) {                              // paging through the copies: the open sequence's taxon ribbon, its cell marked
+        b.append(el("span", { class: "kind" }, C.t_taxon), el("b", null, D.taxa.names[sc.g]));
+        const cv = el("canvas", { class: "mini" }); b.append(cv);
+        requestAnimationFrame(() => drawResidualRow(cv, "taxon", sc.g, 220, 18, { padL: 4, padR: 4, mode: "close_relative", noBand: true, mark: [sc.g, sc.li] }));
+      }
+      return b;
+    }
     const kind = dc.kind, u = dc.i; const cnt = kind === "taxon" ? D.taxCount : D.locCount;
     b.append(sw(cnt.masked[u] ? (cnt.div[u] >= cnt.sim[u] ? D.col.red : D.col.blue) : null),
       el("span", { class: "kind" }, C["t_" + kind]), el("b", null, kind === "taxon" ? D.taxa.names[u] : D.loci.names[u]),
@@ -670,7 +683,7 @@ const Brush = (() => {
 // with two arms is in the list when either is chosen); a taxon or a locus narrows it; the order is significance, locus or taxon.
 const Masks = (() => {
   const ARMS = ["close_relative", "cm_relative", "cm_outside", "bs_close", "bs_divergent"];
-  const F = { tests: new Set(ARMS), taxon: null, locus: null, order: "p" };
+  const F = { tests: new Set(ARMS), taxon: null, locus: null, order: "p", cells: null };   // cells: an ordered scope (the open copies panel's rows), paged in that order
   let cache = null, bar = null; const ui = {};
   const S = () => LM_STR.filter;
   function armsOf(D, g, li) {
@@ -685,6 +698,8 @@ const Masks = (() => {
       if (!all && !armsOf(D, q.g, q.li).some(a => F.tests.has(a))) continue;
       out.push(q);
     }
+    if (F.cells) { const idx = new Map(F.cells.map((c, i) => [c.g * D.nloc + c.li, i]));
+      return (cache = out.filter(q => idx.has(q.g * D.nloc + q.li)).sort((a, b) => idx.get(a.g * D.nloc + a.li) - idx.get(b.g * D.nloc + b.li))); }
     const pt = new Map(App.order.taxa.map((g, i) => [g, i])), pl = new Map(App.order.loci.map((l, i) => [l, i]));
     if (F.order === "p") out.sort((a, b) => (Number.isNaN(a.p) ? 1 : 0) - (Number.isNaN(b.p) ? 1 : 0) || a.p - b.p || pl.get(a.li) - pl.get(b.li) || pt.get(a.g) - pt.get(b.g));
     else if (F.order === "locus") out.sort((a, b) => pl.get(a.li) - pl.get(b.li) || pt.get(a.g) - pt.get(b.g));
@@ -704,6 +719,7 @@ const Masks = (() => {
   function setUnit(kind, u) { if (kind === "taxon") F.taxon = u; else F.locus = u; changed(); }
   function clearUnit(kind) { if (kind === "taxon") F.taxon = null; else F.locus = null; changed(); }
   function setOrder(o) { F.order = ["p", "locus", "taxon"].includes(o) ? o : "p"; changed(); }
+  function setCells(arr) { F.cells = arr && arr.length ? arr : null; cache = null; refresh(); }   // the copies panel scopes the paging to its rows
   function step(dir) {                                          // the next or previous mask of the list; from outside the list, its first or last
     const L = list(); if (!L.length) return;
     let k = current(); k = k < 0 ? (dir > 0 ? 0 : L.length - 1) : clamp(k + dir, 0, L.length - 1);
@@ -742,8 +758,10 @@ const Masks = (() => {
       ...ARMS.map(a => el("button", { class: "chip", "data-arm": a, onclick: () => toggleTest(a) }, S()["arm_" + a])));
     ui.order = el("select", { onchange: e => setOrder(e.target.value) }, ...[["p", S().order_p], ["locus", S().order_locus], ["taxon", S().order_taxon]].map(([v, t]) => el("option", { value: v }, t)));
     ui.count = el("span", { class: "cnt" }); ui.pos = el("span", { class: "k" });
-    bar.append(el("span", { class: "lbl" }, S().label), ui.chips, picker("taxon"), picker("locus"), el("label", null, S().order + " ", ui.order), ui.count,
-      el("span", { class: "pos" }, el("button", { class: "step", title: S().prev, onclick: () => step(-1) }, "◀"), ui.pos, el("button", { class: "step", title: S().next, onclick: () => step(1) }, "▶")));
+    const arrow = el("span", { class: "arrow" }, "▾");
+    ui.fold = el("button", { class: "lbl fold", title: S().fold, onclick: () => { const f = bar.classList.toggle("folded"); arrow.textContent = f ? "▸" : "▾"; ui.fold.title = f ? S().unfold : S().fold; } }, S().label, " ", arrow);
+    bar.append(ui.fold, el("span", { class: "filt-body" }, ui.chips, picker("taxon"), picker("locus"), el("label", null, S().order + " ", ui.order), ui.count,
+      el("span", { class: "pos" }, el("button", { class: "step", title: S().prev, onclick: () => step(-1) }, "◀"), ui.pos, el("button", { class: "step", title: S().next, onclick: () => step(1) }, "▶"))));
     refresh();
   }
   function refresh() {
@@ -755,7 +773,7 @@ const Masks = (() => {
     const k = current(); ui.pos.textContent = k >= 0 ? lmFmt(S().position, { k: fmtInt(k + 1), n: fmtInt(L.length) }) : lmFmt(S().none, { n: fmtInt(L.length) });
     bar.dataset.n = L.length;
   }
-  return { ARMS, list, pos, current, step, setTests, toggleTest, setFamily, setUnit, clearUnit, setOrder, state, restore, hash, mount, refresh, invalidate };
+  return { ARMS, list, pos, current, step, setTests, toggleTest, setFamily, setUnit, clearUnit, setOrder, setCells, state, restore, hash, mount, refresh, invalidate };
 })();
 
 // ------------------------------------------------------------------ the overview panel: one view at a time, sized to the panel
@@ -780,7 +798,6 @@ const Overview = (() => {
     const controls = el("div", { class: "controls one-row" },
       el("label", null, SC.view + " ", viewSel), viewCtl,
       el("button", { "data-act": "tsv", title: SC.tsv_hint, onclick: Table.download }, "⤓ " + SC.tsv),
-      el("button", { "data-act": "png", title: SC.png_hint, onclick: exportPng }, "⤓ " + SC.png),
       el("button", { class: "cardbtn", onclick: () => Card.open("dataset") }, "⎙ " + LM_STR.card.button));
     viewEl.matrixCtl = [el("label", null, SC.taxa + " ", taxaSel), el("label", null, SC.loci + " ", lociSel), search];
     P.body.append(controls);
@@ -839,10 +856,7 @@ const Overview = (() => {
     const D = App.D, c = D.man.counts, S = LM_STR.overview; const t = viewEl.tiles; t.replaceChildren();
     const taxaWith = d3.sum(D.taxCount.masked, v => v > 0), lociWith = d3.sum(D.locCount.masked, v => v > 0);
     const bs = bsMan(D) || {}; const bsN = (bs.close || 0) + (bs.divergent || 0) + (bs.both_sides || 0);
-    const hero = el("div", { class: "hero" },
-      el("div", { class: "hero-n" }, fmtInt(c.masked)),
-      el("div", { class: "hero-k" }, el("div", { class: "hero-word" }, LM_STR.controls.hero_word),
-        el("div", { class: "hero-sub" }, lmFmt(S.hero_sub, { tested: fmtInt(c.cells), pct: pct(c.masked, c.cells) }))),
+    const hero = el("div", { class: "hero hero-slim" },                      // the masked total is in the top bar already
       el("div", { class: "hero-stats" },
         el("div", null, lmFmt(S.hero_taxa, { with: fmtInt(taxaWith), all: fmtInt(c.taxa) })),
         el("div", null, lmFmt(S.hero_loci, { with: fmtInt(lociWith), all: fmtInt(c.loci) })),
@@ -880,10 +894,11 @@ const Overview = (() => {
       }
       return c;
     };
-    const taxa = d3.range(D.n).filter(g => D.taxCount.masked[g] > 0).map(g => ({ i: g, kind: "row", name: D.taxa.names[g], v: D.taxCount.masked[g] / Math.max(D.taxCount.tested[g], 1), div: D.taxCount.div[g], sim: D.taxCount.sim[g], label: pct(D.taxCount.masked[g], D.taxCount.tested[g]), title: lmFmt(LM_STR.controls.tile_taxon, { masked: D.taxCount.masked[g], tested: D.taxCount.tested[g] }) }))
+    const lab = (masked, tested) => lmFmt(LM_STR.overview.worst_label, { pct: pct(masked, tested), n: fmtInt(masked), s: masked === 1 ? "" : "s" });
+    const taxa = d3.range(D.n).filter(g => D.taxCount.masked[g] > 0).map(g => ({ i: g, kind: "row", name: D.taxa.names[g], v: D.taxCount.masked[g] / Math.max(D.taxCount.tested[g], 1), div: D.taxCount.div[g], sim: D.taxCount.sim[g], label: lab(D.taxCount.masked[g], D.taxCount.tested[g]), title: lmFmt(LM_STR.controls.tile_taxon, { masked: D.taxCount.masked[g], tested: D.taxCount.tested[g] }) }))
       .sort((a, b) => b.v - a.v || b.div + b.sim - a.div - a.sim).slice(0, 10);
-    const loci = d3.range(D.nloc).filter(l => D.locCount.masked[l] > 0).map(l => ({ i: l, kind: "col", name: D.loci.names[l], v: D.locCount.masked[l], div: D.locCount.div[l], sim: D.locCount.sim[l], label: fmtInt(D.locCount.masked[l]), title: lmFmt(LM_STR.controls.tile_locus, { masked: D.locCount.masked[l], tested: D.locCount.tested[l] }) }))
-      .sort((a, b) => b.v - a.v).slice(0, 10);
+    const loci = d3.range(D.nloc).filter(l => D.locCount.masked[l] > 0).map(l => ({ i: l, kind: "col", name: D.loci.names[l], v: D.locCount.masked[l] / Math.max(D.locCount.tested[l], 1), div: D.locCount.div[l], sim: D.locCount.sim[l], label: lab(D.locCount.masked[l], D.locCount.tested[l]), title: lmFmt(LM_STR.controls.tile_locus, { masked: D.locCount.masked[l], tested: D.locCount.tested[l] }) }))
+      .sort((a, b) => b.v - a.v || b.div + b.sim - a.div - a.sim).slice(0, 10);
     const ct = col(LM_STR.overview.worst_taxa, taxa, it => Detail.open("taxon", it.i)), cl = col(LM_STR.overview.worst_loci, loci, it => Detail.open("locus", it.i));
     w.append(el("div", { class: "worst-row" }, ct, cl));
     // the distribution plots and the significance histogram, sized to the room left in the panel
@@ -1015,7 +1030,6 @@ const Overview = (() => {
     const { w, h } = canvasArea(); stripCtx.save(); stripCtx.scale(dpr, dpr); stripCtx.strokeStyle = cssVar("--focus"); stripCtx.lineWidth = 1.5;
     stripCtx.strokeRect(V.x0 / nloc * sw_, V.y0 / D.n * sh, Math.min(w / V.cw, nloc) / nloc * sw_, Math.min(h / V.ch, D.n) / D.n * sh); stripCtx.restore();
   }
-  function exportPng() { const a = document.createElement("a"); a.download = `${App.D.man.dataset || "report"}_overview.png`; a.href = matrix.toDataURL("image/png"); a.click(); }
   // ---- interaction
   function cellAt(ev) { const r = matrix.getBoundingClientRect(); const x = ev.clientX - r.left, y = ev.clientY - r.top; return { x, y, col: Math.floor(V.x0 + x / V.cw), row: Math.floor(V.y0 + y / V.ch), cols: [Math.floor(V.x0 + x / V.cw), Math.max(Math.floor(V.x0 + x / V.cw), Math.ceil(V.x0 + (x + 1) / V.cw) - 1)], rows: [Math.floor(V.y0 + y / V.ch), Math.max(Math.floor(V.y0 + y / V.ch), Math.ceil(V.y0 + (y + 1) / V.ch) - 1)] }; }
   function bindMatrix() {
@@ -1293,9 +1307,9 @@ function residualOf(D, g, li, mode) {                        // one residual per
   if (mode === "cm_relative") { const v = cmArms(D, g, li).rel; return v === null ? null : -v; }
   if (mode === "cm_outside") { const v = cmArms(D, g, li).out; return v === null ? null : -v; }
   const i = g * D.nloc + li;
-  if (mode === "broad_sample") {                             // observed / expected variance, log2
-    const v = D.num("bs_stat", g, li);
-    return v !== null && Number.isFinite(v) && v > 0 ? Math.log2(v) : null;
+  if (mode === "broad_sample") {                             // the cell's p against the broad sample (the called or the stronger side), like the closest-match arms
+    const v = D.num("bs_log10p", g, li);
+    return v !== null && Number.isFinite(v) ? -v : null;
   }
   return D.num("excess_m", g, li);                           // close_relative: the excess beyond expectation, in m
 }
@@ -1342,7 +1356,7 @@ function testCards(D, interactive) {
     el("div", { class: "card-n" }, fmtInt(n)),
     ...lines.filter(Boolean).map(([cls, txt]) => el("div", { class: cls }, tintWords(txt))));
   return el("div", { class: "cards" },
-    card(D.col.red, S.card_close_relative, tc.close_relative, [["card-line", S.card_close_relative_line]], "close_relative"),
+    card(D.col.red, S.card_close_relative, tc.close_relative, [["card-line", lmFmt(S.card_close_relative_line, { k: fmtInt(D.man.options.K_eff || D.man.options.n_comp || 0) })]], "close_relative"),
     card(D.col.blue, S.card_cm_rel, tc.cm_relative, [["card-line", S.card_cm_rel_line], ["card-extra", S.card_cm_rel_when]], "closest_match"),
     card(D.col.blue, S.card_cm_out, tc.cm_outside, [["card-line", S.card_cm_out_line], ["card-extra", S.card_cm_out_when]], "closest_match"),
     ...(bsMan(D) ? [card("split", S.card_broad_sample, tc.broad_sample,
@@ -1358,12 +1372,7 @@ function ribbonColour(D, g, li, mode) {                      // the mark's colou
   return null;
 }
 function residualScale(D, mode, W, padL, padR) {
-  if (mode === "cm_relative" || mode === "cm_outside") return d3.scaleLinear().domain([0, Math.max(6, -(D.man.test && D.man.test.log10_bar || -6) * 2.5)]).range([padL, W - padR]);
-  if (mode === "broad_sample") { const d = D._bsDom || (D._bsDom = (() => { let m = 2;
-      if (D.folder) { const b = D.man.ribbons && D.man.ribbons.bs_log2_max; if (b) m = Math.max(m, b); }
-      else { const v = D.cols.bs_stat; if (v) for (let q = 0; q < v.length; q++) { const x = v[q]; if (Number.isFinite(x) && x > 0) { const a = Math.abs(Math.log2(x)); if (a > m) m = a; } } }
-      return Math.min(m, 10); })());
-    return d3.scaleLinear().domain([-d, d]).range([padL, W - padR]); }
+  if (mode === "cm_relative" || mode === "cm_outside" || mode === "broad_sample") return d3.scaleLinear().domain([0, Math.max(6, -(D.man.test && D.man.test.log10_bar || -6) * 2.5)]).range([padL, W - padR]);   // p axes
   return d3.scaleSymlog().constant(1).domain(D.exDomain).range([padL, W - padR]);
 }
 function drawResidualRow(cv, kind, u, W, H, opts) {
@@ -1430,7 +1439,7 @@ function residualAxis(W, padL, padR, mode) {
     svg.append("g").attr("class", "axis").attr("transform", "translate(0,2)").call(d3.axisBottom(xs).ticks(5).tickFormat(d => lmP(-d)));
     caption(S.axis_closest);
   } else if (mode === "broad_sample") {
-    svg.append("g").attr("class", "axis").attr("transform", "translate(0,2)").call(d3.axisBottom(xs).ticks(7));
+    svg.append("g").attr("class", "axis").attr("transform", "translate(0,2)").call(d3.axisBottom(xs).ticks(5).tickFormat(d => lmP(-d)));
     caption(S.axis_broad);
   } else {
     const tv = [-1000, -100, -10, -1, 0, 1, 10, 100, 1000].filter(v => v >= D.exDomain[0] && v <= D.exDomain[1]);
@@ -1449,8 +1458,9 @@ function bindResidualHover(cv, getPts) {
 function miniAxis(W, padL, padR, mode) {                     // the context ribbons' axis: end ticks and the zero, no caption
   const D = App.D; const xs = residualScale(D, mode, W, padL, padR);
   const svg = d3.create("svg").attr("width", W).attr("height", 14).attr("class", "resid-axis mini");
-  const [a, b] = xs.domain(); const tv = mode === "cm_relative" || mode === "cm_outside" ? [a, b] : [a, 0, b];
-  const fmt = mode === "cm_relative" || mode === "cm_outside" ? (d => lmP(-d)) : mode === "broad_sample" ? (d => d3.format(".0f")(d)) : (d => d3.format(",")(Math.round(d)));
+  const pax = mode === "cm_relative" || mode === "cm_outside" || mode === "broad_sample";
+  const [a, b] = xs.domain(); const tv = pax ? [a, b] : [a, 0, b];
+  const fmt = pax ? (d => lmP(-d)) : (d => d3.format(",")(Math.round(d)));
   svg.append("g").attr("class", "axis").attr("transform", "translate(0,1)").call(d3.axisBottom(xs).tickValues(tv).tickSize(3).tickFormat(fmt));
   svg.selectAll(".tick text").attr("text-anchor", (d, i, n) => i === 0 ? "start" : i === n.length - 1 ? "end" : "middle");   // the end labels stay inside
   return svg.node();
@@ -1495,7 +1505,7 @@ const Ribbons = (() => {
 
 // ------------------------------------------------------------------ the taxon / locus panel: one plot at a time, sized to the panel
 const Detail = (() => {
-  let cur = null, view = "scatter", viewSel = null, body = null, note = null;      // note: the explanation of the plot on show, behind the ? mark
+  let cur = null, view = "results", viewSel = null, body = null, note = null;      // note: the explanation of the plot on show, behind the ? mark
   function ensurePanel() {
     if (App.panels.detail) return;
     const P = makePanel("detail", [], () => closePanel("detail")); App.panels.detail = { el: P.el, P, render, redraw: render };
@@ -1503,8 +1513,8 @@ const Detail = (() => {
     new ResizeObserver(debounce(() => { if (App.panels.detail && cur) draw(); }, 120)).observe(P.body);
   }
   async function open(kind, i) {
-    cur = { kind, i }; ensurePanel();
-    if (kind === "locus" && view === "matches") view = "scatter";
+    cur = { kind, i }; ensurePanel(); Masks.setCells(null);
+    if (!["results", "ribbons"].includes(view)) view = "results";          // the two views every unit has; an old link's view lands on the results
     Overview.highlight(kind === "taxon" ? "row" : "col", i); Nav.layout();
     await (kind === "taxon" ? App.D.loadTaxon(i) : App.D.loadLocus(i));           // the unit's exact numbers, from its chunk
     if (!cur || cur.kind !== kind || cur.i !== i) return;
@@ -1525,7 +1535,7 @@ const Detail = (() => {
     const D = App.D; const { kind, i } = cur; const P = App.panels.detail.P; const name = kind === "taxon" ? D.taxa.names[i] : D.loci.names[i];
     const cnt = kind === "taxon" ? D.taxCount : D.locCount;
     const U = LM_STR.unit;
-    const views = [["scatter", U.view_scatter], ...(kind === "taxon" ? [["matches", U.view_matches]] : []), ["ribbons", U.view_ribbons]];
+    const views = [["results", U.view_results], ["ribbons", U.view_ribbons]];
     viewSel = el("select", { onchange: e => { view = e.target.value; draw(); } }, ...views.map(([v, t]) => el("option", { value: v, selected: v === view ? "" : null }, t)));
     const q = el("span", { class: "help-q", title: U.help, onmouseenter: ev => { if (note) showHover(note, ev.clientX, ev.clientY); }, onmouseleave: hideHover }, "?");
     P.setCrumb([el("span", null, kind === "taxon" ? LM_STR.card.t_taxon : LM_STR.card.t_locus, " ", el("b", null, name)), el("span", { class: "sub" }, lmFmt(U.crumb_sub, { n: fmtInt(cnt.masked[i]), m: fmtInt(cnt.tested[i]), pct: pct(cnt.masked[i], cnt.tested[i]) })), el("label", { class: "crumb-ctl" }, U.view + " ", viewSel, q, el("button", { class: "cardbtn", onclick: () => Masks.setUnit(kind, i) }, LM_STR.filter.this_unit), el("button", { class: "cardbtn", onclick: () => Card.open(kind, i) }, "⎙ " + LM_STR.card.button))]);
@@ -1538,9 +1548,16 @@ const Detail = (() => {
     const modeSel = el("select", { onchange: e => openCopies(e.target.value, null) }, ...[["donor", U.by_donor], ["recipient", U.by_recipient], ["pair", U.by_pair]].map(([v, t]) => el("option", { value: v, selected: v === cur.mode ? "" : null }, t)));
     const q = el("span", { class: "help-q", title: U.help_copies, onmouseenter: ev => { if (note) showHover(note, ev.clientX, ev.clientY); }, onmouseleave: hideHover }, "?");
     const one = cur.key === null ? null : copyGroups(D, cur.mode).find(gr => gr.k === String(cur.key));
+    Masks.setCells(copyRows(D).map(c => ({ g: c.rec, li: c.li })));             // ← → and the bar page the rows shown, in their order
     P.setCrumb([el("span", null, U.copies, one ? [" ", el("b", null, one.label)] : ""), el("span", { class: "sub" }, one ? lmFmt(U.copies_of, { k: one.list.length, n: fmtInt(n) }) : lmFmt(U.copies_n, { n: fmtInt(n) })), el("label", { class: "crumb-ctl" }, U.blocks + " ", modeSel, q)]);
     P.body.replaceChildren(); body = P.body; body.classList.add("detail-body");
     draw();
+  }
+  function copyRows(D) {                                           // the rows the copies view shows, in its order: block by block
+    const nm = D.taxa.names; const out = [];
+    for (const gr of copyGroups(D, cur.mode).filter(gr => cur.key === null || gr.k === String(cur.key)))
+      out.push(...gr.list.slice().sort((a, b) => cur.mode === "donor" ? nm[a.rec].localeCompare(nm[b.rec]) || a.li - b.li : a.li - b.li));
+    return out;
   }
   // the site ribbons of the copies (the recipients' sequences) in blocks, most copies first
   function copiesRibbons() {
@@ -1554,7 +1571,7 @@ const Detail = (() => {
     wrap.append(el("div", { class: "rib-head2" }, el("span", null, leftHead), el("span", null, ""), el("span", null, rightHead)));
     for (const gr of groups) {
       wrap.append(el("div", { class: "rule", "data-n": gr.list.length, title: cur.mode === "pair" ? U.pair_rule : cur.mode === "donor" ? U.head_donor : U.head_recipient }, lmFmt(gr.list.length > 1 ? U.block_many : U.block_one, { label: gr.label, n: gr.list.length })));
-      const rows = gr.list.slice().sort((a, b) => cur.mode === "donor" ? nm[a.rec].localeCompare(nm[b.rec]) || a.li - b.li : a.li - b.li);
+      const rows = gr.list.slice().sort((a, b) => cur.mode === "donor" ? nm[a.rec].localeCompare(nm[b.rec]) || a.li - b.li : a.li - b.li);   // as copyRows() orders them
       for (const c of rows) {
         const { rec: g, li } = c; const cv = el("canvas");
         const [left, right] = cur.mode === "donor" ? [nm[g], ln[li]] : cur.mode === "recipient" ? [ln[li], nm[c.don]] : [ln[li], ""];
@@ -1572,104 +1589,37 @@ const Detail = (() => {
     body.replaceChildren(); note = null;
     if (cur.kind === "copies") { body.append(copiesRibbons()); return; }
     const cells = cellsOf();
-    if (view === "scatter") body.append(scatterPlot(cells)); else if (view === "matches") body.append(matchesPlot(cells)); else body.append(ribbonsList(cells));
+    if (view === "results") body.append(resultsView()); else body.append(ribbonsList(cells));
   }
-  // observed vs expected divergence, log axes with a zero floor and the diagonal (the expectation); there are no effect floors
-  function scatterPlot(cells) {
-    const D = App.D; const box = el("div", { class: "plot" });
-    const pts = cells.map(([g, li]) => { const mi = D.num("med_identity", g, li), me = D.num("med_expected", g, li); return mi === null ? null : { g, li, obs: 100 - mi, exp: 100 - me, code: D.state[g * D.nloc + li] }; }).filter(Boolean);
-    const U = LM_STR.unit;
-    if (!pts.length) { box.append(el("div", { class: "note" }, U.no_numbers)); return box; }
-    const { W, H: H0 } = area(); const H = H0 - 36; const m = { l: 50, r: 14, t: 10, b: 42 };
-    const posX = pts.filter(p => p.exp > 0).map(p => p.exp), posY = pts.filter(p => p.obs > 0).map(p => p.obs);
-    const fx = posX.length ? d3.min(posX) / 2 : 0.01, fy = posY.length ? d3.min(posY) / 2 : 0.01;
-    const X = p => p.exp > 0 ? p.exp : fx, Y = p => p.obs > 0 ? p.obs : fy;
-    const xs = d3.scaleLog().domain([d3.min(pts, X) / 1.3, d3.max(pts, X) * 1.3]).range([m.l, W - m.r]); const ys = d3.scaleLog().domain([d3.min(pts, Y) / 1.3, d3.max(pts, Y) * 1.3]).range([H - m.b, m.t]);
-    const wrap = el("div", { class: "scatter-wrap" }); box.append(wrap);
-    const svg = d3.create("svg").attr("width", W).attr("height", H);
-    svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(xs).ticks(5, "~g"));
-    svg.append("g").attr("class", "axis").attr("transform", `translate(${m.l},0)`).call(d3.axisLeft(ys).ticks(5, "~g"));
-    if (posX.length < pts.length) svg.append("text").attr("x", xs(fx)).attr("y", H - m.b + 14).attr("text-anchor", "middle").text("0");
-    if (posY.length < pts.length) svg.append("text").attr("x", m.l - 6).attr("y", ys(fy) + 4).attr("text-anchor", "end").text("0");
-    svg.append("text").attr("x", (m.l + W - m.r) / 2).attr("y", H - 6).attr("text-anchor", "middle").text(U.x_scatter);
-    svg.append("text").attr("transform", `translate(13,${(m.t + H - m.b) / 2}) rotate(-90)`).attr("text-anchor", "middle").text(U.y_scatter);
-    // the diagonal (observed = expected) and, map-style, contours at observed 100%, 200% and 500% above the expectation and
-    // the expectation 100%, 200% and 500% above the observed: thin lines with the level written along them
-    const seg = f => { const [x0, x1] = xs.domain(); const p0 = [Math.max(x0, ys.domain()[0] / f), Math.min(x1, ys.domain()[1] / f)]; return p0[0] < p0[1] ? [xs(p0[0]), ys(p0[0] * f), xs(p0[1]), ys(p0[1] * f)] : null; };
-    const diag = seg(1); if (diag) svg.append("line").attr("x1", diag[0]).attr("y1", diag[1]).attr("x2", diag[2]).attr("y2", diag[3]).attr("stroke", cssVar("--model")).attr("stroke-width", 1.2);
-    const ctG = svg.append("g").attr("class", "contours");
-    for (const [f, lab] of [[2, "100%"], [3, "200%"], [6, "500%"], [1 / 2, "100%"], [1 / 3, "200%"], [1 / 6, "500%"]]) {
-      const e = seg(f); if (!e) continue; const ang = Math.atan2(e[3] - e[1], e[2] - e[0]) * 180 / Math.PI;
-      const at = f > 1 ? 0.78 : 0.22; const lx = e[0] + (e[2] - e[0]) * at, ly = e[1] + (e[3] - e[1]) * at;      // the label sits on the line, the line broken behind it
-      ctG.append("line").attr("x1", e[0]).attr("y1", e[1]).attr("x2", e[2]).attr("y2", e[3]).attr("stroke", cssVar("--muted")).attr("stroke-width", 0.7).attr("stroke-opacity", 0.45).attr("stroke-dasharray", "9 6");
-      const t = ctG.append("text").attr("transform", `translate(${lx},${ly}) rotate(${ang})`).attr("text-anchor", "middle").attr("dy", "0.35em").attr("font-size", 9).attr("fill", cssVar("--muted")).attr("fill-opacity", 0.8).attr("stroke", cssVar("--surface")).attr("stroke-width", 4).attr("paint-order", "stroke").text(lab);
-      t.append("title").text(f > 1 ? lmFmt(U.contour_above, { lab, f }) : lmFmt(U.contour_below, { lab, f: Math.round(1 / f) }));
-    }
-    wrap.append(svg.node());
-    const cv = el("canvas"); const dpr = devicePixelRatio || 1; cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + "px"; cv.style.height = H + "px"; wrap.append(cv);
-    const c = cv.getContext("2d"); c.scale(dpr, dpr);
-    const ring = cssVar("--surface");
-    const drawPt = (p, r) => { const x = xs(X(p)), y = ys(Y(p)); c.fillStyle = D.pointColorOf(p.code) || cssVar("--grey-1"); c.beginPath();
-      c.globalAlpha = p.code >= ST.RED ? 1 : 0.8; c.arc(x, y, r, 0, 2 * Math.PI); c.fill(); c.globalAlpha = 1;
-      if (p.code >= ST.RED) { c.strokeStyle = ring; c.lineWidth = 0.6; c.stroke(); } };   // one size and one colour per outcome; a fine white ring on the masked points only
-    const order = pts.slice().sort((a, b) => D.sev[a.g * D.nloc + a.li] - D.sev[b.g * D.nloc + b.li]);
-    const r = pts.length > 2000 ? 2.4 : pts.length > 500 ? 3.2 : 4.2;
-    for (const p of order) drawPt(p, r);
-    svg.style("pointer-events", "all");
-    const nearest = ev => { const [mx, my] = d3.pointer(ev, svg.node()); let best = null, bd = 81; for (const p of pts) { const dx = xs(X(p)) - mx, dy = ys(Y(p)) - my; const d = dx * dx + dy * dy; if (d < bd) { bd = d; best = p; } } return best; };
-    svg.on("mousemove", ev => { const p = nearest(ev); if (p) { showHover(cellHover(p.g, p.li), ev.clientX, ev.clientY); App.sel.cells.clear(); App.sel.cells.add(p.g * D.nloc + p.li); Overview.redraw(); svg.style("cursor", "pointer"); } else { hideHover(); svg.style("cursor", null); } });
-    svg.on("mouseleave", () => { hideHover(); App.sel.cells.clear(); Overview.redraw(); });
-    svg.on("click", ev => { const p = nearest(ev); if (p) Sequence.open(p.g, p.li); });
-    note = el("div", { style: "max-width: 420px" }, el("b", null, U.note_scatter_head), lmFmt(U.note_scatter, { blue: D.format >= 4 ? U.note_scatter_blue : U.note_scatter_blue_old }));
+  // the test results: the unit's cells on each test's axis (the card's spine, interactive: hover, click, brush), the
+  // ten strongest per test numbered. The unit card's spine is this view, printed
+  function resultsView() {
+    const D = App.D; const { kind, i: u } = cur; const box = el("div", { class: "plot results-view" }); const U = LM_STR.unit;
+    const masks = maskIndex(D).filter(q => (kind === "locus" ? q.li : q.g) === u);
+    const top = Card.topPerTest(D, masks, 10); const { W } = area();
+    box.append(Card.spine(D, kind, u, null, top, { W: Math.max(400, Math.min(W - 24, 1100)), interactive: true }));
+    note = el("div", { style: "max-width: 420px" }, el("b", null, U.note_results_head), U.note_results);
     return box;
   }
-  // best matches of the masked sequences
-  function matchesPlot(cells) {
-    const D = App.D; const g0 = cur.i; const box = el("div", { class: "plot" });
-    const close = new Set(Array.from(D.closest.subarray(g0 * 5, g0 * 5 + 5)).filter(x => x >= 0));
-    const masked = [], unmasked = [];
-    for (const [g, li] of cells) { const bm = D.num("best_match", g, li); if (bm === null || bm < 0) continue; ((D.cols.side[g * D.nloc + li] & 3) ? masked : unmasked).push({ g, li, bm, id: D.num("best_match_identity", g, li), code: D.state[g * D.nloc + li] }); }
-    const U = LM_STR.unit;
-    if (!masked.length) { box.append(el("div", { class: "note" }, unmasked.length ? U.no_masked_taxon : U.no_best_matches)); return box; }
-    const cm = d3.rollup(masked, v => v.length, d => d.bm); const nu = unmasked.length;
-    let taxaSorted = Array.from(cm.keys()).sort((a, b) => cm.get(b) - cm.get(a) || D.taxa.names[a].localeCompare(D.taxa.names[b]));
-    const { W, H: H0 } = area(); const H = H0 - 60; const MAXB = Math.max(6, Math.floor((W - 60) / 34));
-    let other = null; if (taxaSorted.length > MAXB) { const rest = taxaSorted.slice(MAXB - 1); taxaSorted = taxaSorted.slice(0, MAXB - 1); other = { n: rest.length, cm: d3.sum(rest, u => cm.get(u)), set: new Set(rest) }; }
-    const m = { l: 44, r: 10, t: 14, b: Math.min(130, H * 0.42) };
-    const cats = taxaSorted.map(u => ({ key: u, name: D.taxa.names[u], cm: cm.get(u), rows: masked.filter(d => d.bm === u) })); if (other) cats.push({ key: -1, name: `other (${other.n} taxa)`, cm: other.cm, rows: masked.filter(d => other.set.has(d.bm)) });
-    const xs = d3.scaleBand().domain(cats.map(c => c.name)).range([m.l, W - m.r]).padding(0.18); const top = Math.max(d3.max(cats, c => c.cm), 1);
-    const ys = d3.scaleLinear().domain([0, top * 1.15]).range([H - m.b, m.t]);
-    const svg = d3.create("svg").attr("width", W).attr("height", H);
-    svg.append("g").attr("class", "axis").attr("transform", `translate(${m.l},0)`).call(d3.axisLeft(ys).tickValues(d3.range(0, top + 1, Math.max(1, Math.ceil(top / 4)))).tickFormat(d3.format("d")));
-    const ax = svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(xs));
-    ax.selectAll("text").attr("transform", "rotate(-60)").attr("text-anchor", "end").attr("dx", "-0.6em").attr("dy", "0.2em").style("font-weight", d => cats.find(c => c.name === d) && close.has(cats.find(c => c.name === d).key) ? "700" : "400").style("fill", cssVar("--ink"));
-    for (const c of cats) {
-      let y0 = H - m.b; const byCode = d3.rollup(c.rows, v => v.length, d => D.famOf(d.code)); const codes = Array.from(byCode.keys()).sort(d3.ascending);   // one segment per outcome
-      for (const code of codes) { const h = ys(0) - ys(byCode.get(code)); svg.append("rect").attr("x", xs(c.name)).attr("y", y0 - h).attr("width", xs.bandwidth()).attr("height", Math.max(h, 0)).attr("fill", D.colorOf(code)).attr("stroke", cssVar("--surface")).attr("stroke-width", 0.8).style("cursor", "pointer")
-        .on("mousemove", ev => showHover(el("div", null, el("b", null, c.name), el("div", null, `${byCode.get(code)} masked sequence${byCode.get(code) > 1 ? "s" : ""} match it best (${D.famLabel(code)})`), el("div", { class: "more" }, `${c.cm} masked in all`)), ev.clientX, ev.clientY)).on("mouseleave", hideHover)
-        .on("click", () => { App.sel.cells.clear(); for (const d of c.rows) App.sel.cells.add(d.g * D.nloc + d.li); Overview.redraw(); }); y0 -= h; }
-      svg.append("text").attr("x", xs(c.name) + xs.bandwidth() / 2).attr("y", ys(c.cm) - 3).attr("text-anchor", "middle").style("fill", cssVar("--ink")).text(c.cm);
-    }
-    box.append(svg.node());
-    const pm = 100 * d3.mean(masked, d => close.has(d.bm) ? 1 : 0), pu = nu ? 100 * d3.mean(unmasked, d => close.has(d.bm) ? 1 : 0) : NaN;
-    note = el("div", { style: "max-width: 420px" }, el("b", null, U.note_matches_head), lmFmt(U.note_matches, { pm: fmt1(pm), pu: Number.isFinite(pu) ? fmt1(pu) : "–", im: fmt1(d3.median(masked, d => d.id)), iu: nu ? fmt1(d3.median(unmasked, d => d.id)) : "–" }), el("div", { class: "more", style: "margin-top: 4px" }, U.note_matches_more));
-    return box;
-  }
-  // site ribbons of the masked sequences: one pixel-row each, coloured by the site code
   function ribbonsList(cells) {
     const D = App.D; const box = el("div", { class: "plot ribbons-plot" });
     const masked = cells.filter(([g, li]) => D.cols.side[g * D.nloc + li] & 3);
     const U = LM_STR.unit;
     if (!masked.length) { box.append(el("div", { class: "note" }, U.no_masked)); return box; }
     const maxLen = cur.kind === "locus" ? D.loci.length[cur.i] : d3.max(masked, ([g, li]) => D.loci.length[li]);
-    const wrap = el("div", { class: "ribbons-wrap" }); box.append(wrap);
+    const wrap = el("div", { class: "ribbons-wrap p4" }); box.append(wrap);
     masked.sort((a, b) => D.sev[b[0] * D.nloc + b[1]] - D.sev[a[0] * D.nloc + a[1]]);
-    wrap.append(el("div", { class: "rib-head2" }, el("span", null, cur.kind === "taxon" ? U.head_locus : U.head_taxon), el("span", null, ""), el("span", { title: U.head_best_hint }, U.head_best)));
+    const MODES = ["close_relative", "cm_relative", "cm_outside", "broad_sample"];
+    wrap.append(el("div", { class: "rib-head2" }, el("span", null, cur.kind === "taxon" ? U.head_locus : U.head_taxon), el("span", null, ""), el("span", { title: U.head_best_hint }, U.head_best),
+      ...MODES.map(mode => el("span", { class: "pcol" }, LM_STR.ribbons["test_" + mode]))));
+    const pcell = (g, li, mode) => { const v = Card.testP(D, g, li, mode); const ok = v !== null && v !== undefined && Number.isFinite(v);   // the test's own p for the cell, with its stars
+      return el("span", { class: "pcol", style: ok && ribbonColour(D, g, li, mode) ? `color:${ribbonColour(D, g, li, mode)}` : null }, ok ? lmP(v) : "\u2013", ok && starsOf(D, v) ? el("i", { class: "stars" }, " " + starsOf(D, v)) : null); };
     for (const [g, li] of masked) {
       const cv = el("canvas"); const bm = D.num("best_match", g, li); const inSet = bm !== null && bm >= 0 && D.comps(g, li).includes(bm);
       const bmCell = el("span", { class: "nm bm", style: bm !== null && bm >= 0 && !inSet ? `color:${TREE_COL.outside}` : null, title: bm !== null && bm >= 0 ? lmFmt(U.best_cell, { name: D.taxa.names[bm], id: fmt1(D.num("best_match_identity", g, li)), in: inSet ? U.best_in : U.best_out }) : "" }, bm !== null && bm >= 0 ? D.taxa.names[bm] : "");
       const row = el("div", { class: "rib-row2", onclick: () => Sequence.open(g, li), onmouseenter: () => { App.sel.cells.clear(); App.sel.cells.add(g * D.nloc + li); Overview.redraw(); }, onmouseleave: () => { App.sel.cells.clear(); Overview.redraw(); } },
-        el("span", { class: "nm", title: cur.kind === "taxon" ? D.loci.names[li] : D.taxa.names[g] }, sw(D.colorOf(D.state[g * D.nloc + li])), cur.kind === "taxon" ? D.loci.names[li] : D.taxa.names[g]), cv, bmCell);
+        el("span", { class: "nm", title: cur.kind === "taxon" ? D.loci.names[li] : D.taxa.names[g] }, sw(D.colorOf(D.state[g * D.nloc + li])), cur.kind === "taxon" ? D.loci.names[li] : D.taxa.names[g]), cv, bmCell,
+        ...MODES.map(mode => pcell(g, li, mode)));
       wrap.append(row);
       D.codes(li).then(C => drawRibbon(cv, C, g, li, maxLen));
     }
@@ -1925,7 +1875,7 @@ const Sequence = (() => {
     const nameCol = r => r.role === "focal" ? cssVar("--orange-ink") : r.st === "blue" ? D.col.blue : r.st === "red" ? D.col.red : cssVar("--ink");
     const ctxCol = (kind, u, marksOf) => {
       const col = el("div", { class: "ctx-col", "data-kind": kind, "data-marks": String(marksOf().length) });
-      col.append(el("div", { class: "ctx-head" }, el("span", { class: "k" }, LM_STR.card["t_" + kind]), " ", el("b", null, kind === "taxon" ? D.taxa.names[u] : D.loci.names[u])));
+      col.append(el("div", { class: "ctx-head" }, el("span", { class: "k" }, LM_STR.card["t_" + kind]), " ", el("b", null, kind === "taxon" ? D.taxa.names[u] : D.loci.names[u]), " ", el("span", { class: "note" }, LM_STR.seq["ctx_" + kind + "_note"])));
       const counts = spineCounts(D, kind, u); const strips = [];
       for (const mode of ["close_relative", "cm_relative", "cm_outside", "broad_sample"]) {
         if (mode === "broad_sample" && !D.hasBS) continue;
@@ -2124,8 +2074,8 @@ const Card = (() => {
     return el("div", { class: "cd-verdict" + (masks.length ? "" : " clean") }, famChip(D, masks),
       el("span", { class: "cd-line" }, line));
   }
-  function spine(D, kind, u, cell, top) {
-    const box = el("div", { class: "cd-spine" }); const W = 700, RH = 32, PAD = 24;
+  function spine(D, kind, u, cell, top, opts) {
+    opts = opts || {}; const box = el("div", { class: "cd-spine" }); const W = opts.W || 700, RH = 32, PAD = 24;
     const counts = kind === "sequence" ? null : spineCounts(D, kind, u);
     for (const mode of ["close_relative", "cm_relative", "cm_outside", "broad_sample"]) {
       if (mode === "broad_sample" && !D.hasBS) continue;              // old bundles have no variance statistic to place
@@ -2134,7 +2084,8 @@ const Card = (() => {
       const cv = el("canvas"); row.append(cv); box.append(row);
       const nums = top && top[mode] ? top[mode].map((q, i) => [q.g, q.li, i + 1]) : null;
       if (kind === "dataset") drawResidualAll(cv, W, RH, mode);
-      else drawResidualRow(cv, kind === "sequence" ? "locus" : kind, kind === "sequence" ? cell[1] : u, W, RH, { padL: PAD, padR: PAD, mode, noBand: true, numbers: nums, mark: kind === "sequence" ? cell : null });
+      else { const drawn = drawResidualRow(cv, kind === "sequence" ? "locus" : kind, kind === "sequence" ? cell[1] : u, W, RH, { padL: PAD, padR: PAD, mode, noBand: true, numbers: nums, mark: kind === "sequence" ? cell : null });
+        if (opts.interactive) bindResidualHover(cv, () => drawn.pts); }
       box.append(el("div", { class: "cd-axis" }, residualAxis(W, PAD, PAD, mode)));
     }
     return box;
@@ -2198,7 +2149,7 @@ const Card = (() => {
     }
     return out;
   }
-  function testRibbons(D, kind, top) {                        // the top sequences of each test as site ribbons, numbered as on the spine
+  function testRibbons(D, kind, top, interactive) {           // the top sequences of each test as site ribbons, numbered as on the spine
     const box = el("div", null);
     const names = kind === "locus" ? (q => D.taxa.names[q.g]) : (q => D.loci.names[q.li]);
     const maxLen = d3.max(Object.values(top).flat(), q => D.loci.length[q.li]) || 1;
@@ -2206,7 +2157,7 @@ const Card = (() => {
       const list = top[mode]; if (!list || !list.length) continue;
       const grp = el("div", { class: "cd-plotrow" }, el("h4", null, lmFmt(S().top_ribbons, { n: fmtInt(list.length), test: LM_STR.ribbons["test_" + mode] })));
       list.forEach((q, i) => {
-        const row = el("div", { class: "cd-ribrow" },
+        const row = el("div", { class: "cd-ribrow" + (interactive ? " link" : ""), onclick: interactive ? () => Sequence.open(q.g, q.li) : null, onmouseenter: interactive ? () => Brush.hover(q.g) : null, onmouseleave: interactive ? () => Brush.unhover() : null },
           el("i", { class: "cd-num" }, String(i + 1)),
           el("span", { class: "cd-ribnm" }, names(q)),
           (() => { const cv = el("canvas", { class: "cd-site" }); q._cv = cv; return cv; })(),
@@ -2303,11 +2254,19 @@ const Card = (() => {
       row(CH.closest_match, lmFmt(S().r_cm, { name: D.taxa.names[pt], arm: arm === "out" ? S().r_cm_arm_out : S().r_cm_arm_rel, p: cp === null || Number.isNaN(cp) ? "\u2013" : lmP(cp) }), Number.isFinite(cp) ? cp : null);
     const s2v = D.s2 ? D.s2(i) : 0; const rcr = D.rcAt && D.rcAt(i);
     if (s2v & 1) {
-      const v = D.num("bs_stat", g, li) === null ? NaN : D.num("bs_stat", g, li);
-      const vp = rcr && !Number.isNaN(rcr.var_p) ? rcr.var_p : D.num("bs_log10p", g, li);
-      if (vp !== null || Number.isFinite(v)) {
-        const call = (s2v & 8) ? S().r_bs_divergent : (s2v & (4 | 64)) ? S().r_bs_close : "";
-        row(CH.broad_sample, lmFmt(S().r_bs, { v: fv(v), p: vp === null ? "\u2013" : lmP(vp), call }), vp);
+      const cj = D.num("bs_closest", g, li);
+      if (cj !== null && cj >= 0) {                              // 0.14: the two sides, each with the number that decided it
+        const cp = D.num("bs_close_log10p", g, li);
+        row(CH.broad_sample, lmFmt(S().r_bs_closest, { name: D.taxa.names[cj], mis: fmtInt(D.num("bs_closest_mis", g, li)), exp: fmtInt(Math.round(D.num("bs_closest_exp", g, li))), p: cp === null || Number.isNaN(cp) ? "\u2013" : lmP(cp) }), Number.isFinite(cp) ? cp : null);
+        const nt = D.num("bs_nt", g, li), dpp = D.num("bs_div_log10p", g, li);
+        if (nt > 0) row(CH.broad_sample, lmFmt(S().r_bs_majority, { nfail: fmtInt(D.num("bs_nfail", g, li)), nt: fmtInt(nt), obs: fmt2(D.num("bs_obs_pct", g, li)), exp: fmt2(D.num("bs_exp_pct", g, li)), p: dpp === null || Number.isNaN(dpp) ? "\u2013" : lmP(dpp) }), Number.isFinite(dpp) ? dpp : null);
+      } else {                                                   // older reports: the variance statistic
+        const v = D.num("bs_stat", g, li) === null ? NaN : D.num("bs_stat", g, li);
+        const vp = rcr && !Number.isNaN(rcr.var_p) ? rcr.var_p : D.num("bs_log10p", g, li);
+        if (vp !== null || Number.isFinite(v)) {
+          const call = (s2v & 8) ? S().r_bs_divergent : (s2v & (4 | 64)) ? S().r_bs_close : "";
+          row(CH.broad_sample, lmFmt(S().r_bs, { v: fv(v), p: vp === null ? "\u2013" : lmP(vp), call }), vp);
+        }
       }
     }
     return box;
@@ -2334,7 +2293,9 @@ const Card = (() => {
       shape = testRibbons(D, kind, top);
     } else {
       const g = a, li = b; title = `${D.taxa.names[g]} · ${D.loci.names[li]}`;
-      masks = masksAll.filter(q => q.g === g && q.li === li); m = 1; seqState = D.cellLabel(D.state[g * D.nloc + li], g * D.nloc + li);
+      masks = masksAll.filter(q => q.g === g && q.li === li); m = 1;
+      const mk = maskKind(D, g, li); const nT = mk ? (mk.cr ? 1 : 0) + (mk.cm ? 1 : 0) + (mk.bsC || mk.bsD ? 1 : 0) : 0;   // the tests (families) that masked it
+      seqState = D.cols.n_comp[g * D.nloc + li] === 0 ? D.cellLabel(D.state[g * D.nloc + li], g * D.nloc + li) : nT ? lmFmt(S().verdict_seq_masked, { n: nT, s: nT === 1 ? "" : "s" }) : S().verdict_seq_clean;
       cells = []; for (let gg = 0; gg < D.n; gg++) if (D.cols.n_comp[gg * D.nloc + li] > 0) cells.push([gg, li]);
       spineEl = spine(D, "sequence", null, [g, li]); shape = null;
       const resSlot = el("div"), alignSlot = el("div", { class: "cd-plotrow cd-align" }), treesSlot = el("div", { class: "cd-plotrow cd-trees" });
@@ -2361,7 +2322,7 @@ const Card = (() => {
     const bar = el("div", { class: "cd-bar" }, el("button", { onclick: () => window.print() }, S().print), el("button", { onclick: close }, S().close));
     host.replaceChildren(bar, page); host.style.display = ""; document.body.classList.add("card-open");
   }
-  return { open, close };
+  return { open, close, spine, testRibbons, topPerTest, testP };
 })();
 
 // ------------------------------------------------------------------ the table view (virtualised)

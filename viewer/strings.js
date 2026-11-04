@@ -31,7 +31,6 @@ const LM_STR = {
   // ---- the overview's summary (the landing view): the hero figures, then one card per test.
   // The cards run in the tests' order: close-relative, closest-match, broad-sample. {n} is each card's mask count.
   overview: {
-    hero_sub: "of {tested} sequences tested ({pct})",      // under the big masked count
     hero_taxa: "{with} / {all} taxa hold a mask",          // the small stats beside the hero
     hero_loci: "{with} / {all} loci hold a mask",
     hero_excluded: "{n} taxa excluded",                    // only when the run excluded taxa
@@ -41,19 +40,20 @@ const LM_STR = {
     // The words "divergent" and "similar" are tinted the design's red and blue wherever they appear on a card.
     // These cards show on the summary (click: the table, filtered) and again on the dataset card, below the ribbons.
     card_close_relative: "close-relative test",
-    card_close_relative_line: "too divergent from its close relatives",
-    card_cm_rel: "closest-match test",
+    card_close_relative_line: "too divergent from its {k} close relatives",   // {k}: the comparators each sequence gets
+    card_cm_rel: "closest-match · relative",
     card_cm_rel_line: "too similar to its closest match at this locus",
     card_cm_rel_when: "used when the closest match is one of the close relatives",
-    card_cm_out: "closest-match test",
+    card_cm_out: "closest-match · outside",
     card_cm_out_line: "too similar to its closest match at this locus",
     card_cm_out_when: "used when the closest match is not one of the close relatives",
     card_broad_sample: "broad-sample test",
-    card_broad_close: "{n} sequences too similar to one or more of the broad sample of {k} taxa",
-    card_broad_divergent: "{n} sequences too divergent to one or more of the broad sample of {k} taxa",
+    card_broad_close: "{n} sequences too similar to part of the {k} broad samples",
+    card_broad_divergent: "{n} sequences too divergent to part of the {k} broad samples",
 
     worst_taxa: "most masked taxa (share of tested loci)",
-    worst_loci: "most masked loci (sequences)",
+    worst_loci: "most masked loci (share of tested taxa)",
+    worst_label: "{pct} ({n} mask{s})",                    // after each name in the two lists
     hist_taxa: "taxa by their masked sequences",           // the distribution plots under the lists
     hist_loci: "loci by their masked sequences",
     hist_x: "masked sequences in the {unit}",              // {unit} = taxon | locus
@@ -75,12 +75,13 @@ const LM_STR = {
     test_broad_sample: "broad-sample",
     axis_close_relative: "◀ less divergent · excess divergence from its close relatives, in units of m · more divergent ▶",
     axis_closest: "similarity to its closest match, p · stronger evidence ▶",
-    axis_broad: "◀ steadier than expected · observed / expected variance over the broad sample, log2 · wilder ▶",
+    axis_broad: "evidence from the broad sample, p (the stronger side) · stronger evidence ▶",
   },
 
   // ---- the masks bar, under the topbar at every level: the one filter and order behind the table and the ← → paging.
   filter: {
-    label: "masks",
+    label: "filter masks",                         // the row's name; a click on it folds the row away
+    fold: "fold the filter row away", unfold: "show the filter row",
     all: "all tests",                                // the chip that widens back to every test
     arm_close_relative: "close-relative",            // the five arms, one chip each (a click keeps that arm; more clicks add or drop arms)
     arm_cm_relative: "closest-match · relative",
@@ -161,6 +162,7 @@ const LM_STR = {
     tip_relative: "relative {n}: the {ord} taxon genome-wide",
     tip_differs: "; differs from the focal at {pct}% of {n} shared sites",
     // the verdict line over the alignment
+    ctx_taxon_note: "(points are other loci for this taxon)", ctx_locus_note: "(points are other taxa for this locus)",   // after the two context columns' names
     v_not_tested: "Not tested: {reason}", v_no_comparators: "no comparators",
     v_masked: "Masked", v_not_masked: "Not masked", v_off: "Not masked (masking was off)", v_fewer: " (fewer comparators than requested)",
     says_divergent: "significantly too divergent", says_bs_divergent: "significantly too divergent from {name}, a broad-sample comparator",
@@ -210,6 +212,7 @@ const LM_STR = {
     verdict_clean: "No problems found",              // the calm verdict when nothing is masked
     verdict_unit: "{n} of {m} sequences masked ({pct})",   // locus and taxon cards
     verdict_dataset: "{n} of {m} sequences masked ({pct})",
+    verdict_seq_masked: "Masked by {n} test{s}", verdict_seq_clean: "Not masked",   // the sequence card's verdict line
     t_taxon: "taxon", t_locus: "locus", t_test: "test", t_p: "p", t_obs: "observed %", t_exp: "expected %", t_partner: "partner",
     rank_taxa: "% masked per taxon",                 // the dataset card's two rank curves (little titles above each)
     rank_loci: "% masked per locus",
@@ -222,10 +225,12 @@ const LM_STR = {
     trees_title: "expected · observed",              // the sequence card's face-to-face trees
     // the sequence card's results block: one row per test, no interpretation. {p} is the close-relative row's
     // median over the comparator tests; {call} is empty or one of the two call strings below it.
-    r_cr: "{nf} of {nc} failed · observed {obs}% · expected {exp}% · p {p}",
+    r_cr: "{nf} of {nc} too divergent · observed {obs}% · expected {exp}% · p {p}",
     r_cm: "closest match {name} · {arm} · p {p}",
     r_cm_arm_rel: "a relative", r_cm_arm_out: "outside the relatives",
-    r_bs: "variance {v}× expected · p {p}{call}",
+    r_bs_closest: "closest member {name} · {mis} sites differ · {exp} expected · p {p}",   // the broad test's two rows (0.14)
+    r_bs_majority: "{nfail} of {nt} too divergent · observed {obs}% · expected {exp}% · p {p}",
+    r_bs: "variance {v}× expected · p {p}{call}",                                        // older reports' one row
     r_bs_divergent: " · sequence too divergent",
     r_bs_close: " · sequence too close",
     footer: "{dataset} · LocusMasker {version} · {date} · every test held to p < {bar}",
@@ -310,9 +315,7 @@ const LM_STR = {
     order_input: "input order", order_masked: "most masked first", order_name: "name", order_length: "length", order_grouped: "grouped by shared masks",
     search: "find a taxon or locus  /",                                              // the finder's placeholder; / focuses it
     tsv: "cells.tsv", tsv_hint: "download the cell table as TSV",                     // the two exports (a ⤓ precedes each)
-    png: "PNG", png_hint: "export the matrix as PNG",
     help: "pinch or ctrl+wheel: zoom (shift: loci only, alt: taxa only) · two-finger scroll or drag: move · shift+drag: zoom to a box · double-click: fit · click a label: open its panel · click a cell: open the alignment · arrows move, + and − zoom, / finds, Esc closes",
-    hero_word: "masked",                                                             // under the big number
     tile_taxon: "{masked} of {tested} tested loci masked", tile_locus: "{masked} of {tested} tested taxa masked",   // the worst lists' hovers
     rib_name: "{name}: {masked} masked of {tested} tested",                          // a ribbon row's name hover
     rib_count: "{n} {unit}", unit_loci: "loci", unit_taxa: "taxa",
@@ -364,11 +367,11 @@ const LM_STR = {
     click_unit: "click: open the panel",
   },
 
-  // ---- the unit panel (one taxon or one locus; or the copies): its three views, their notes behind the "?", the
+  // ---- the unit panel (one taxon or one locus; or the copies): its two views, their notes behind the "?", the
   // copies' blocks, and the empty states. {blue} picks a format variant; _old entries serve reports before format 4.
   unit: {
     view: "view", help: "what this plot shows", crumb_sub: "{n} of {m} sequences masked ({pct})",
-    view_scatter: "observed vs expected", view_matches: "best matches", view_ribbons: "site ribbons",
+    view_results: "test results", view_ribbons: "site ribbons",   // the two views of a taxon or a locus; the results are the unit's card, live
     // the copies
     copies: "copies", copies_n: "{n} copies", copies_of: "{k} of {n} copies", blocks: "blocks", help_copies: "what this shows",
     by_donor: "by donor", by_recipient: "by recipient", by_pair: "by donor-recipient pair",
@@ -378,18 +381,9 @@ const LM_STR = {
     copy_row: "{rec} at {locus}, copied from {don} · click: the alignment",
     note_copies_head: "Copies.",
     note_copies: " Each row is a copied sequence (the recipient, masked) at one locus, drawn along its sites: blue where it shares its donor's residue while two or more of its comparators differ, grey to red as more of its comparators differ from it. The donor is the member of the too-similar pair that fits its own relatives better. Blocks run from the most copies to the fewest. Click a row for the alignment.",
-    // observed vs expected
-    no_numbers: "the bundle carries no numbers for these cells",
-    x_scatter: "expected divergence of the sequence, median over its comparators (%)", y_scatter: "observed divergence (%)",
-    contour_above: "observed divergence {lab} above the expectation ({f}× expected)", contour_below: "the expectation {lab} above the observed divergence (observed = expected ÷ {f})",
-    note_scatter_head: "Observed vs expected divergence.",
-    note_scatter: " Each point is one sequence: its observed divergence at the locus, the median over its comparators, against the divergence the genome predicts. Diagonal: observed = expected. The contours mark, above it, an observed divergence 100%, 200% and 500% above the expectation and, below it, an expectation 100%, 200% and 500% above the observed. Grey: not masked; red: masked, too divergent; blue: {blue}; yellow: masked by both tests. Hover a point for its numbers; click it for the alignment.",
-    note_scatter_blue: "masked as a copy of another taxon (its source can be any taxon, not only a comparator, so a copy can sit anywhere here)", note_scatter_blue_old: "masked, too similar",
-    // best matches
-    no_masked_taxon: "no masked sequence for this taxon", no_best_matches: "best matches were not carried for this taxon (the dataset is large: they are carried for cells with a fail only)",
-    note_matches_head: "Best matches.",
-    note_matches: " Masked sequences by the taxon each matches best at its locus, stacked by mask kind; bold names are the 5 closest relatives genome-wide. The best match is one of the 5 closest for {pm}% of masked and {pu}% of unmasked sequences; median identity to it {im}% masked vs {iu}% unmasked.",
-    note_matches_more: "Bars on a distant taxon point to contamination or a shared paralogue.",
+    // test results
+    note_results_head: "Test results.",
+    note_results: " Every tested sequence of this taxon or locus on each test's axis: its own masks coloured, the ten strongest numbered. Hover a point for its numbers, click it for the alignment.",
     // site ribbons
     no_masked: "no masked sequence here",
     head_best_hint: "the taxon closest to the sequence at this locus (per-site divergence compared on the same sites); in the outside colour when it is not one of the sequence's comparators",

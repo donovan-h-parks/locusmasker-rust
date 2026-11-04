@@ -19,7 +19,7 @@ class TestSummary:
         closest-match test splits into its relative and outside arms; their counts sum to the test's)"""
         html, R = report_of("dna_small"); open_report(page, html); c = R.man["counts"]
         share, per_locus, masked = masked_share(R)
-        assert page.text_content(".hero-n").replace(",", "") == str(c["masked"])
+        assert page.text_content(".topbar .sub").replace(",", "").startswith(str(c["masked"]) + " of ")   # the masked total is the top bar's, not repeated
         bs = R.man.get("broad_sample") or {}
         bsN = (bs.get("close") or 0) + (bs.get("divergent") or 0) + (bs.get("both_sides") or 0)
         cards = [int(v.replace(",", "")) for v in page.eval_on_selector_all(".cards .card .card-n", "els => els.map(e => e.textContent)")]
@@ -39,13 +39,16 @@ class TestSummary:
         want = [R.taxa["names"][g] for g in sorted(np.flatnonzero(masked.sum(1) > 0), key=lambda g: -share[g])][:10]
         assert len(names) == len(want) and sorted(names) == sorted(want)         # ties render as chips, magnitudes as bars
         got_share = [share[R.tx(n)] for n in names]; assert got_share == sorted(got_share, reverse=True)
-        labels = page.eval_on_selector_all(".worst .worst-row:nth-child(1) .col:nth-child(1) .row .num", "els => els.map(e => e.textContent)"); assert all(l.endswith("%") for l in labels)
+        labels = page.eval_on_selector_all(".worst .worst-row:nth-child(1) .col:nth-child(1) .row .num", "els => els.map(e => e.textContent)")
+        assert all(re.fullmatch(r"[\d.]+% \([\d,]+ masks?\)", l) for l in labels), labels                        # "{pct} ({n} masks)"
 
     def test_most_masked_loci_in_order(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html); _, per_locus, _ = masked_share(R)
         names = page.eval_on_selector_all(".worst .worst-row:nth-child(1) .col:nth-child(2) .row .nm", "els => els.map(e => e.textContent)")
-        nums = [int(x) for x in page.eval_on_selector_all(".worst .worst-row:nth-child(1) .col:nth-child(2) .row .num", "els => els.map(e => e.textContent)")]
-        assert nums == sorted(nums, reverse=True) and nums == [int(per_locus[R.lx(n)]) for n in names] and len(names) == int((per_locus > 0).sum())
+        labels = page.eval_on_selector_all(".worst .worst-row:nth-child(1) .col:nth-child(2) .row .num", "els => els.map(e => e.textContent)")
+        nums = [int(re.search(r"\((\d[\d,]*) masks?\)", l).group(1).replace(",", "")) for l in labels]
+        tested = (R.arr("cells/n_comp.npy") > 0).sum(0); share = [per_locus[R.lx(n)] / tested[R.lx(n)] for n in names]   # ranked by the share of tested taxa
+        assert share == sorted(share, reverse=True) and nums == [int(per_locus[R.lx(n)]) for n in names] and len(names) == int((per_locus > 0).sum())
 
     def test_the_summary_has_no_donor_bar_lists(self, page, report_of):
         """the donor/recipient/pair bar lists are gone from the summary (Rob, 3 Nov: the information returns as the
@@ -131,6 +134,4 @@ class TestRibbonsAndTable:
         with page.expect_download() as dl: page.click("button[data-act=tsv]")
         d = dl.value; assert d.suggested_filename == "dna_small_cells.tsv"
         txt = open(d.path(), encoding="utf-8").read().split("\n"); assert txt[0].startswith("taxon\tlocus\tstate") and len(txt) - 2 >= R.man["counts"]["masked"] - 1   # the masked cells' rows
-        page.evaluate("() => LM.setView('matrix')"); page.wait_for_timeout(300)
-        with page.expect_download() as dl: page.click("button[data-act=png]")
-        assert dl.value.suggested_filename == "dna_small_overview.png"
+        assert page.query_selector("button[data-act=png]") is None                            # no PNG export: the cards are the printable form

@@ -37,7 +37,7 @@ class TestLoads:
 
     def test_a_report_with_nothing_masked(self, page, report_of):
         html, R = report_of("dna_clean"); open_report(page, html)
-        assert page.text_content(".hero-n") == "0"
+        assert page.text_content(".topbar .sub").startswith("0 of ")                  # the masked total lives in the top bar
         cards = page.eval_on_selector_all(".cards .card .card-n", "els => els.map(e => e.textContent)")
         assert cards and all(v == "0" for v in cards) and page.query_selector_all(".worst .col .row") == []
 
@@ -110,5 +110,5 @@ class TestOlderFormats:
     def test_older_reports_open_and_summarise(self, page, report_of, variant):
         html, R = report_of("dna_small", variant); open_report(page, html)
         assert page.evaluate("() => LM.App.D.format") == (5 if variant == "format5" else 3)
-        assert page.text_content(".hero-n").replace(",", "") == str(R.man["counts"]["masked"])
+        assert page.text_content(".topbar .sub").replace(",", "").startswith(str(R.man["counts"]["masked"]) + " of ")
         for view in ("matrix", "loci", "taxa", "table", "summary"): page.evaluate(f"() => LM.setView('{view}')"); page.wait_for_timeout(150)

@@ -8,8 +8,8 @@ pytestmark = pytest.mark.viewer
 
 class TestHash:
     def test_opens_a_taxon_with_a_view(self, page, report_of):
-        html, R = report_of("dna_small"); open_report(page, html, "t=3&dv=matches"); page.wait_for_selector(".panel[data-key=detail]"); page.wait_for_timeout(300)
-        assert R.taxa["names"][3] in page.text_content(".panel[data-key=detail] .crumb") and page.eval_on_selector(".panel[data-key=detail] .crumb select", "e => e.value") == "matches"
+        html, R = report_of("dna_small"); open_report(page, html, "t=3&dv=ribbons"); page.wait_for_selector(".panel[data-key=detail]"); page.wait_for_timeout(300)
+        assert R.taxa["names"][3] in page.text_content(".panel[data-key=detail] .crumb") and page.eval_on_selector(".panel[data-key=detail] .crumb select", "e => e.value") == "ribbons"
 
     def test_opens_a_locus(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html, "l=2"); page.wait_for_selector(".panel[data-key=detail]"); page.wait_for_timeout(300)
