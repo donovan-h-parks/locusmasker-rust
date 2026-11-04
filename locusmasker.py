@@ -1626,6 +1626,7 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
         part = re.sub(r'<link rel="stylesheet" href="([^"]+)">', inline_style, part)
         return re.sub(r'(href|src)="(icons/[^"]+)"', inline_icon, part)
     before, after = text("viewer.html").split("@@BUNDLE@@", 1)      # the template is split at the marker first, so nothing inlined can carry one
+    before = before.replace("@@LICENCES@@", _licences_text(tpl_dir), 1)    # the page carries the licences of what it embeds (never executed: type text/plain)
     meta_js = json.dumps(dict(dataset=manifest["dataset"], bundle_bytes=len(core_b64) * 3 // 4, version=__version__))
     before = before.replace("@@META@@", meta_js, 1)                  # the loading screen's title and total, known before the data arrives
     page = f"{a.out}/report.html"
@@ -1636,6 +1637,23 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
     LOG(f"report: report.html ({os.path.getsize(page) >> 20} MB, {len(cg):,} cells' numbers inline), report_files/ ({fsize >> 20} MB in {nlb + nb + 1} files: "
         f"{nlb} blocks of {LB} loci, {nb} of {TB} taxa), report.npz ({size >> 20} MB)")
     return True
+
+
+def _licences_text(tpl_dir):
+    """the licence notices a report carries: the tool's own (LICENSE beside the script, when shipped) and those of the
+    four components inlined into every page (viewer/vendor/*_LICENSE), each under a heading"""
+    root = os.path.dirname(os.path.abspath(__file__))
+    parts = [("LocusMasker (this page and the tool that wrote it): MIT License", os.path.join(root, "LICENSE")),
+             ("D3 (d3.v7.min.js): ISC License", os.path.join(tpl_dir, "vendor", "D3_LICENSE")),
+             ("d3-sankey (d3-sankey.min.js): BSD 3-Clause License", os.path.join(tpl_dir, "vendor", "D3_SANKEY_LICENSE")),
+             ("Fuse.js (fuse.min.js): Apache License 2.0", os.path.join(tpl_dir, "vendor", "FUSE_LICENSE")),
+             ("Inter font (InterVariable.woff2, embedded in the stylesheet): SIL Open Font License 1.1", os.path.join(tpl_dir, "vendor", "INTER_LICENSE"))]
+    out = ["This report embeds the following software and font. Their licence texts follow; the same files are in the tool's viewer/vendor folder."]
+    for head, path in parts:
+        if not os.path.exists(path): continue
+        with open(path, encoding="utf-8") as fh: body = fh.read().strip().replace("</script", "<\\/script")
+        out.append("=" * 78 + "\n" + head + "\n" + "=" * 78 + "\n" + body)
+    return "\n\n".join(out)
 
 
 def _npy_bytes(arr):

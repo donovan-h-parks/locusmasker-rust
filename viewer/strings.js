@@ -257,6 +257,7 @@ const LM_STR = {
     tests_bar: "one Bonferroni bar for all of them, p < {bar}", tests_k: "Bonferroni k {k}",
     tests_oldest: "{n} distinct comparisons, Bonferroni k {k}",
     command: "command: {cmd}",
+    licences: "LocusMasker is MIT-licensed, © Robert Lanfear. This page embeds D3 (ISC), d3-sankey (BSD), Fuse.js (Apache 2.0) and the Inter font (OFL 1.1): the licence texts",   // the fold inside the fold; opens on the full texts
   },
 
   // ---- a cell's state, in words: the matrix legend's hovers, the cell hover's first row, the histograms' hovers.

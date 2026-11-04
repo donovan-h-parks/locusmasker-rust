@@ -539,6 +539,7 @@ async function start(bytes) {
   await new Promise(r => setTimeout(r, 0));                            // let the note paint before the decode blocks the thread
   try { sessionStorage.removeItem("lmRetry"); } catch (e) { }
   const D = await loadBundle(bytes); App.D = D;
+  if (D.man && D.man.dataset && LM_STR.loading && LM_STR.loading.tab_title) document.title = lmFmt(LM_STR.loading.tab_title, { dataset: D.man.dataset });   // the loader does this too, but a small report can boot before it paints
   if (D.folder) {                                                      // the chunks live beside the page: prove the folder is there before anything asks for it
     try { await Chunks.index(D.folder.dir); }
     catch (e) { window.__lmBooted = true; $("#app").replaceChildren(el("div", { class: "error" }, LM_STR.fatal.no_folder)); return; }
@@ -560,7 +561,8 @@ function buildShell() {
     el("div", null, lmFmt(SA.input, { file: m.input.file, mb: (m.input.bytes / 1e6).toFixed(1), sha: m.input.sha256.slice(0, 12), partitions: m.input.partitions ? lmFmt(SA.input_partitions, { file: m.input.partitions }) : "" })),
     el("div", null, lmFmt(SA.options, { datatype: o.datatype, n_comp: o.n_comp, K: o.K_eff, M: o.M_eff, fit_overlap: o.fit_overlap, alpha: o.alpha, flags: (o.mask_similar_only ? SA.opt_similar_only : "") + (o.mask_different_only ? SA.opt_different_only : "") })),
     el("div", null, lmFmt(SA.test, { summary: testSummary(m.test), phi: m.test.phi_dataset, seqs: m.carried.sequences, codes: m.carried.codes, bm: m.carried.best_match_cells })),
-    el("div", null, lmFmt(SA.command, { cmd: m.command })));
+    el("div", null, lmFmt(SA.command, { cmd: m.command })),
+    el("details", { class: "licences" }, el("summary", null, SA.licences), el("pre", null, (document.getElementById("lm-licences") || {}).textContent || "")));   // the full texts, folded inside the fold
   const logo = document.getElementById("lm-logo");                   // the Lo Shu grid, when the page carries it
   app.append(el("div", { class: "topbar" }, logo ? logo.content.firstElementChild.cloneNode(true) : "",
     el("h1", null, m.dataset || m.input.file), el("span", { class: "sub" }, lmFmt(SA.sub, { masked: fmtInt(c.masked), cells: fmtInt(c.cells), pct: pct(c.masked, c.cells), taxa: fmtInt(c.taxa), loci: fmtInt(c.loci) })),

@@ -382,3 +382,7 @@ kbd { font: 11px var(--mono); background: var(--surface-3); border-radius: 4px; 
 .cd-align canvas { display: block; border: 1px solid var(--grid); }
 .cd-trees svg { display: block; }
 .cd-trees .tangle text:not([fill]) { fill: var(--ink); }
+
+/* the licences: a fold inside the about fold; the texts in a small scroll box so the fold never grows past the topbar */
+.meta details.licences summary { cursor: pointer; }
+.meta details.licences pre { max-height: 16em; overflow: auto; font-size: 11px; white-space: pre-wrap; margin: 4px 0 0; }

@@ -6,6 +6,18 @@ from tests.conftest import lo, dataset, run_tool
 
 
 @pytest.mark.e2e
+class TestLicences:
+    def test_the_page_carries_the_licences_of_what_it_embeds(self, runs):
+        html = open(runs("dna_small").file("report.html"), encoding="utf-8").read()
+        block = re.search(r'<script type="text/plain" id="lm-licences">(.*?)</script>', html, re.S); assert block
+        t = block.group(1)
+        for holder in ("Copyright (c) 2026 Robert Lanfear", "Copyright 2010-2023 Mike Bostock", "Copyright 2015, Mike Bostock", "Apache License", "SIL OPEN FONT LICENSE"):
+            assert holder in t, holder
+        assert "Permission is hereby granted, free of charge" in t and t.count("=" * 78) == 10
+        assert "@@LICENCES@@" not in html
+
+
+@pytest.mark.e2e
 class TestNpz:
     def test_numpy_opens_it_like_an_npz(self, runs):
         r = runs("dna_small"); z = np.load(r.file("report.npz"))

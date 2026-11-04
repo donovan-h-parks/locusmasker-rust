@@ -161,3 +161,9 @@ Help
 
 - `-h` or `--help`: print these options
 
+
+# License
+
+LocusMasker is released under the MIT License (see `LICENSE`), copyright Robert Lanfear.
+
+Every `report.html` the script writes embeds four third-party components so that the report is a single self-contained file: [D3](https://d3js.org) (ISC), [d3-sankey](https://github.com/d3/d3-sankey) (BSD 3-clause), [Fuse.js](https://www.fusejs.io) (Apache 2.0) and the [Inter](https://rsms.me/inter/) font (SIL Open Font License 1.1). Their licenses are in `viewer/vendor/`, and every report carries a copy of them in its page source.

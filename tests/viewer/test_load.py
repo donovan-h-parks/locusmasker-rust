@@ -11,10 +11,19 @@ pytestmark = pytest.mark.viewer
 class TestLoads:
     def test_header_shows_the_dataset_and_the_counts(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html); c = R.man["counts"]
-        assert page.title() == lm_fmt(lm_str(page, "loading.tab_title"), dataset=R.man["dataset"])      # the loader retitles the tab from the catalog
+        want = lm_fmt(lm_str(page, "loading.tab_title"), dataset=R.man["dataset"])                      # the loader retitles the tab from the catalog
+        page.wait_for_function("t => document.title === t", arg=want); assert page.title() == want
         assert page.text_content(".topbar h1") == R.man["dataset"] == "dna_small"
         sub = page.text_content(".topbar .sub"); assert sub == lm_fmt(lm_str(page, "about.sub"), masked=c["masked"], cells=c["cells"], pct=f"{100 * c['masked'] / c['cells']:.1f}%", taxa=c["taxa"], loci=c["loci"])
         meta = page.text_content(".topbar .meta summary"); assert R.man["version"] in meta and R.man["date"] in meta
+
+    def test_the_about_fold_holds_the_licences_folded(self, page, report_of):
+        """the licences cost no screen while working: a fold inside the closed about fold, the full texts under it"""
+        html, R = report_of("dna_small"); open_report(page, html)
+        assert page.evaluate("() => document.querySelector('.topbar details.meta').open") is False
+        assert page.text_content(".meta details.licences summary") == lm_str(page, "about.licences")
+        assert page.evaluate("() => document.querySelector('.meta details.licences').open") is False
+        assert "Copyright (c) 2026 Robert Lanfear" in page.text_content(".meta details.licences pre")
 
     def test_logo_and_favicons_are_in_the_page(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html)
