@@ -1821,7 +1821,7 @@ function drawCophylo(host, D, entry, k, cell, T, Wmax) { // T: cellTests, for th
 
 // ------------------------------------------------------------------ the alignment panel (full width, bottom)
 const Sequence = (() => {
-  let cur = null, pps = null, x0 = 0, dots = true, drawFn = null, showTrees = true;   // the trees dock beside the alignment from the start
+  let cur = null, pps = null, x0 = 0, dots = true, drawFn = null, showTrees = true, rulerLocus = false;   // the trees dock beside the alignment from the start; the ruler counts alignment positions
   const RULER_H = 18, ROW_H = 18, RULE_H = 7;                                       // the rule between the similarity rows and the divergence block
   const colW = { role: 104, name: 150 }; try { Object.assign(colW, JSON.parse(localStorage.getItem("lm.seqcols") || "{}")); } catch (e) { /* no storage */ }
   function open(g, li) {
@@ -1895,9 +1895,10 @@ const Sequence = (() => {
     };
     const parts = [el("span", { class: "state", title: focalNote ? focalNote + barTxt : null }, sw(D.colorOf(D.state[i])), verdict)];
     const dotsBox = el("input", { type: "checkbox", checked: dots ? "" : null, onchange: e => { dots = e.target.checked; redrawNow(); } });
-    const treesBtn = el("button", { title: "the expected and the observed distances among these sequences as two neighbour-joining trees, face to face", onclick: () => toggleTrees() }, "trees");
+    const treesBtn = el("button", { "data-act": "trees", title: "the expected and the observed distances among these sequences as two neighbour-joining trees, face to face", onclick: () => toggleTrees() }, "trees");
+    const rulerBtn = el("button", { "data-act": "ruler", title: LM_STR.seq.ruler_hint, onclick: () => { rulerLocus = !rulerLocus; rulerBtn.textContent = rulerLocus ? LM_STR.seq.ruler_locus : LM_STR.seq.ruler_alignment; redrawNow(); } }, rulerLocus ? LM_STR.seq.ruler_locus : LM_STR.seq.ruler_alignment);   // the ruler: alignment positions, or positions from the locus's start
     const ctl = el("span", { class: "seq-ctl" }, el("label", null, dotsBox, " dots where a sequence matches the focal residue"),
-      el("button", { onclick: () => { pps = fitPps(); x0 = 0; redrawNow(); } }, "whole locus"), el("button", { onclick: () => { pps = 12; redrawNow(); } }, "letters"), treesBtn,
+      el("button", { "data-act": "whole", onclick: () => { pps = fitPps(); x0 = 0; redrawNow(); } }, "whole locus"), el("button", { "data-act": "letters", onclick: () => { pps = 12; redrawNow(); } }, "letters"), rulerBtn, treesBtn,
       el("button", { class: "cardbtn", onclick: () => Card.open("sequence", g, li) }, "⎙ " + LM_STR.card.button));
     head.append(el("div", { class: "seq-line" }, ...parts), ctl);
     // the body: test type · sequence · Taxon name · p<α · the alignment; the two name columns resize by their header's edge
@@ -1987,14 +1988,14 @@ const Sequence = (() => {
       const W = Math.max(100, cwrap.getBoundingClientRect().width), H = topOf(rows.length) + 2;
       if (pps === null) { const f = fitPps(); pps = f >= 7 ? Math.min(f, 12) : f; }
       pps = clamp(pps, fitPps(), 16); x0 = clamp(x0, 0, Math.max(0, len - W / pps));
-      cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.width = W + "px"; cv.style.height = H + "px";
+      cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.width = W + "px"; cv.style.height = H + "px"; cv.dataset.ruler = rulerLocus ? "locus" : "alignment";
       const c = cv.getContext("2d"); c.setTransform(dpr, 0, 0, dpr, 0, 0); c.fillStyle = cssVar("--surface"); c.fillRect(0, 0, W, H);
       const s0 = Math.max(0, Math.floor(x0)), s1 = Math.min(len - 1, Math.ceil(x0 + W / pps)); const letters = pps >= 7;
       const sx = s => (s - x0) * pps;
       // ruler
       c.fillStyle = cssVar("--muted"); c.font = `10px ${cssVar("--sans")}`; c.textBaseline = "top"; c.textAlign = "center";
       const stepSites = Math.max(1, Math.pow(10, Math.ceil(Math.log10(60 / pps))));
-      for (let s = Math.ceil(s0 / stepSites) * stepSites; s <= s1; s += stepSites) { const x = sx(s) + pps / 2; c.fillRect(x, RULER_H - 4, 1, 4); c.fillText(fmtInt(alignmentPos(D, li, s) + 1), x, 2); }
+      for (let s = Math.ceil(s0 / stepSites) * stepSites; s <= s1; s += stepSites) { const x = sx(s) + pps / 2; c.fillRect(x, RULER_H - 4, 1, 4); c.fillText(fmtInt((rulerLocus ? s : alignmentPos(D, li, s)) + 1), x, 2); }
       c.strokeStyle = cssVar("--grid"); c.beginPath(); c.moveTo(0, RULER_H + 0.5); c.lineTo(W, RULER_H + 0.5); c.stroke();
       // sequence rows
       const cellCol = D.col.cell, faint = cssVar("--faint"), redT = D.col.redTint, blueT = D.col.blueTint;

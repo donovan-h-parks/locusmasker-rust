@@ -142,6 +142,10 @@ const LM_STR = {
     tip_red: "significantly too divergent from the focal",
     tip_blue: "significantly too similar to the focal",
     tip_plain: "neither test fired",
+    // the ruler button over the alignment: what the numbers count. It shows the current choice; click to switch.
+    ruler_alignment: "alignment positions",          // the site's column in the whole alignment (the default)
+    ruler_locus: "locus positions",                  // the site's number from the locus's start
+    ruler_hint: "the ruler: positions in the whole alignment, or from the locus's first site · click to switch",
   },
 
   // ---- the navigation stack: the deepest open level fills the window; the levels above it collapse to one

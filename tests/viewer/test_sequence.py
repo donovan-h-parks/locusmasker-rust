@@ -157,7 +157,7 @@ class TestSites:
         for kind in ("copy", "divergent", "near_miss", "uncertain"):
             if kind not in ctx["kinds"]: continue
             g, li = ctx["kinds"][kind]; E = Expect(R, g, li); open_report(page, ctx["html"]); open_cell(page, g, li)
-            page.click(".seq-ctl button:has-text('letters')"); page.wait_for_timeout(300)
+            page.click(".seq-ctl button[data-act=letters]"); page.wait_for_timeout(300)
             col = page.evaluate("() => { const D = LM.App.D; return { red: D.col.redTint, blue: D.col.blueTint, cell: D.col.cell }; }"); col = {k: rgb(v) for k, v in col.items()}
             W = page.evaluate("() => document.querySelector('.seq-canvas-wrap canvas').clientWidth"); nvis = min(int(W // 12) - 1, 80)
             px = page.evaluate(f"""() => {{ const c = document.querySelector('.seq-canvas-wrap canvas'); const g = c.getContext('2d'); const out = [];
@@ -175,7 +175,7 @@ class TestSites:
 
     def test_site_hover_counts_the_relatives(self, page, ctx):
         R = ctx["R"]; g, li = ctx["kinds"]["divergent"]; E = Expect(R, g, li); open_report(page, ctx["html"]); open_cell(page, g, li)
-        page.click(".seq-ctl button:has-text('letters')"); page.wait_for_timeout(200)
+        page.click(".seq-ctl button[data-act=letters]"); page.wait_for_timeout(200)
         box = page.evaluate("() => { const r = document.querySelector('.seq-canvas-wrap canvas').getBoundingClientRect(); return [r.x, r.y]; }")
         sites = E.site_colours(); s = next(i for i, v in enumerate(sites[:60]) if v and v[0])
         page.mouse.move(box[0] + s * 12 + 6, box[1] + top_of(0) + 9); page.wait_for_timeout(200)
@@ -184,10 +184,24 @@ class TestSites:
     def test_dots_and_block_mode_change_the_drawing(self, page, ctx):
         g, li = ctx["kinds"]["divergent"]; open_report(page, ctx["html"]); open_cell(page, g, li)
         snap = "() => document.querySelector('.seq-canvas-wrap canvas').toDataURL()"
-        page.click(".seq-ctl button:has-text('letters')"); page.wait_for_timeout(200); a = page.evaluate(snap)
+        page.click(".seq-ctl button[data-act=letters]"); page.wait_for_timeout(200); a = page.evaluate(snap)
         page.click(".seq-ctl input[type=checkbox]"); page.wait_for_timeout(200); b = page.evaluate(snap); assert a != b
-        page.click(".seq-ctl button:has-text('whole locus')"); page.wait_for_timeout(200); c = page.evaluate(snap); assert c != b
+        page.click(".seq-ctl button[data-act=whole]"); page.wait_for_timeout(200); c = page.evaluate(snap); assert c != b
         labels = page.eval_on_selector_all(".seq-foot span", "els => els.map(e => e.textContent)"); assert any("sites" in l for l in labels)
+
+    def test_the_ruler_counts_alignment_or_locus_positions(self, page, ctx):
+        """the ruler button switches the numbers over the alignment between the site's column in the whole alignment and
+        its number from the locus's start; the site hover always gives both"""
+        R = ctx["R"]; g, li = ctx["kinds"]["divergent"]
+        if li == 0: li = next(l for l in range(1, R.nloc) if R.arr("cells/n_comp.npy")[g, l] > 0)   # a locus that does not start the alignment
+        open_report(page, ctx["html"]); open_cell(page, g, li); page.click(".seq-ctl button[data-act=whole]"); page.wait_for_timeout(200)
+        snap = "() => document.querySelector('.seq-canvas-wrap canvas').toDataURL()"
+        assert page.get_attribute(".seq-canvas-wrap canvas", "data-ruler") == "alignment"; a = page.evaluate(snap); w0 = page.text_content(".seq-ctl button[data-act=ruler]")
+        page.click(".seq-ctl button[data-act=ruler]"); page.wait_for_timeout(200)
+        assert page.get_attribute(".seq-canvas-wrap canvas", "data-ruler") == "locus"; b = page.evaluate(snap); assert a != b   # other numbers on the ruler
+        assert page.text_content(".seq-ctl button[data-act=ruler]") != w0                                                      # the button names the current choice
+        page.click(".seq-ctl button[data-act=ruler]"); page.wait_for_timeout(200)
+        assert page.get_attribute(".seq-canvas-wrap canvas", "data-ruler") == "alignment" and page.evaluate(snap) == a
 
 
 class TestTrees:
@@ -206,7 +220,7 @@ class TestTrees:
                 elif t in E.red: assert fill == RED and weight == "700"
                 elif t in E.comps: assert fill == INK
             assert len(page.query_selector_all(".trees-pane svg text.tree-title")) == 2          # each tree carries its title
-            page.click(".seq-ctl button:has-text('trees')"); page.wait_for_timeout(100)         # the button toggles the docked trees off
+            page.click(".seq-ctl button[data-act=trees]"); page.wait_for_timeout(100)         # the button toggles the docked trees off
             assert page.evaluate("() => document.querySelector('.trees-pane').style.display") == "none"
 
     def test_tree_hover_states_the_role(self, page, ctx):
