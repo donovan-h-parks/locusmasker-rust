@@ -6,9 +6,9 @@ This is work in progress! Please contact me if you are thinking of using it. A p
 
 # What's this?
 
-A set of methods which attempt to highlight and mask potentially misleading seuqences (individual loci from individual taxa) from large phylogenomic datasets. Read on if you have a large (>10 loci) dataset, and are intending to use it to estimate a single phylogenetic tree with a method that doesn't account for things like contamination, introgression, horizontal gene transfer, or accidental use of paralogs. (NB: this includes methods in software like IQ-TREE, RAxML, BEAST, PhyloBayes, MCMCTREE, MrBayes, ASTRAL, etc.)
+A set of methods which attempt to highlight and mask potentially misleading sequences (individual loci from individual taxa) from large phylogenomic datasets. Read on if you have a large (>10 loci) dataset, and are intending to use it to estimate a single phylogenetic tree with a method that doesn't account for things like contamination, introgression, horizontal gene transfer, or accidental use of paralogs. (NB: this includes methods in software like IQ-TREE, RAxML, BEAST, PhyloBayes, MCMCTREE, MrBayes, ASTRAL, etc.)
 
-Other methods like this exist. The most simlar is [PhylteR](https://github.com/damiendevienne/phylter). The main differences here are:
+Other methods like this exist. The most similar is [PhylteR](https://github.com/damiendevienne/phylter). The main differences here are:
 
 1. This method is really fast (usually less than a few minutes, even on really big datasets!). PhylteR requires you to estimate gene trees first. 
 
@@ -24,13 +24,13 @@ My suggestion - try both. This one to help you improve your data and bioinformat
 
 A lot of people (me included) are interested in estimating phylogenies from large datasets. Although we all know that some data doesn't fit on a tree, we are often willing to intentionally ignore this and as a first pass estimate a single tree topology that we hope is a good explanation of the entire dataset (e.g. a species tree). 
 
-The problem is that in a large multi-locus alignment not all sequenced loci from all taxa will *fit* on a single tree, and these loci can be problematic for _inferring_ that tree. Loci can mislead tree inference for a lot of reasons, including but not limited to: contamination, mis-labelling, bioinformatic errors (like BUSCO pulling out a different locus from different genomes, errors in exon annotations etc.), hybridsation and introgression, horizontal gene transfer, accidental labelling of a paralog as an ortholog, etc. If the aim is to produce a single estimate of a tree from a concatenated (e.g. IQ-TREE), ILS-aware (e.g. BEAST), or ILS-robust (ASTRAL) analysis, these loci can mislead the analysis. The point of LocusMasker is to try and find as many of these as possible, avoid false positives, and then let you see and explore the data in detail.
+The problem is that in a large multi-locus alignment not all sequenced loci from all taxa will *fit* on a single tree, and these loci can be problematic for _inferring_ that tree. Loci can mislead tree inference for a lot of reasons, including but not limited to: contamination, mis-labelling, bioinformatic errors (like BUSCO pulling out a different locus from different genomes, errors in exon annotations etc.), hybridisation and introgression, horizontal gene transfer, accidental labelling of a paralog as an ortholog, etc. If the aim is to produce a single estimate of a tree from a concatenated (e.g. IQ-TREE), ILS-aware (e.g. BEAST), or ILS-robust (ASTRAL) analysis, these loci can mislead the analysis. The point of LocusMasker is to try and find as many of these as possible, avoid false positives, and then let you see and explore the data in detail.
 
 # Pros and cons of masking data
 
 The intention of this repo is that one would use this script to mask data before building a tree. An obvious use case would be to detect and remove contaminants and mislabelled sequences from large datasets. These are _obviously_ misleading because they're _wrong_, and nobody wants them in their datasets. Another use case is more nuanced - removing loci that have moved horizontally, due to processes like introgression or HGT. These loci are _not_ wrong in the biological sense, but one might still be interested in masking them if the intention is to use a method that doesn't account for these biological processes when building the tree. 
 
-So, one should be aware that the individual loci from individual taxa highlighted by this method could be highlighted due to any of the following three reasons: (i) the loci are strictly wrong (e.g. contamination during sequencing); (ii) the loci are biologically correct but not accounted for by a downstream method (e.g. HGT in a standard BEAST analysis); (iii) the loci have been incorrectly highlighted. Obviously, LocusMasker is trying to find isntances of (i) and (ii), and avoid (iii). 
+So, one should be aware that the individual loci from individual taxa highlighted by this method could be highlighted due to any of the following three reasons: (i) the loci are strictly wrong (e.g. contamination during sequencing); (ii) the loci are biologically correct but not accounted for by a downstream method (e.g. HGT in a standard BEAST analysis); (iii) the loci have been incorrectly highlighted. Obviously, LocusMasker is trying to find instances of (i) and (ii), and avoid (iii). 
 
 An important thing to be aware of is that contamination and HGT can leave identical signals in the data. It's literally impossible to confidently tell them apart from an alignment alone. So, if the *focus* of your work is finding signals of HGT, then LocusMasker will _help_ you to infer a good backbone species tree, but it will do that in part by masking precisely the data you'd want to use to find HGT. In this case, the sensible use of the script would be to do it in two stages:
 
@@ -60,7 +60,7 @@ The output consists of the following:
 
 # Method overview
 
-The basic idea of the method is to compare each sequence to its relatives in the alignment, and ask if the number of differences you'd _expect_ to see (based on infomration in the whole alignment) differs in a surprising way from the number of differences you _actually_ see. 
+The basic idea of the method is to compare each sequence to its relatives in the alignment, and ask if the number of differences you'd _expect_ to see (based on information in the whole alignment) differs in a surprising way from the number of differences you _actually_ see. 
 
 A full paper with a description is forthcoming, but briefly there are three tests that the method performs:
 
@@ -82,7 +82,7 @@ If the closest match is a not one of the close relatives, then we don't have an 
 
 
 ## broad-sample test
-The tests above can miss a couple of important cases. An HGT event deep in the tree can move a whole clade, which undermines all of them. Or if there's a paralog in the data, then this can cause them to fail too, even though if we did have gene trees, it would be obvious. The broad-sample test tries to catch these cases too. To do that, we ask the same two questions as above, but from a random sample of 50 (if there are enough homologues in the data) other homologues for each focal sequence. Because sequences accumulate mismatches more slowly the more different they get (because of multiple changes happening at individual sites) we have to recalculate expected distances here by building a mismatch accumulation curve for each locus. But the mechanics of the test are then similar to those above. I.e. we call a sequence _too divergent_ if it is significantly far from most of the broad sample (after dropping any seuqences that fail the other tests above). We call a sequence _too close_ if a sequence is much more similar to one of the distant taxa. This test works by calculating a p-value against all of the broad-samples, correcting them using Bonferroni, and taking the smallest one. If _that_ is significant, it suggests that there's a close relative in the context of this set of broad samples. We then multiply that p value by the number of total tests (i.e. the Bonferroni across all tests) and only mask the cell if that p value (i.e. p_value * n_broad_samples * N_tests_over_all_tests) is below the alpha threshold.
+The tests above can miss a couple of important cases. An HGT event deep in the tree can move a whole clade, which undermines all of them. Or if there's a paralog in the data, then this can cause them to fail too, even though if we did have gene trees, it would be obvious. The broad-sample test tries to catch these cases too. To do that, we ask the same two questions as above, but from a random sample of 50 (if there are enough homologues in the data) other homologues for each focal sequence. Because sequences accumulate mismatches more slowly the more different they get (because of multiple changes happening at individual sites) we have to recalculate expected distances here by building a mismatch accumulation curve for each locus. But the mechanics of the test are then similar to those above. I.e. we call a sequence _too divergent_ if it is significantly far from most of the broad sample (after dropping any sequences that fail the other tests above). We call a sequence _too close_ if a sequence is much more similar to one of the distant taxa. This test works by calculating a p-value against all of the broad-samples, correcting them using Bonferroni, and taking the smallest one. If _that_ is significant, it suggests that there's a close relative in the context of this set of broad samples. We then multiply that p value by the number of total tests (i.e. the Bonferroni across all tests) and only mask the cell if that p value (i.e. p_value * n_broad_samples * N_tests_over_all_tests) is below the alpha threshold.
 
 # Usage
 
@@ -95,8 +95,8 @@ Install mamba if you don't already have it: https://github.com/conda-forge/minif
 Download the latest release and go into the folder:
 
 ```
-git clone https://github.com/roblanf/locus_masker.git
-cd locus_masker
+git clone https://github.com/roblanf/locusmasker.git
+cd locusmasker
 ```
 
 Create the conda environment and activate it:

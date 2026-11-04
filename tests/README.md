@@ -3,7 +3,7 @@
     pytest -n auto                     # everything, in parallel (about 20 s on 96 CPUs, a few minutes on a laptop)
     pytest -n auto -m "not viewer"     # without the headless browser
     pytest tests/unit -n auto          # one group: unit, property, e2e, regression, viewer
-    pytest -n auto --cov              # with coverage of the tool and the plot scripts (.coveragerc: fails under 95%)
+    pytest -n auto --cov              # with coverage of the tool (.coveragerc: fails under 95%)
 
 Groups (markers in pytest.ini): `unit` tests state what each function should do and use scipy and Biopython as oracles;
 `property` tests (hypothesis) check round trips and the algebra of the tails and medians for any input (and `tests/unit/test_kernel.py`

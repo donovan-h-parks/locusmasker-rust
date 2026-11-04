@@ -238,7 +238,7 @@ __version__ = "0.14.0"
 REPORT_FORMAT = 9                 # bundle format version; the viewer refuses a newer one (3: tree branch lengths are F81-corrected; 4: the too-similar test over every pair; 7: every test of every cell, the closest match at the locus, the uncertain-direction pairs; 8: the broad-sample test, cells/side2 and cells/bs_*; 9: the broad-sample call - one direction at most, both sides' statistics and the standardised-residual representative for every gate-passer: cells/bs_hi_log10p, cells/bs_call; from 0.13.1 also cells/bs_rep, the stage-1 representative of every tested cell, and its sequence among the masked cells' carried rows)
 DENSE_CELLS_MAX = 8_000_000       # per-cell numeric report columns are dense (taxa x loci) up to this many cells, sparse beyond
 BEST_MATCH_ALL_MAX_TAXA = 2000    # best matches for every tested cell up to this many taxa; beyond, only for cells with a fail
-BEST_MATCH_MIN_SITES = 30         # a best match needs this many sites shared with the focal (as plot_panels.best_matches)
+BEST_MATCH_MIN_SITES = 30         # a best match needs this many sites shared with the focal
 REPORT_SEQ_ALL_MAX = 32 << 20     # --report-sequences auto carries the whole alignment up to this many bytes, else the cells' rows
 NUMCOLS_SPEC = (("med_identity", np.float32, np.nan), ("med_expected", np.float32, np.nan), ("excess_m", np.float32, np.nan),   # the per-cell numeric columns: name, dtype, fill
                 ("closest", np.int32, -1), ("closest_overlap", np.uint32, 0), ("closest_identity", np.float32, np.nan), ("closest_expected", np.float32, np.nan),

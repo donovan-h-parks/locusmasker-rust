@@ -1,4 +1,4 @@
-# coverage of the tool and the plot scripts, as  pytest -n auto --cov  measures it (tests/README.md)
+# coverage of the tool, as  pytest -n auto --cov  measures it (tests/README.md)
 [run]
 branch = False
 parallel = True
@@ -6,7 +6,6 @@ source = .
 omit =
     tests/*
     validation/*
-    analysis/*
     notes/*
 
 [report]
