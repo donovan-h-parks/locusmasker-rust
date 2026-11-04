@@ -3,7 +3,7 @@ carry less (older formats, sparse numbers, no sequences, nothing masked)."""
 import base64, os
 import pytest
 from tests.conftest import dataset, run_tool
-from tests.viewer.conftest import open_report, inline_viewer, READY
+from tests.viewer.conftest import open_report, inline_viewer, READY, lm_str, lm_fmt
 
 pytestmark = pytest.mark.viewer
 
@@ -13,7 +13,7 @@ class TestLoads:
         html, R = report_of("dna_small"); open_report(page, html); c = R.man["counts"]
         assert page.title() == "LocusMasker report"
         assert page.text_content(".topbar h1") == R.man["dataset"] == "dna_small"
-        sub = page.text_content(".topbar .sub"); assert f"{c['masked']} of {c['cells']} sequences masked" in sub and f"{c['taxa']} taxa × {c['loci']} loci" in sub
+        sub = page.text_content(".topbar .sub"); assert sub == lm_fmt(lm_str(page, "about.sub"), masked=c["masked"], cells=c["cells"], pct=f"{100 * c['masked'] / c['cells']:.1f}%", taxa=c["taxa"], loci=c["loci"])
         meta = page.text_content(".topbar .meta summary"); assert R.man["version"] in meta and R.man["date"] in meta
 
     def test_logo_and_favicons_are_in_the_page(self, page, report_of):

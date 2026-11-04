@@ -3,7 +3,7 @@ order controls, the ribbons and table views, and the downloads."""
 import re
 import numpy as np
 import pytest
-from tests.viewer.conftest import open_report, hover_text
+from tests.viewer.conftest import open_report, hover_text, lm_str, lm_fmt
 
 pytestmark = pytest.mark.viewer
 
@@ -114,8 +114,8 @@ class TestRibbonsAndTable:
 
     def test_table_counts_sorts_and_filters(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html); page.evaluate("() => LM.setView('table')"); page.wait_for_timeout(400); c = R.man["counts"]
-        assert page.text_content(".tfoot .n").startswith(f"{c['masked']} rows")
-        heads = page.eval_on_selector_all(".thead span", "els => els.map(e => e.textContent)"); assert heads[0] == "taxon" and any("excess" in h for h in heads)
+        assert page.text_content(".tfoot .n") == lm_fmt(lm_str(page, "table.foot"), n=c["masked"])
+        heads = page.eval_on_selector_all(".thead span", "els => els.map(e => e.textContent)"); assert heads[0] == lm_str(page, "table.h_taxon") and lm_str(page, "table.h_excess") in heads
         first = page.eval_on_selector_all(".trow", "els => els.map(e => e.children[0].textContent)")
         page.click(".thead span >> nth=0"); page.wait_for_timeout(200)
         after = page.eval_on_selector_all(".trow", "els => els.map(e => e.children[0].textContent)"); assert after == sorted(after) and len(after) == len(first)
@@ -128,9 +128,9 @@ class TestRibbonsAndTable:
 
     def test_downloads(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html)
-        with page.expect_download() as dl: page.click("button:has-text('cells.tsv')")
+        with page.expect_download() as dl: page.click("button[data-act=tsv]")
         d = dl.value; assert d.suggested_filename == "dna_small_cells.tsv"
         txt = open(d.path(), encoding="utf-8").read().split("\n"); assert txt[0].startswith("taxon\tlocus\tstate") and len(txt) - 2 >= R.man["counts"]["masked"] - 1   # the masked cells' rows
         page.evaluate("() => LM.setView('matrix')"); page.wait_for_timeout(300)
-        with page.expect_download() as dl: page.click("button:has-text('PNG')")
+        with page.expect_download() as dl: page.click("button[data-act=png]")
         assert dl.value.suggested_filename == "dna_small_overview.png"

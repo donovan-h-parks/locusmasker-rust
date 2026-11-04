@@ -1,7 +1,7 @@
 """The URL hash as the page's state, in both directions, and the panel chrome."""
 import pytest
 from urllib.parse import unquote
-from tests.viewer.conftest import open_report, cells_of_kind
+from tests.viewer.conftest import open_report, cells_of_kind, lm_str
 
 pytestmark = pytest.mark.viewer
 
@@ -88,7 +88,7 @@ class TestOlderFormatPanels:
         open_report(page, html); g, li = kinds["clean"]
         page.evaluate(f"() => LM.openCell({g}, {li})"); page.wait_for_selector(".panel[data-key=sequence] .seq-foot"); page.wait_for_timeout(200)
         assert page.query_selector(".seq-p") is None
-        names = page.eval_on_selector_all(".seq-names .seqnm .nm", "els => els.map(e => e.textContent)"); assert names[1] == "not recorded"
+        names = page.eval_on_selector_all(".seq-names .seqnm .nm", "els => els.map(e => e.textContent)"); assert names[1] == lm_str(page, "seq.name_not_recorded")
         g, li = kinds["copy"]; page.evaluate(f"() => LM.openCell({g}, {li})"); page.wait_for_timeout(400)
         names = page.eval_on_selector_all(".seq-names .seqnm .nm", "els => els.map(e => [e.textContent, e.className])"); assert "st-blue" in names[1][1]
         page.wait_for_selector(".trees-pane svg", timeout=15000)
@@ -97,4 +97,4 @@ class TestOlderFormatPanels:
         html, R = report_of("dna_small", "format3"); kinds = cells_of_kind(report_of("dna_small")[1]); open_report(page, html)
         page.evaluate("() => LM.openUnit('taxon', 2)"); page.wait_for_selector(".panel[data-key=detail]")
         g, li = kinds["divergent"]; page.evaluate(f"() => LM.openCell({g}, {li})"); page.wait_for_selector(".panel[data-key=sequence] .seq-foot")
-        assert page.text_content(".seq-line .state").startswith("Masked")
+        assert page.text_content(".seq-line .state").startswith(lm_str(page, "seq.v_masked"))

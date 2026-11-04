@@ -1,7 +1,7 @@
 """The taxon and locus panel: the crumb, the three views and the copies blocks, against the report."""
 import numpy as np
 import pytest
-from tests.viewer.conftest import open_report, hover_text
+from tests.viewer.conftest import open_report, hover_text, lm_str, lm_fmt
 
 pytestmark = pytest.mark.viewer
 
@@ -26,7 +26,7 @@ class TestTaxonPanel:
         painted = page.evaluate("() => { const c = document.querySelector('.panel[data-key=detail] .scatter-wrap canvas'); const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 3; i < d.length; i += 4) if (d[i]) n++; return n; }")
         assert painted > 50
         nc = R.arr("cells/n_comp.npy")
-        page.hover(".panel[data-key=detail] .help-q"); page.wait_for_timeout(200); assert "Observed vs expected" in (hover_text(page) or "")
+        page.hover(".panel[data-key=detail] .help-q"); page.wait_for_timeout(200); assert lm_str(page, "unit.note_scatter_head") in (hover_text(page) or "")
 
     def test_matches_bars_count_the_best_matches(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html); g = most_masked_taxon(R)
@@ -59,9 +59,9 @@ class TestCopies:
     def test_blocks_by_donor_recipient_and_pair(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html, "cp=donor"); page.wait_for_selector(".panel[data-key=detail]"); page.wait_for_timeout(400)
         side = R.arr("cells/side.npy"); ncop = int((((side & 2) > 0) & ((side & 8) == 0)).sum())
-        assert f"{ncop} copies" in page.text_content(".panel[data-key=detail] .crumb")
-        rules = page.eval_on_selector_all(".panel[data-key=detail] .rule", "els => els.map(e => e.textContent)"); assert rules and all("cop" in r for r in rules)
-        counts = [int(r.split("·")[1].split()[0]) for r in rules]; assert counts == sorted(counts, reverse=True) and sum(counts) == ncop
+        assert lm_fmt(lm_str(page, "unit.copies_n"), n=ncop) in page.text_content(".panel[data-key=detail] .crumb")
+        rules = page.eval_on_selector_all(".panel[data-key=detail] .rule", "els => els.map(e => e.textContent)"); assert rules and all(r.strip() for r in rules)
+        counts = [int(x) for x in page.eval_on_selector_all(".panel[data-key=detail] .rule", "els => els.map(e => e.dataset.n)")]; assert counts == sorted(counts, reverse=True) and sum(counts) == ncop
         rows = page.query_selector_all(".panel[data-key=detail] .rib-row2"); assert len(rows) == ncop
         for mode in ("recipient", "pair"):
             page.select_option(".panel[data-key=detail] .crumb select", mode); page.wait_for_timeout(400)
@@ -78,5 +78,5 @@ class TestCopies:
         assert donors, "the fixture has no called copy"
         d, n = max(donors.items(), key=lambda kv: kv[1])
         page.evaluate(f"() => LM.openCopies('donor', '{d}')"); page.wait_for_selector(".panel[data-key=detail]"); page.wait_for_timeout(400)
-        crumb = page.text_content(".panel[data-key=detail] .crumb"); assert R.taxa["names"][d] in crumb and f"{n} of" in crumb
+        crumb = page.text_content(".panel[data-key=detail] .crumb"); assert R.taxa["names"][d] in crumb and lm_fmt(lm_str(page, "unit.copies_of"), k=n, n=sum(donors.values())) in crumb
         assert len(page.query_selector_all(".panel[data-key=detail] .rib-row2")) == n

@@ -5,7 +5,7 @@ import json
 import numpy as np
 import pytest
 from tests.conftest import dataset
-from tests.viewer.conftest import open_report
+from tests.viewer.conftest import open_report, lm_str
 
 
 def bs_cells(R):
@@ -35,12 +35,12 @@ class TestBroadSampleCells:
         fam = page.evaluate(f"() => LM.App.D.famOf(LM.App.D.state[{g} * LM.App.D.nloc + {li}])")
         assert fam == 60
 
-    @pytest.mark.parametrize("kind,needle", [("close", "too close to the broad sample"), ("red", "too divergent from the broad sample")])
-    def test_the_labels_name_the_test(self, page, report_of, kind, needle):
+    @pytest.mark.parametrize("kind,key", [("close", "state.bs_close"), ("red", "state.bs_divergent")])
+    def test_the_labels_name_the_test(self, page, report_of, kind, key):
         html, R = report_of("dna_rc"); open_report(page, html)
         g, li = bs_cells(R)[kind]
         label = page.evaluate(f"() => LM.App.D.cellLabel(LM.App.D.state[{g} * LM.App.D.nloc + {li}], {g} * LM.App.D.nloc + {li})")
-        assert needle in label, label
+        assert label == lm_str(page, key), label
 
     def test_the_label_names_the_donor_side(self, page, report_of):
         """the divergent cell the broad sample also calls too close: the donor-side comparator is on record and
@@ -55,15 +55,15 @@ class TestBroadSampleCells:
         g, li = bs_cells(R)["close"]
         txt = page.evaluate(f"() => {{ const b = window.cellHover ? cellHover({g}, {li}) : null; return b ? b.textContent : null; }}")
         if txt is None: pytest.skip("cellHover is not exposed on window in this build")
-        assert "broad" in txt
+        assert lm_str(page, "hover.k_broad") in txt
 
     def test_the_sequence_panel_tags_the_broad_partner(self, page, report_of):
         html, R = report_of("dna_rc"); open_report(page, html)
         g, li = bs_cells(R)["close"]
-        page.evaluate(f"() => LM.openCell({g}, {li})")
-        page.wait_for_function("() => document.body.textContent.includes('broad comparator')", timeout=30000)
-        tag = page.evaluate(f"() => {{ const D = LM.App.D; const sr = D.rcAt({g} * D.nloc + {li}); return sr ? D.taxa.names[sr.pt] : null; }}")
-        assert tag is not None
+        page.evaluate(f"() => LM.openCell({g}, {li})"); page.wait_for_selector(".panel[data-key=sequence] .seq-foot", timeout=30000); page.wait_for_timeout(200)
+        pt = page.evaluate(f"() => {{ const D = LM.App.D; const sr = D.rcAt({g} * D.nloc + {li}); return sr ? sr.pt : null; }}"); assert pt is not None
+        rows = page.eval_on_selector_all(".seq-names .seqnm", "els => els.map(e => [e.dataset.g, e.title])")
+        assert int(rows[2][0]) == pt and rows[2][1].startswith(R.taxa["names"][pt] + ": " + lm_str(page, "partner.bs_close_note"))   # the broad row is the comparator that decided it, explained as such
 
     def test_a_clean_report_shows_no_broad_rows(self, page, report_of):
         html, R = report_of("dna_clean"); open_report(page, html)

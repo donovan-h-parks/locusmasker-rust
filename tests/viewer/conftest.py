@@ -34,6 +34,21 @@ def page(browser, request):
 READY = "window.LM && window.LM.App && window.LM.App.D"
 
 
+def lm_str(page, path):
+    """a catalog entry (viewer/strings.js), read from the page: the tests compare against the catalog, never against words"""
+    return page.evaluate("p => p.split('.').reduce((o, k) => o[k], LM_STR)", path)
+
+
+def lm_fmt(s, **kw):
+    """the viewer's lmFmt: {name} placeholders filled"""
+    return re.sub(r"\{(\w+)\}", lambda m: str(kw[m.group(1)]) if m.group(1) in kw else m.group(0), s)
+
+
+def lm_head(s):
+    """the words before the first placeholder (for "contains" checks against a formatted string)"""
+    return s.split("{")[0].strip()
+
+
 def open_report(page, path, hash="", timeout=60000):
     page.goto("file://" + path + (("#" + hash) if hash else "")); page.wait_for_function(READY, timeout=timeout); page.wait_for_timeout(200)
 

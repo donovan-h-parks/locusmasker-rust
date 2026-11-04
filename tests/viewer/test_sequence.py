@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from urllib.parse import unquote
 from tests.conftest import lo
-from tests.viewer.conftest import open_report, cells_of_kind, stars, hover_text, ORANGE_INK, RED, BLUE, INK, FAINT
+from tests.viewer.conftest import open_report, cells_of_kind, stars, hover_text, ORANGE_INK, RED, BLUE, INK, FAINT, lm_str, lm_fmt, lm_head
 
 pytestmark = pytest.mark.viewer
 RULER_H, ROW_H, RULE_H = 18, 18, 7
@@ -85,10 +85,10 @@ def ctx(report_of):
 class TestLayout:
     def test_columns_roles_and_rows(self, page, ctx):
         R = ctx["R"]; g, li = ctx["kinds"]["divergent"]; open_report(page, ctx["html"]); open_cell(page, g, li)
-        assert page.eval_on_selector_all(".seq-col .trk", "els => els.map(e => e.textContent)") == ["test type", "sequence", "Taxon name", "p<α"]
+        assert page.eval_on_selector_all(".seq-col .trk", "els => els.map(e => e.textContent)") == [lm_str(page, "seq." + k) for k in ("h_test", "h_role", "h_name", "h_p")]
         roles = page.eval_on_selector_all(".seq-role .seqnm", "els => els.map(e => e.textContent)")
         assert len(roles) == 3 + len(R.comps(g, li)) and len(set(roles[3:])) == len(roles[3:])   # focal, closest, broad, then one tag per relative (the words are the catalog's)
-        assert page.eval_on_selector_all(".seq-gut .seqnm", "els => els.map(e => e.textContent).filter(Boolean)") == ["closest-match", "broad-sample", "close-relative"]
+        assert page.eval_on_selector_all(".seq-gut .seqnm", "els => els.map(e => e.textContent).filter(Boolean)") == [lm_str(page, "seq." + k) for k in ("gut_closest", "gut_broad", "gut_relatives")]
         names = page.eval_on_selector_all(".seq-names .seqnm .nm", "els => els.map(e => e.textContent)")
         assert names[0] == R.taxa["names"][g] and names[1] == R.taxa["names"][int(R.cell("locus_closest", g, li))] and names[3:] == [R.taxa["names"][c] for c in R.comps(g, li)]   # names[2] is the broad row
         assert len(page.query_selector_all(".seq-col .rule")) == 12                     # one rule per column between each of the three test blocks
@@ -115,9 +115,10 @@ class TestHeaderAndColours:
         if kind not in ctx["kinds"]: pytest.skip(f"the fixture has no {kind} cell")
         R = ctx["R"]; g, li = ctx["kinds"][kind]; E = Expect(R, g, li); open_report(page, ctx["html"]); open_cell(page, g, li)
         verdict = page.text_content(".seq-line .state")
-        assert verdict.startswith("Masked" if E.side & 3 else "Not masked")
-        assert ("too divergent" in verdict) == E.dv and ("too similar to" in verdict) == E.sm
-        if E.side & 8: assert "donor uncertain: both masked" in verdict
+        S = lambda k: lm_str(page, "seq." + k)
+        assert verdict.startswith(S("v_masked") if E.side & 3 else S("v_not_masked"))
+        assert (S("says_divergent") in verdict) == E.dv and (lm_head(S("says_similar")) in verdict) == E.sm
+        if E.side & 8: assert S("donor_uncertain").strip() in verdict
         elif E.side & 2: assert f"({R.taxa['names'][int(R.cell('partner', g, li))]} looks more likely to be the donor)" in verdict
         elif E.side & 128: assert f"({R.taxa['names'][g]} looks more likely to be the donor)" in verdict
         if E.side & 4: assert "fewer comparators" in verdict
@@ -146,9 +147,10 @@ class TestHeaderAndColours:
         def ptxt(lp):
             p = 10 ** lp; return f"{p:.2f}" if p >= 0.01 else f"{p:.1e}".replace("e-0", "e-")
         assert f"p {ptxt(E.divP)}" in titles[0] and f"bar {ptxt(E.bar)}" in titles[0]
-        for k, c in enumerate(E.comps): assert "too divergent from the focal: p" in titles[3 + k] and "too similar to the focal" in titles[3 + k]
-        assert "closest match at this locus" in titles[1]
-        assert page.get_attribute(".seq-p .trk", "title").startswith("significant")
+        S = lambda k: lm_str(page, "seq." + k)
+        for k, c in enumerate(E.comps): assert lm_fmt(lm_head(S("t_p")), what=S("t_divergent_focal")) in titles[3 + k] and S("t_similar_focal") in titles[3 + k]
+        assert lm_head(S("tip_closest")) in titles[1]
+        assert page.get_attribute(".seq-p .trk", "title").startswith(lm_head(S("h_p_hint")))
 
 
 class TestSites:
