@@ -92,11 +92,12 @@ The simplest way to run this script is to use Conda as follows.
 
 Install mamba if you don't already have it: https://github.com/conda-forge/miniforge#install
 
-Download the latest release and go into the folder:
+Download the latest release and go into the folder (the third line checks out the most recent tagged release, rather than whatever is being worked on):
 
 ```
 git clone https://github.com/roblanf/locusmasker.git
 cd locusmasker
+git checkout $(git describe --tags --abbrev=0 origin/main)
 ```
 
 Create the conda environment and activate it:
