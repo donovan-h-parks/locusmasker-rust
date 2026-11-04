@@ -237,8 +237,8 @@ NUMCOLS_SPEC = (("med_identity", np.float32, np.nan), ("med_expected", np.float3
                 ("closest", np.int32, -1), ("closest_overlap", np.uint32, 0), ("closest_identity", np.float32, np.nan), ("closest_expected", np.float32, np.nan),
                 ("best_match", np.int32, -1), ("best_match_identity", np.float32, np.nan), ("partner", np.int32, -1),
                 ("div_log10p", np.float32, np.nan), ("sim_log10p", np.float32, np.nan), ("locus_closest", np.int32, -1), ("locus_closest_log10p", np.float32, np.nan))
-REPORT_TAXA_BLOCK = 64            # report_files/taxa_<k>.js carries the per-cell columns of up to this many taxa (fewer when the loci are many:
-REPORT_CHUNK_BYTES = 8 << 20      # a block is sized to about this many bytes of columns); locus_<li>.js carries one locus's
+REPORT_TAXA_BLOCK = 64            # report_files/taxa_<k>.js carries the per-cell columns of up to this many taxa, loci_<k>.js of up to this many
+REPORT_CHUNK_BYTES = 8 << 20      # loci (fewer when the other axis is long: a block is sized to about this many bytes of columns)
 REPORT_SAMPLE_CELLS = 30_000      # the dataset-wide ribbons draw this many tested cells (a fixed random sample) plus every masked cell
                                   # the bundle (the base64 text, its bytes, the decoded arrays), 1 GB here, which a laptop opens in seconds; above it the
                                   # run writes report.npz and the tables (taxa.tsv, loci.tsv, summary.json) and says so
@@ -1493,8 +1493,9 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
         return dict(excess_min=lo, excess_max=hi, bs_log2_max=bmax)
     per_cell = sum(np.dtype(dt).itemsize for _, _, dt in colspec) + 4 * K_eff * 3                  # bytes of columns per cell, before deflate
     TB = int(max(1, min(REPORT_TAXA_BLOCK, REPORT_CHUNK_BYTES // max(1, per_cell * nloc))))         # taxa per block: about REPORT_CHUNK_BYTES each
-    manifest["layout"] = dict(kind="folder", dir="report_files", taxa_block=TB, loci=nloc, taxa_blocks=(n + TB - 1) // TB,
-                              core_cells=int(len(cg)), sample_cells=int(len(sg)))
+    LB = int(max(1, min(REPORT_TAXA_BLOCK, REPORT_CHUNK_BYTES // max(1, per_cell * n))))            # loci per block, the same way
+    manifest["layout"] = dict(kind="folder", dir="report_files", taxa_block=TB, taxa_blocks=(n + TB - 1) // TB, locus_block=LB, loci_blocks=(nloc + LB - 1) // LB,
+                              loci=nloc, core_cells=int(len(cg)), sample_cells=int(len(sg)))
     manifest["ribbons"] = ribbon_axes()
     core = [("manifest.json", json.dumps(manifest, indent=1).encode()), ("taxa.json", json.dumps(taxa_json, indent=1).encode()), ("loci.json", json.dumps(loci_json, indent=1).encode())]
     for k in ("n_comp", "n_fail", "n_similar", "side"): core.append((f"cells/{k}.npy", _npy_bytes(rep[k])))
@@ -1517,15 +1518,18 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
     def write_chunk(name, kind, idx, members):
         with open(os.path.join(fdir + ".part", name + ".part"), "w", encoding="utf-8") as fh: fh.write(f'LM_CHUNK("{kind}",{idx},"{_zip_b64(members)}");\n')
         os.replace(os.path.join(fdir + ".part", name + ".part"), os.path.join(fdir + ".part", name))
-    all_g = np.arange(n, dtype=np.int64)
-    for li in range(nloc):
-        members = cell_members("cells/", all_g, np.full(n, li, np.int64), (n,))
-        if li in rep["codes"]: cells_, blk = rep["codes"][li]; members += [(f"codes/{li}.npy", _npy_bytes(blk)), (f"codes/{li}_cells.npy", _npy_bytes(cells_))]
-        if li in rep["seqs"]: rows_, blk = rep["seqs"][li]; members += [(f"seq/{li}.npy", _npy_bytes(blk)), (f"seq/{li}_taxa.npy", _npy_bytes(rows_))]
-        for key_, dname in (("trees", "trees"), ("similar", "similar")):
-            if li in rep[key_]: members.append((f"{dname}/{li}.json", json.dumps(rep[key_][li], separators=(",", ":")).encode()))
-        if li in rep.get("bs_records", {}): members.append((f"broadsample/{li}.json", json.dumps(rep["bs_records"][li], separators=(",", ":")).encode()))
-        write_chunk(f"locus_{li}.js", "locus", li, members)
+    nlb = manifest["layout"]["loci_blocks"]
+    for b in range(nlb):                                                                   # a block of loci: the columns as (taxa, block), then each locus's own members
+        l0, l1 = b * LB, min(nloc, (b + 1) * LB); B = l1 - l0
+        gs = np.repeat(np.arange(n, dtype=np.int64), B); lis = np.tile(np.arange(l0, l1, dtype=np.int64), n)
+        members = cell_members("cells/", gs, lis, (n, B))
+        for li in range(l0, l1):
+            if li in rep["codes"]: cells_, blk = rep["codes"][li]; members += [(f"codes/{li}.npy", _npy_bytes(blk)), (f"codes/{li}_cells.npy", _npy_bytes(cells_))]
+            if li in rep["seqs"]: rows_, blk = rep["seqs"][li]; members += [(f"seq/{li}.npy", _npy_bytes(blk)), (f"seq/{li}_taxa.npy", _npy_bytes(rows_))]
+            for key_, dname in (("trees", "trees"), ("similar", "similar")):
+                if li in rep[key_]: members.append((f"{dname}/{li}.json", json.dumps(rep[key_][li], separators=(",", ":")).encode()))
+            if li in rep.get("bs_records", {}): members.append((f"broadsample/{li}.json", json.dumps(rep["bs_records"][li], separators=(",", ":")).encode()))
+        write_chunk(f"loci_{b}.js", "loci", b, members)
     nb = manifest["layout"]["taxa_blocks"]
     for b in range(nb):
         g0, g1 = b * TB, min(n, (b + 1) * TB); B = g1 - g0
@@ -1554,7 +1558,8 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
         out.write(inlined(before)); out.write(core_b64); out.write(inlined(after))
     os.replace(page + ".part", page)
     fsize = sum(os.path.getsize(os.path.join(fdir, f)) for f in os.listdir(fdir))
-    LOG(f"report: report.html ({os.path.getsize(page) >> 20} MB, {len(cg):,} cells' numbers inline), report_files/ ({fsize >> 20} MB in {nloc + nb + 1} files), report.npz ({size >> 20} MB)")
+    LOG(f"report: report.html ({os.path.getsize(page) >> 20} MB, {len(cg):,} cells' numbers inline), report_files/ ({fsize >> 20} MB in {nlb + nb + 1} files: "
+        f"{nlb} blocks of {LB} loci, {nb} of {TB} taxa), report.npz ({size >> 20} MB)")
     return True
 
 

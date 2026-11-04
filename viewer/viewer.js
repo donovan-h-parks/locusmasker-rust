@@ -165,19 +165,22 @@ async function loadBundle(bytes) {
     if (zip.has("cells/comp_div_log10p.npy")) D.tests = { div: (await npy("cells/comp_div_log10p.npy")).data, sim: (await npy("cells/comp_sim_log10p.npy")).data };   // from format 7
     D.hasBS = !!D.cols.bs_stat;
   }
-  const LRU = (map, max) => { while (map.size > max) { const k = map.keys().next().value; map.delete(k); } };
+  const LRU = (map, budget) => {                               // evict the least recently used blocks until the bytes fit
+    let total = 0; for (const v of map.values()) total += v.bytes;
+    while (map.size > 1 && total > budget) { const k = map.keys().next().value; total -= map.get(k).bytes; map.delete(k); } };
   const parseChunk = async (b64, extra) => {
     const z = new Zip(b64ToBytes(b64));
     const cols = await readCols(z, "cells/", CELL_COLS);
     const comps = z.has("cells/comparators.npy") ? parseNpy(await z.read("cells/comparators.npy")).data : null;
     const tests = z.has("cells/comp_div_log10p.npy") ? { div: parseNpy(await z.read("cells/comp_div_log10p.npy")).data, sim: parseNpy(await z.read("cells/comp_sim_log10p.npy")).data } : null;
-    return Object.assign({ zip: z, cols, comps, tests }, extra);
+    return Object.assign({ zip: z, cols, comps, tests, bytes: b64.length * 3 / 4 }, extra);
   };
-  D.loadLocus = li => {                                        // the locus's chunk: every cell's exact numbers, its codes, sequences, trees and records
+  D.loadLocus = li => {                                        // the locus's block: every cell's exact numbers, the codes, sequences, trees and records of its loci
     if (!folder) return Promise.resolve(null);
-    if (D.chunks.locus.has(li)) { const v = D.chunks.locus.get(li); D.chunks.locus.delete(li); D.chunks.locus.set(li, v); return Promise.resolve(v); }
-    const key = "locus:" + li; if (D.chunks.pending.has(key)) return D.chunks.pending.get(key);
-    const p = (async () => { const ch = await parseChunk(await Chunks.load(folder.dir, "locus", li), {}); D.chunks.locus.set(li, ch); LRU(D.chunks.locus, 24); D.chunks.pending.delete(key); return ch; })();
+    const b = Math.floor(li / folder.locus_block);
+    if (D.chunks.locus.has(b)) { const v = D.chunks.locus.get(b); D.chunks.locus.delete(b); D.chunks.locus.set(b, v); return Promise.resolve(v); }
+    const key = "loci:" + b; if (D.chunks.pending.has(key)) return D.chunks.pending.get(key);
+    const p = (async () => { const ch = await parseChunk(await Chunks.load(folder.dir, "loci", b), { l0: b * folder.locus_block, B: Math.min(folder.locus_block, D.nloc - b * folder.locus_block) }); D.chunks.locus.set(b, ch); LRU(D.chunks.locus, 96 << 20); D.chunks.pending.delete(key); return ch; })();
     D.chunks.pending.set(key, p); return p;
   };
   D.loadTaxon = g => {                                         // the taxon's block: its cells' exact numbers across every locus
@@ -185,14 +188,14 @@ async function loadBundle(bytes) {
     const b = Math.floor(g / folder.taxa_block);
     if (D.chunks.taxa.has(b)) { const v = D.chunks.taxa.get(b); D.chunks.taxa.delete(b); D.chunks.taxa.set(b, v); return Promise.resolve(v); }
     const key = "taxa:" + b; if (D.chunks.pending.has(key)) return D.chunks.pending.get(key);
-    const p = (async () => { const ch = await parseChunk(await Chunks.load(folder.dir, "taxa", b), { g0: b * folder.taxa_block }); D.chunks.taxa.set(b, ch); LRU(D.chunks.taxa, 8); D.chunks.pending.delete(key); return ch; })();
+    const p = (async () => { const ch = await parseChunk(await Chunks.load(folder.dir, "taxa", b), { g0: b * folder.taxa_block }); D.chunks.taxa.set(b, ch); LRU(D.chunks.taxa, 48 << 20); D.chunks.pending.delete(key); return ch; })();
     D.chunks.pending.set(key, p); return p;
   };
   D.src = (g, li) => {                                         // where cell (g, li)'s exact numbers are, or null; the sample is not "exact"
     const i = g * D.nloc + li;
     if (folder) {
       const j = D.core.map.get(i); if (j !== undefined) return srcOf(D.core.cols, j, D.core.comps, D.core.tests);
-      const lc = D.chunks.locus.get(li); if (lc) return srcOf(lc.cols, g, lc.comps, lc.tests);
+      const lc = D.chunks.locus.get(Math.floor(li / folder.locus_block)); if (lc) return srcOf(lc.cols, g * lc.B + (li - lc.l0), lc.comps, lc.tests);
       const tc = D.chunks.taxa.get(Math.floor(g / folder.taxa_block)); if (tc) return srcOf(tc.cols, (g - tc.g0) * D.nloc + li, tc.comps, tc.tests);
       return null;
     }
@@ -1437,7 +1440,8 @@ const Detail = (() => {
     return box;
   }
   function draw() {
-    if (!cur || !App.panels.detail) return; body.replaceChildren(); note = null;
+    if (!cur || !App.panels.detail || !body || !body.isConnected) return;   // the panel's resize can fire before its first render, or after a close
+    body.replaceChildren(); note = null;
     if (cur.kind === "copies") { body.append(copiesRibbons()); return; }
     const cells = cellsOf();
     if (view === "scatter") body.append(scatterPlot(cells)); else if (view === "matches") body.append(matchesPlot(cells)); else body.append(ribbonsList(cells));

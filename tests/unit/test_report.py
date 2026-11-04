@@ -41,22 +41,26 @@ class TestHtml:
         man = json.loads(core.read("manifest.json")); lay = man["layout"]
         assert lay["kind"] == "folder" and lay["dir"] == "report_files" and lay["loci"] == R.nloc
         assert 1 <= lay["taxa_block"] <= lo.REPORT_TAXA_BLOCK and lay["taxa_blocks"] == -(-R.n // lay["taxa_block"])
+        assert 1 <= lay["locus_block"] <= lo.REPORT_TAXA_BLOCK and lay["loci_blocks"] == -(-R.nloc // lay["locus_block"])
         names = set(core.namelist())
         assert {"cells/side.npy", "cells/n_comp.npy", "cells/present.npy", "core/locus.npy", "core/taxon.npy", "core/partner.npy", "core/comparators.npy", "sample/locus.npy", "sample/excess_m.npy"} <= names
         assert not any(k.startswith(("codes/", "seq/", "trees/", "similar/")) for k in names)          # per-locus members live in the chunks
         side = R.arr("cells/side.npy"); cl = np.load(io.BytesIO(core.read("core/locus.npy"))); cg = np.load(io.BytesIO(core.read("core/taxon.npy")))
         assert set(zip(cg.tolist(), cl.tolist())) == {(int(g), int(l)) for g, l in zip(*np.nonzero((side & (1 | 2 | 16 | 32)) > 0))}
         files = sorted(os.listdir(r.file("report_files")))
-        assert files == sorted([f"locus_{li}.js" for li in range(R.nloc)] + [f"taxa_{b}.js" for b in range(lay["taxa_blocks"])] + ["index.js"])
+        assert files == sorted([f"loci_{b}.js" for b in range(lay["loci_blocks"])] + [f"taxa_{b}.js" for b in range(lay["taxa_blocks"])] + ["index.js"])
         idx = open(r.file("report_files/index.js"), encoding="utf-8").read(); assert idx.startswith("window.LM_INDEX=") and json.loads(idx[len("window.LM_INDEX="):].rstrip(";\n"))["loci"] == R.nloc
-        li = 3; txt = open(r.file(f"report_files/locus_{li}.js"), encoding="utf-8").read()
-        m = re.fullmatch(r'LM_CHUNK\("locus",3,"([A-Za-z0-9+/=]+)"\);\n', txt); assert m
+        li = 3; LB = lay["locus_block"]; b = li // LB; l0, l1 = b * LB, min(R.nloc, (b + 1) * LB)
+        txt = open(r.file(f"report_files/loci_{b}.js"), encoding="utf-8").read()
+        m = re.fullmatch(r'LM_CHUNK\("loci",%d,"([A-Za-z0-9+/=]+)"\);\n' % b, txt); assert m
         ch = zipfile.ZipFile(io.BytesIO(base64.b64decode(m.group(1)))); cn = set(ch.namelist())
         assert {"cells/med_identity.npy", "cells/partner.npy", "cells/comparators.npy", "cells/comp_div_log10p.npy", "cells/focal_sites.npy"} <= cn
-        for k in ("med_identity", "partner", "excess_m"):                                               # a chunk column is the npz column's slice
-            assert np.array_equal(np.load(io.BytesIO(ch.read(f"cells/{k}.npy"))), R.arr(f"cells/{k}.npy")[:, li], equal_nan=True)
-        assert np.array_equal(np.load(io.BytesIO(ch.read("cells/comparators.npy"))), R.arr("cells/comparators.npy")[:, li])
-        if R.has(f"seq/{li}.npy"): assert np.array_equal(np.load(io.BytesIO(ch.read(f"seq/{li}.npy"))), R.arr(f"seq/{li}.npy"))
+        for k in ("med_identity", "partner", "excess_m"):                                               # a block column is the npz column's slice, (taxa, block)
+            assert np.array_equal(np.load(io.BytesIO(ch.read(f"cells/{k}.npy"))), R.arr(f"cells/{k}.npy")[:, l0:l1], equal_nan=True)
+        assert np.array_equal(np.load(io.BytesIO(ch.read("cells/comparators.npy"))), R.arr("cells/comparators.npy")[:, l0:l1])
+        for lj in range(l0, l1):                                                                        # every locus of the block carries its own members
+            if R.has(f"seq/{lj}.npy"): assert np.array_equal(np.load(io.BytesIO(ch.read(f"seq/{lj}.npy"))), R.arr(f"seq/{lj}.npy"))
+            if R.has(f"trees/{lj}.json"): assert json.loads(ch.read(f"trees/{lj}.json")) == R.js(f"trees/{lj}.json")
         tb = open(r.file("report_files/taxa_0.js"), encoding="utf-8").read(); mb = re.fullmatch(r'LM_CHUNK\("taxa",0,"([A-Za-z0-9+/=]+)"\);\n', tb); assert mb
         tz = zipfile.ZipFile(io.BytesIO(base64.b64decode(mb.group(1)))); B = min(lay["taxa_block"], R.n)
         assert np.array_equal(np.load(io.BytesIO(tz.read("cells/excess_m.npy"))), R.arr("cells/excess_m.npy")[:B], equal_nan=True)
