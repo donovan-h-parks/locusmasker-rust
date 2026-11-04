@@ -1919,11 +1919,12 @@ const Sequence = (() => {
     // the body: test type · sequence · Taxon name · p<α · the alignment; the two name columns resize by their header's edge
     const body = el("div", { class: "seq-body" + (T.pcol ? " with-p" : "") }); body.style.setProperty("--wrole", colW.role + "px"); body.style.setProperty("--wname", colW.name + "px");
     const treesPane = el("div", { class: "trees-pane", style: "display:none" });
-    // the context under the alignment: the focal taxon's four ribbons (its cell ringed), the trees, the locus's four
-    // ribbons with every alignment row highlighted in its own colour and numbered by row; every point hovers and opens
+    // the context under the alignment: the focal taxon's four ribbons and the locus's four, each with the focal cell
+    // ringed; the brushed taxon (hovered or pinned anywhere) wears a bigger ring on the locus's ribbons, in its row's
+    // colour; every point hovers and opens. marksOf() is read at every draw, so the brush redraws it.
     const nameCol = r => r.role === "focal" ? cssVar("--orange-ink") : r.st === "blue" ? D.col.blue : r.st === "red" ? D.col.red : cssVar("--ink");
-    const ctxCol = (kind, u, marks) => {
-      const col = el("div", { class: "ctx-col", "data-kind": kind, "data-marks": String(marks.length) });
+    const ctxCol = (kind, u, marksOf) => {
+      const col = el("div", { class: "ctx-col", "data-kind": kind, "data-marks": String(marksOf().length) });
       col.append(el("div", { class: "ctx-head" }, el("span", { class: "k" }, LM_STR.card["t_" + kind]), " ", el("b", null, kind === "taxon" ? D.taxa.names[u] : D.loci.names[u])));
       const counts = spineCounts(D, kind, u); const strips = [];
       for (const mode of ["close_relative", "cm_relative", "cm_outside", "broad_sample"]) {
@@ -1933,11 +1934,14 @@ const Sequence = (() => {
         strips.push({ mode, cv, ax });
       }
       col.draw = () => { const W = Math.max(160, Math.floor(col.getBoundingClientRect().width) - 118);
+        const marks = marksOf(); col.dataset.marks = String(marks.length);
         for (const st of strips) { const drawn = drawResidualRow(st.cv, kind, u, W, 30, { padL: 8, padR: 8, mode: st.mode, noBand: true, dim: true, marks }); st.ax.replaceChildren(miniAxis(W, 8, 8, st.mode)); bindResidualHover(st.cv, () => drawn.pts); } };
       return col;
     };
-    const marksL = rows.filter(r => r.g !== null).map((r, k) => ({ g: r.g, li, col: nameCol(r), label: String(k + 1) }));
-    const ctxTaxon = ctxCol("taxon", g, [{ g, li, col: cssVar("--orange-ink"), label: "" }]), ctxLocus = ctxCol("locus", li, marksL);
+    const focalMark = { g, li, col: cssVar("--orange-ink"), label: "" };
+    const marksL = () => { const b = App.brush; if (b === null || b === undefined || b === g) return [focalMark];
+      const r = rows.find(q => q.g === b); return [focalMark, { g: b, li, col: r ? nameCol(r) : cssVar("--ink"), label: "" }]; };
+    const ctxTaxon = ctxCol("taxon", g, () => [focalMark]), ctxLocus = ctxCol("locus", li, marksL);
     const ctx = el("div", { class: "seq-ctx" }, ctxTaxon, treesPane, ctxLocus);
     const mid = el("div", { class: "seq-mid" }, body, ctx);
     const drawCtx = () => { ctxTaxon.draw(); ctxLocus.draw(); }; requestAnimationFrame(drawCtx);

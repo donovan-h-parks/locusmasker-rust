@@ -236,12 +236,17 @@ class TestTrees:
 
 class TestContextAndBrush:
     def test_the_context_columns_show_both_units_with_the_rows_marked(self, page, ctx):
-        """under the alignment: the focal taxon's ribbons (its cell ringed), the trees, the locus's ribbons with every
-        alignment row marked; every strip has an axis; a point hovers its cell"""
+        """under the alignment: the focal taxon's ribbons and the locus's ribbons, each with the focal cell ringed and
+        nothing else until a taxon is brushed - then that taxon is ringed on the locus's ribbons too; every strip has
+        an axis; a point hovers its cell"""
         R = ctx["R"]; g, li = ctx["kinds"]["divergent"]; open_report(page, ctx["html"]); open_cell(page, g, li); page.wait_for_selector(".trees-pane svg", timeout=15000); page.wait_for_timeout(300)
-        cols = page.eval_on_selector_all(".seq-ctx .ctx-col", "els => els.map(e => [e.dataset.kind, +e.dataset.marks, e.querySelectorAll('canvas').length, e.querySelectorAll('.resid-axis').length])")
-        nrib = 4 if R.has("cells/bs_stat.npy") else 3; rows = page.evaluate("() => document.querySelectorAll('.seq-names .seqnm[data-g]:not([data-g=\"\"])').length")
-        assert cols == [["taxon", 1, nrib, nrib], ["locus", rows, nrib, nrib]]
+        marks = "els => els.map(e => [e.dataset.kind, +e.dataset.marks, e.querySelectorAll('canvas').length, e.querySelectorAll('.resid-axis').length])"
+        nrib = 4 if R.has("cells/bs_stat.npy") else 3
+        assert page.eval_on_selector_all(".seq-ctx .ctx-col", marks) == [["taxon", 1, nrib, nrib], ["locus", 1, nrib, nrib]]
+        page.hover(".seq-names .seqnm >> nth=3"); page.wait_for_timeout(300)                                       # brush relative 1: one more ring, on the locus side only
+        assert page.eval_on_selector_all(".seq-ctx .ctx-col", marks) == [["taxon", 1, nrib, nrib], ["locus", 2, nrib, nrib]]
+        page.mouse.move(2, 2); page.wait_for_timeout(300)
+        assert page.eval_on_selector_all(".seq-ctx .ctx-col", marks) == [["taxon", 1, nrib, nrib], ["locus", 1, nrib, nrib]]
         assert page.evaluate("() => document.querySelector('.seq-ctx').children.length") == 3                       # taxon | trees | locus
         box = page.evaluate("() => { const r = document.querySelector('.ctx-col[data-kind=locus] canvas').getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; }")
         page.mouse.move(box[0] + box[2] / 2, box[1] + box[3] / 2); page.wait_for_timeout(300)
