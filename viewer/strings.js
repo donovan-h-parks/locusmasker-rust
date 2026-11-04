@@ -86,7 +86,6 @@ const LM_STR = {
     h_obs: "observed %", h_exp: "expected %",              // divergence to the close relatives, median
     h_excess: "excess (m)", h_partner: "partner", h_best: "best match",
     chips: { all: "all", close_relative: "close-relative", closest_match: "closest-match", broad_sample: "broad-sample" },
-    masked_only: "masked cells only",
     foot: "{n} rows · click a row for the alignment · click a header to sort, shift-click for the tie-breaking key",
   },
 
@@ -180,6 +179,8 @@ const LM_STR = {
   fatal: {
     no_data: "This page carries no data: it is the viewer template without a report. Run locus_outliers.py; the report.html it writes has the data inside it.",
     unreadable: "The report could not be read.",   // followed by the error detail, for a bug report
+    // the page's data folder is missing (report.html was moved without report_files beside it)
+    no_folder: "report_files is not beside report.html. Keep the two together: the page reads its data from that folder.",
     // a report written by a NEWER tool than this viewer; {found} and {max} are format numbers, {version} the tool's
     newer_format: "this report was written in bundle format {found}; this viewer reads formats 1 to {max}. Please use the viewer that came with the tool version {version}.",
   },

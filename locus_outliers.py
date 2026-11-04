@@ -146,8 +146,10 @@ Outputs (in --out; <stem> is the alignment file's name without extension)
                        factor), row_factor (closest_match_relative rows), p (six decimals), fail (0 or 1).
                        Large (every comparison at every locus); tabs or line breaks in names are
                        written as spaces.
-  report.html          the interactive report, one file with its data inside (report.npz holds the
-                       same data for scripts). --no-report skips it.
+  report.html          the interactive report: the page, with the summary data inside it, and beside it
+                       report_files/, one small file per locus and per block of taxa that the page reads
+                       on demand (keep the two together). report.npz holds the same data for scripts.
+                       --no-report skips both.
 Options
   --datatype dna|aa (required)  --n-comp 5 (odd >= 3)  --fit-overlap 20
   --alpha 0.05  --mask-similar-only  --mask-different-only  --all-tests  --no-report
@@ -231,7 +233,13 @@ DENSE_CELLS_MAX = 8_000_000       # per-cell numeric report columns are dense (t
 BEST_MATCH_ALL_MAX_TAXA = 2000    # best matches for every tested cell up to this many taxa; beyond, only for cells with a fail
 BEST_MATCH_MIN_SITES = 30         # a best match needs this many sites shared with the focal (as plot_panels.best_matches)
 REPORT_SEQ_ALL_MAX = 32 << 20     # --report-sequences auto carries the whole alignment up to this many bytes, else the cells' rows
-REPORT_ONE_FILE_MAX = 256 << 20   # report.html carries the bundle (report.npz) inline up to this many bytes of bundle: a browser holds about four times
+NUMCOLS_SPEC = (("med_identity", np.float32, np.nan), ("med_expected", np.float32, np.nan), ("excess_m", np.float32, np.nan),   # the per-cell numeric columns: name, dtype, fill
+                ("closest", np.int32, -1), ("closest_overlap", np.uint32, 0), ("closest_identity", np.float32, np.nan), ("closest_expected", np.float32, np.nan),
+                ("best_match", np.int32, -1), ("best_match_identity", np.float32, np.nan), ("partner", np.int32, -1),
+                ("div_log10p", np.float32, np.nan), ("sim_log10p", np.float32, np.nan), ("locus_closest", np.int32, -1), ("locus_closest_log10p", np.float32, np.nan))
+REPORT_TAXA_BLOCK = 64            # report_files/taxa_<k>.js carries the per-cell columns of up to this many taxa (fewer when the loci are many:
+REPORT_CHUNK_BYTES = 8 << 20      # a block is sized to about this many bytes of columns); locus_<li>.js carries one locus's
+REPORT_SAMPLE_CELLS = 30_000      # the dataset-wide ribbons draw this many tested cells (a fixed random sample) plus every masked cell
                                   # the bundle (the base64 text, its bytes, the decoded arrays), 1 GB here, which a laptop opens in seconds; above it the
                                   # run writes report.npz and the tables (taxa.tsv, loci.tsv, summary.json) and says so
 CODE_SIMILAR, CODE_TICK, CODE_ABSENT = 128, 254, 255
@@ -1353,37 +1361,13 @@ def cell_trees(D_exp, D_obs, labels, og=None):
         r = _root_on_edge(t, u, v, f); out.append(_newick(t, r, labels))
     return tuple(out)
 
-def report_floor_bytes(n, nloc, K_eff):
-    """the least the report bundle can weigh before compression: the per-cell members every run writes (five bytes per
-    cell, and up to DENSE_CELLS_MAX cells the dense numeric columns and the comparators' tests); deflate leaves about a third"""
-    cells = n * nloc; b = cells * 5
-    if cells <= DENSE_CELLS_MAX: b += cells * (14 * 4 + 3 * K_eff * 4)
-    return b
-
-
-def write_tables(a, names, loci, rep, taxa_json, loci_json, manifest, K_eff):
-    """the viewer-free tables, written when report.html is not: taxa.tsv (status, loci, masks, comparator shortfalls,
-    the closest genomes), loci.tsv (length, status, rate, plateau, dispersion, masks), summary.json (= manifest.json)"""
-    n, nloc = len(names), len(loci); side = rep["side"]; n_comp = rep["n_comp"]; tested = n_comp > 0
-    div = (side & 1) > 0; sim = (side & 2) > 0; short = tested & (n_comp < K_eff); cl = np.asarray(rep["taxa_closest"])
-    with open(f"{a.out}/taxa.tsv", "w", encoding="utf-8", newline="\n") as fh:
-        fh.write("\t".join(["taxon", "status", "loci_present", "loci_tested", "masked_divergent", "masked_similar", "short_of_comparators"] + [f"closest_{k + 1}" for k in range(cl.shape[1])]) + "\n")
-        for i in range(n):
-            fh.write("\t".join([names[i], taxa_json["status"][i], str(taxa_json["loci_present"][i]), str(int(tested[i].sum())), str(int(div[i].sum())), str(int(sim[i].sum())), str(int(short[i].sum()))]
-                               + [names[int(c)] if c >= 0 else "" for c in cl[i]]) + "\n")
-    with open(f"{a.out}/loci.tsv", "w", encoding="utf-8", newline="\n") as fh:
-        fh.write("\t".join(["locus", "length", "status", "rate", "plateau", "phi", "test_rate", "similar_tests", "cells_tested", "masked_divergent", "masked_similar"]) + "\n")
-        for li in range(nloc):
-            fh.write("\t".join([loci_json["names"][li], str(loci_json["length"][li]), loci_json["status"][li]] + ["" if v is None else str(v) for v in (loci_json["rate"][li], loci_json["plateau"][li], loci_json["phi"][li], loci_json["test_rate"][li])]
-                               + [str(loci_json["similar_tests"][li]), str(int(tested[:, li].sum())), str(int(div[:, li].sum())), str(int(sim[:, li].sum()))]) + "\n")
-    with open(f"{a.out}/summary.json", "w", encoding="utf-8") as fh: json.dump(manifest, fh, indent=1)
-
-
 def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
-    """report.npz, a ZIP of .npy members and JSON that np.load opens like an .npz (streamed to the file), and
-    report.html, the viewer with the bundle inline as base64, one file, up to REPORT_ONE_FILE_MAX of bundle; above
-    that the tables stand in for the page. Both files are written as .part and renamed, so a file is whole or absent.
-    Returns True when report.html was written"""
+    """report.npz, a ZIP of .npy members and JSON that np.load opens like an .npz (streamed to the file); then the
+    report: report.html with the CORE inline as base64 (manifest, names, the per-cell states, every masked or flagged
+    cell's numbers, a fixed random sample of cells for the dataset-wide ribbons) and report_files/ beside it, one
+    file per locus and one per block of REPORT_TAXA_BLOCK taxa carrying the exact per-cell columns, read by the page
+    on demand through script tags (which load from disk where fetch cannot). Files are written as .part and renamed,
+    so a file is whole or absent. Returns True when report.html was written"""
     n, nloc = len(names), len(loci)
     dense = rep["dense"]
     npz = f"{a.out}/report.npz"
@@ -1460,16 +1444,97 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
             timings=dict(PROG.durations, total=round(time.time() - t0, 2)))
         put_json("manifest.json", manifest)
     fh_npz.close(); os.replace(npz + ".part", npz); size = os.path.getsize(npz)
-    if size > REPORT_ONE_FILE_MAX:
-        with zipfile.ZipFile(npz) as Z: extra = sum(i.compress_size for i in Z.infolist() if i.filename.startswith(("codes/", "seq/")))
-        write_tables(a, names, loci, rep, taxa_json, loci_json, manifest, K_eff)
-        LOG(f"report.html not written: the report bundle is {fmem(size)}, above the one-file ceiling of {fmem(REPORT_ONE_FILE_MAX)} (a browser holds about four times the bundle). "
-            f"report.npz holds every result (numpy.load opens it), and taxa.tsv, loci.tsv and summary.json carry the per-taxon and per-locus tables. "
-            f"For a report.html: --report-codes none --report-sequences none drop the site codes and sequences ({fmem(extra)} of the bundle), or run a subset of the taxa or loci")
-        return False
     tpl_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer"); tpl = os.path.join(tpl_dir, "viewer.html")
     if not os.path.exists(tpl):
         LOG(f"report.html not written: the viewer template is not beside the script ({tpl}); report.npz holds the data"); return False
+    # ---- the per-cell columns, read at any set of cells whether the run kept them dense or sparse
+    sp_key = None
+    if not dense:
+        sp_key = rep["sparse_locus"].astype(np.int64) * np.int64(n) + rep["sparse_taxon"].astype(np.int64); sp_order = np.argsort(sp_key, kind="stable"); sp_sorted = sp_key[sp_order]
+    def at_cells(k, gs, lis, fill, dt):
+        """column k at the cells (gs, lis), arrays of equal length; the fill where the run carried nothing"""
+        if dense: return np.ascontiguousarray(rep[k][gs, lis])
+        key = lis.astype(np.int64) * np.int64(n) + gs.astype(np.int64); pos = np.searchsorted(sp_sorted, key)
+        hit = (pos < len(sp_sorted)) & (sp_sorted[np.minimum(pos, len(sp_sorted) - 1)] == key)
+        src = rep[k]; out = np.full((len(gs),) + src.shape[1:], fill, dt); out[hit] = src[sp_order[pos[hit]]]; return out
+    colspec = [(k, fill, dt) for k, dt, fill in NUMCOLS_SPEC] + [("focal_sites", 0, np.uint32)]
+    bscols = [k for k in ("bs_log10p", "bs_rho", "bs_stat", "bs_rep") if k in rep]
+    for k in bscols: colspec.append((k, -1 if k == "bs_rep" else np.nan, np.int32 if k == "bs_rep" else np.float32))
+    def cell_members(prefix, gs, lis, shape):
+        """the exact per-cell members for the cells (gs, lis), each reshaped to shape (+ K for the comparator arrays)"""
+        out = []
+        for k, fill, dt in colspec:
+            if k == "focal_sites": v = np.ascontiguousarray(rep["focal_sites"][gs, lis])
+            elif k in bscols: v = np.ascontiguousarray(rep[k][gs, lis])                     # dense runs only (the bs members exist only then)
+            else: v = at_cells(k, gs, lis, fill, dt)
+            out.append((f"{prefix}{k}.npy", _npy_bytes(v.reshape(shape))))
+        out.append((f"{prefix}comparators.npy", _npy_bytes(at_cells("comparators", gs, lis, -1, np.int32).reshape(shape + (K_eff,)))))
+        for k in ("comp_div_log10p", "comp_sim_log10p"): out.append((f"{prefix}{k}.npy", _npy_bytes(at_cells(k, gs, lis, np.nan, np.float32).reshape(shape + (K_eff,)))))
+        return out
+    # ---- the core: states, the masked or flagged cells' numbers, the ribbon sample and its axes
+    side = rep["side"]; n_comp = rep["n_comp"]
+    core_mask = (side & (1 | 2 | 16 | 32)) > 0; cg, cl = np.nonzero(core_mask); cg = cg.astype(np.int64); cl = cl.astype(np.int64)
+    pool_mask = n_comp > 0
+    if not dense:                                                                           # a sparse run carries numbers for its rows only
+        pool_mask = np.zeros((n, nloc), bool); pool_mask[rep["sparse_taxon"], rep["sparse_locus"]] = True; pool_mask &= n_comp > 0
+    pg, pl = np.nonzero(pool_mask)
+    rng = np.random.default_rng(0); take = rng.choice(len(pg), min(REPORT_SAMPLE_CELLS, len(pg)), replace=False) if len(pg) else np.zeros(0, np.int64); take.sort()
+    sg, sl = pg[take].astype(np.int64), pl[take].astype(np.int64)
+    sample_cols = [("excess_m", np.nan, np.float32), ("sim_log10p", np.nan, np.float32), ("locus_closest_log10p", np.nan, np.float32)]
+    def ribbon_axes():
+        """the dataset-wide axes the ribbons share: excess_m's range and the broad statistic's largest |log2|"""
+        if dense: ex = rep["excess_m"]; bs = rep["bs_stat"] if "bs_stat" in rep else None
+        else: ex = rep["excess_m"]; bs = None
+        fin = np.isfinite(ex); lo = float(ex[fin].min()) if fin.any() else None; hi = float(ex[fin].max()) if fin.any() else None
+        bmax = None
+        if bs is not None:
+            fb = np.isfinite(bs) & (bs > 0)
+            if fb.any(): bmax = float(np.abs(np.log2(bs[fb])).max())
+        return dict(excess_min=lo, excess_max=hi, bs_log2_max=bmax)
+    per_cell = sum(np.dtype(dt).itemsize for _, _, dt in colspec) + 4 * K_eff * 3                  # bytes of columns per cell, before deflate
+    TB = int(max(1, min(REPORT_TAXA_BLOCK, REPORT_CHUNK_BYTES // max(1, per_cell * nloc))))         # taxa per block: about REPORT_CHUNK_BYTES each
+    manifest["layout"] = dict(kind="folder", dir="report_files", taxa_block=TB, loci=nloc, taxa_blocks=(n + TB - 1) // TB,
+                              core_cells=int(len(cg)), sample_cells=int(len(sg)))
+    manifest["ribbons"] = ribbon_axes()
+    core = [("manifest.json", json.dumps(manifest, indent=1).encode()), ("taxa.json", json.dumps(taxa_json, indent=1).encode()), ("loci.json", json.dumps(loci_json, indent=1).encode())]
+    for k in ("n_comp", "n_fail", "n_similar", "side"): core.append((f"cells/{k}.npy", _npy_bytes(rep[k])))
+    core.append(("cells/present.npy", _npy_bytes((rep["focal_sites"] > 0).astype(np.uint8))))
+    if "side2" in rep:
+        core.append(("cells/side2.npy", _npy_bytes(rep["side2"])))
+        for k in ("bs_locus", "bs_taxon", "bs_var_log10p", "bs_lo_log10p", "bs_hi_log10p", "bs_partner", "bs_call"):
+            if k in rep: core.append((f"cells/{k}.npy", _npy_bytes(rep[k])))
+    core.append(("taxa/closest.npy", _npy_bytes(rep["taxa_closest"])))
+    core.append(("core/locus.npy", _npy_bytes(cl.astype(np.int32)))); core.append(("core/taxon.npy", _npy_bytes(cg.astype(np.int32))))
+    core += cell_members("core/", cg, cl, (len(cg),))
+    core.append(("sample/locus.npy", _npy_bytes(sl.astype(np.int32)))); core.append(("sample/taxon.npy", _npy_bytes(sg.astype(np.int32))))
+    for k, fill, dt in sample_cols: core.append((f"sample/{k}.npy", _npy_bytes(at_cells(k, sg, sl, fill, dt))))
+    cs = at_cells("comp_sim_log10p", sg, sl, np.nan, np.float32)
+    with np.errstate(invalid="ignore"): core.append(("sample/min_comp_sim.npy", _npy_bytes(np.where(np.isfinite(cs).any(1), np.nanmin(np.where(np.isfinite(cs), cs, np.inf), 1), np.nan).astype(np.float32))))
+    if "bs_stat" in rep: core.append(("sample/bs_stat.npy", _npy_bytes(np.ascontiguousarray(rep["bs_stat"][sg, sl]))))
+    core_b64 = _zip_b64(core)
+    # ---- the chunks: one file per locus, one per block of taxa, each a zip of members as base64 handed to the page
+    fdir = os.path.join(a.out, "report_files"); shutil.rmtree(fdir, ignore_errors=True); os.makedirs(fdir + ".part", exist_ok=True)
+    def write_chunk(name, kind, idx, members):
+        with open(os.path.join(fdir + ".part", name + ".part"), "w", encoding="utf-8") as fh: fh.write(f'LM_CHUNK("{kind}",{idx},"{_zip_b64(members)}");\n')
+        os.replace(os.path.join(fdir + ".part", name + ".part"), os.path.join(fdir + ".part", name))
+    all_g = np.arange(n, dtype=np.int64)
+    for li in range(nloc):
+        members = cell_members("cells/", all_g, np.full(n, li, np.int64), (n,))
+        if li in rep["codes"]: cells_, blk = rep["codes"][li]; members += [(f"codes/{li}.npy", _npy_bytes(blk)), (f"codes/{li}_cells.npy", _npy_bytes(cells_))]
+        if li in rep["seqs"]: rows_, blk = rep["seqs"][li]; members += [(f"seq/{li}.npy", _npy_bytes(blk)), (f"seq/{li}_taxa.npy", _npy_bytes(rows_))]
+        for key_, dname in (("trees", "trees"), ("similar", "similar")):
+            if li in rep[key_]: members.append((f"{dname}/{li}.json", json.dumps(rep[key_][li], separators=(",", ":")).encode()))
+        if li in rep.get("bs_records", {}): members.append((f"broadsample/{li}.json", json.dumps(rep["bs_records"][li], separators=(",", ":")).encode()))
+        write_chunk(f"locus_{li}.js", "locus", li, members)
+    nb = manifest["layout"]["taxa_blocks"]
+    for b in range(nb):
+        g0, g1 = b * TB, min(n, (b + 1) * TB); B = g1 - g0
+        gs = np.repeat(np.arange(g0, g1, dtype=np.int64), nloc); lis = np.tile(np.arange(nloc, dtype=np.int64), B)
+        write_chunk(f"taxa_{b}.js", "taxa", b, cell_members("cells/", gs, lis, (B, nloc)))
+    with open(os.path.join(fdir + ".part", "index.js"), "w", encoding="utf-8") as fh:
+        fh.write("window.LM_INDEX=" + json.dumps(dict(manifest["layout"], version=__version__, dataset=manifest["dataset"]), separators=(",", ":")) + ";\n")
+    os.replace(fdir + ".part", fdir)
+    # ---- the page: the viewer with the core inline
     def text(name):
         with open(os.path.join(tpl_dir, name), encoding="utf-8") as fh: return fh.read()
     def inline_script(mt): return "<script>\n" + text(mt.group(1)) + "\n</script>"
@@ -1482,19 +1547,28 @@ def write_report(a, names, loci, rep, dtype, fmt, K, K_eff, M_eff, t0):
         part = re.sub(r'<link rel="stylesheet" href="([^"]+)">', inline_style, part)
         return re.sub(r'(href|src)="(icons/[^"]+)"', inline_icon, part)
     before, after = text("viewer.html").split("@@BUNDLE@@", 1)      # the template is split at the marker first, so nothing inlined can carry one
-    meta_js = json.dumps(dict(dataset=manifest["dataset"], bundle_bytes=size, version=__version__))
+    meta_js = json.dumps(dict(dataset=manifest["dataset"], bundle_bytes=len(core_b64) * 3 // 4, version=__version__))
     before = before.replace("@@META@@", meta_js, 1)                  # the loading screen's title and total, known before the data arrives
     page = f"{a.out}/report.html"
-    with open(page + ".part", "w", encoding="utf-8") as out, open(npz, "rb") as src:   # the bundle as base64 in 3-byte multiples: no copy of it in memory
-        out.write(inlined(before))
-        while True:
-            chunk = src.read(3 << 20)
-            if not chunk: break
-            out.write(base64.b64encode(chunk).decode("ascii"))
-        out.write(inlined(after))
+    with open(page + ".part", "w", encoding="utf-8") as out:
+        out.write(inlined(before)); out.write(core_b64); out.write(inlined(after))
     os.replace(page + ".part", page)
-    LOG(f"report: report.html ({os.path.getsize(page) >> 20} MB), report.npz ({size >> 20} MB)")
+    fsize = sum(os.path.getsize(os.path.join(fdir, f)) for f in os.listdir(fdir))
+    LOG(f"report: report.html ({os.path.getsize(page) >> 20} MB, {len(cg):,} cells' numbers inline), report_files/ ({fsize >> 20} MB in {nloc + nb + 1} files), report.npz ({size >> 20} MB)")
     return True
+
+
+def _npy_bytes(arr):
+    b = io.BytesIO(); np.lib.format.write_array(b, np.ascontiguousarray(arr), version=(1, 0)); return b.getvalue()
+
+
+def _zip_b64(members):
+    """a ZIP of (name, bytes) members, deflated, as base64 text (what a chunk file hands the page)"""
+    b = io.BytesIO()
+    with zipfile.ZipFile(b, "w", zipfile.ZIP_DEFLATED, compresslevel=4) as zf:
+        for name, data in members: zf.writestr(name, data)
+    return base64.b64encode(b.getvalue()).decode("ascii")
+
 
 
 def _slab_chunk_medians(Sc, Wc, rr, ok_r, diag_local):
@@ -2418,9 +2492,9 @@ def main():
     if os.environ.get("LOCUSMASKER_STOP_AFTER") in ("rates", "pairs"): STOP_AFTER = os.environ["LOCUSMASKER_STOP_AFTER"]
     os.makedirs(a.out, exist_ok=True); t0 = time.time()
     stale = [f for f in ("tests.tsv.gz",) if not a.all_tests and os.path.exists(os.path.join(a.out, f))] + \
-            [f for f in ("report.html", "report.npz") if a.no_report and os.path.exists(os.path.join(a.out, f))] + \
-            [f for f in ("cells.tsv", "pairs.npy", "similar.tsv", "per_locus.tsv", "report_data.js") if os.path.exists(os.path.join(a.out, f))]
-    for f in ("taxa.tsv", "loci.tsv", "summary.json", "report.html.part", "report.npz.part"):        # the tables of a run above the one-file ceiling, and torn files: never stale
+            [f for f in ("report.html", "report.npz", "report_files") if a.no_report and os.path.exists(os.path.join(a.out, f))] + \
+            [f for f in ("cells.tsv", "pairs.npy", "similar.tsv", "per_locus.tsv", "report_data.js", "taxa.tsv", "loci.tsv", "summary.json") if os.path.exists(os.path.join(a.out, f))]
+    for f in ("report.html.part", "report.npz.part"):                                                 # torn files: never stale, just gone
         if os.path.exists(os.path.join(a.out, f)): os.remove(os.path.join(a.out, f))
     try: LOG.open(os.path.join(a.out, "run.log"))
     except OSError as e: sys.exit(f"cannot write in {a.out}: {e.strerror or e}")
@@ -2462,10 +2536,6 @@ def main():
     M_eff = (K_eff + 1) // 2                                          # fails that make a majority
     if K_eff < K: LOG(f"n-comp shrunk to {K_eff} ({n} taxa)")
     LOG(f"{n} taxa, {L} sites, {len(loci)} loci, {dtype}, {fmt}")
-    floor = report_floor_bytes(n, len(loci), K_eff) // 3
-    if not a.no_report and floor > REPORT_ONE_FILE_MAX:
-        LOG(f"report.html is likely to exceed the one-file ceiling ({fmem(REPORT_ONE_FILE_MAX)} of bundle: this run's per-cell members alone come to about {fmem(floor)} "
-            f"compressed): report.npz and the tables (taxa.tsv, loci.tsv, summary.json) will be written, and the page only if the bundle fits")
     global MEM_RESIDENT_EST
     need, mx, mlists, mclosest, mfull, mslab, mrc = memory_estimate(n, L, loci, a.candidates, K_eff=K_eff, rc=not a.no_broad_sample); MEM_RESIDENT_EST = need
     parts = (f"{fmem(mx)} of alignment (the rows and the residue codes), {fmem(mlists)} of candidate lists for {n:,} taxa, {fmem(mclosest)} of closest matches for "
@@ -2496,7 +2566,7 @@ def main():
     PROG.finish()
     shutil.rmtree(os.path.join(a.out, "restart"), ignore_errors=True)   # every output is written: the restart points have served
     LOG(f"outputs: {out}, {a.out}/masked.csv" + (f", {a.out}/tests.tsv.gz" if a.all_tests else "")
-        + ("" if a.no_report else f", {a.out}/report.html" if page else f", {a.out}/report.npz, {a.out}/taxa.tsv, {a.out}/loci.tsv, {a.out}/summary.json") + f", {a.out}/run.log"
+        + ("" if a.no_report else f", {a.out}/report.html (+ report_files/), {a.out}/report.npz") + f", {a.out}/run.log"
         + f"\ndone {time.time() - t0:.0f}s")
     LOG.close()
 
@@ -2728,10 +2798,7 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
 
     # ---- the report's per-cell columns: dense taxa x loci while the grid is small enough, else rows for cells with a fail
     dense = n * nloc <= DENSE_CELLS_MAX
-    NUMCOLS = (("med_identity", np.float32, np.nan), ("med_expected", np.float32, np.nan), ("excess_m", np.float32, np.nan),
-               ("closest", np.int32, -1), ("closest_overlap", np.uint32, 0), ("closest_identity", np.float32, np.nan), ("closest_expected", np.float32, np.nan),
-               ("best_match", np.int32, -1), ("best_match_identity", np.float32, np.nan), ("partner", np.int32, -1),
-               ("div_log10p", np.float32, np.nan), ("sim_log10p", np.float32, np.nan), ("locus_closest", np.int32, -1), ("locus_closest_log10p", np.float32, np.nan))
+    NUMCOLS = NUMCOLS_SPEC
     for k in ("n_comp", "n_fail", "n_similar", "side"): rep[k] = np.zeros((n, nloc), np.uint8)
     rep["side2"] = np.zeros((n, nloc), np.uint8)       # the broad-sample test per cell: 1 tested, 2 past the bar, 4 shortfall at
     bsL = [None] * nloc                                # alpha, 8 excess at alpha, 16 excluded as a comparator here, 32 the shortfall is

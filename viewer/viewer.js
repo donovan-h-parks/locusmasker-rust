@@ -88,6 +88,31 @@ function parseNpy(u8) {
 }
 
 // ------------------------------------------------------------------ the bundle
+// the chunk files: report_files/<kind>_<id>.js, each one line, LM_CHUNK(kind, id, base64 of a zip). A script tag loads
+// them from disk beside the page, where fetch cannot; the page registers the callback and awaits it
+const Chunks = (() => {
+  const waiting = new Map();
+  window.LM_CHUNK = (kind, id, b64) => { const w = waiting.get(kind + ":" + id); if (w) { waiting.delete(kind + ":" + id); w(b64); } };
+  function script(url, onload) {
+    return new Promise((resolve, reject) => {
+      const sc = document.createElement("script"); sc.src = url;
+      sc.onload = () => { sc.remove(); if (onload) onload(resolve, reject); };
+      sc.onerror = () => { sc.remove(); reject(new Error(url)); };
+      document.head.append(sc);
+    });
+  }
+  function load(dir, kind, id) {
+    const key = kind + ":" + id;
+    return new Promise((resolve, reject) => {
+      waiting.set(key, resolve);
+      script(`${dir}/${kind}_${id}.js`).catch(e => { waiting.delete(key); reject(e); });
+    });
+  }
+  const index = dir => script(`${dir}/index.js`, (res, rej) => window.LM_INDEX ? res(window.LM_INDEX) : rej(new Error("index")));
+  return { load, index };
+})();
+const CELL_COLS = ["med_identity", "med_expected", "excess_m", "closest", "closest_overlap", "closest_identity", "closest_expected", "best_match", "best_match_identity", "partner",
+  "div_log10p", "sim_log10p", "locus_closest", "locus_closest_log10p", "focal_sites", "bs_log10p", "bs_rho", "bs_stat", "bs_rep"];
 async function loadBundle(bytes) {
   const zip = new Zip(bytes); const td = new TextDecoder();
   const json = async name => JSON.parse(td.decode(await zip.read(name)));
@@ -96,16 +121,14 @@ async function loadBundle(bytes) {
   if (man.format_version > 9) throw new Error(lmFmt(LM_STR.fatal.newer_format, { found: man.format_version, max: 9, version: man.version }));
   const taxa = await json("taxa.json"), loci = await json("loci.json");
   const D = { zip, man, format: man.format_version || 1, taxa, loci, n: taxa.names.length, nloc: loci.names.length, K: man.options.K_eff, M: man.options.M_eff, cols: {}, cache: { codes: new Map(), seq: new Map() } };
-  const byteCols = ["n_comp", "n_fail", "n_similar", "side", "focal_sites"];
-  if (zip.has("cells/side2.npy")) byteCols.push("side2");
-  const numCols = ["med_identity", "med_expected", "excess_m", "closest_overlap", "closest_identity", "closest_expected", "best_match", "best_match_identity", "partner"];
+  const folder = man.layout && man.layout.kind === "folder" ? man.layout : null; D.folder = folder;
+  const byteCols = ["n_comp", "n_fail", "n_similar", "side"]; if (zip.has("cells/side2.npy")) byteCols.push("side2");
   for (const k of byteCols) D.cols[k] = (await npy(`cells/${k}.npy`)).data;
+  if (folder) D.cols.present = (await npy("cells/present.npy")).data;
+  else { D.cols.focal_sites = (await npy("cells/focal_sites.npy")).data; const p = new Uint8Array(D.cols.focal_sites.length); for (let i = 0; i < p.length; i++) p[i] = D.cols.focal_sites[i] > 0 ? 1 : 0; D.cols.present = p; }
   D.dense = man.carried.numeric_columns === "dense";
-  for (const k of numCols) D.cols[k] = (await npy(`cells/${k}.npy`)).data;
-  for (const k of ["lam", "lam_p", "row_factor", "div_log10p", "sim_log10p", "dir_log10p", "depth_factor", "locus_closest", "locus_closest_log10p"]) if (zip.has(`cells/${k}.npy`)) D.cols[k] = (await npy(`cells/${k}.npy`)).data;   // not in every format; D.num gives null without them
-  const bsp = zip.has("cells/bs_locus.npy") || zip.has("cells/bs_log10p.npy") ? "bs" : "rc";   // older format-8 bundles wrote the broad-sample members as cells/rc_*
-  for (const k of ["log10p", "rho", "stat", "rep"]) if (zip.has(`cells/${bsp}_${k}.npy`)) D.cols[`bs_${k}`] = (await npy(`cells/${bsp}_${k}.npy`)).data;   // dense runs: the broad-sample stage-1 p, rho, variance ratio and representative of every tested cell
   D.s2 = i => D.cols.side2 ? D.cols.side2[i] : 0;                 // format 8: the broad-sample bits (1 tested, 2 past the bar, 4 close, 8 divergent in older bundles, 16 excluded as comparator, 32 close not re-reported, 64 the divergent-cell label)
+  const bsp = zip.has("cells/bs_locus.npy") || zip.has("cells/bs_log10p.npy") ? "bs" : "rc";   // older format-8 bundles wrote the broad-sample members as cells/rc_*
   D.rcRows = null;
   if (zip.has(`cells/${bsp}_locus.npy`)) {                         // the sequences the verdict pass inspected, with their tail p's and partner
     const rl = (await npy(`cells/${bsp}_locus.npy`)).data, rt = (await npy(`cells/${bsp}_taxon.npy`)).data, rv = {};
@@ -114,50 +137,114 @@ async function loadBundle(bytes) {
     for (let j = 0; j < rl.length; j++) D.rcRows.set(rt[j] * D.nloc + rl[j], { var_p: rv.var_log10p ? rv.var_log10p[j] : NaN, lo: rv.lo_log10p ? rv.lo_log10p[j] : NaN, hi: rv.hi_log10p ? rv.hi_log10p[j] : NaN, pt: rv.partner ? rv.partner[j] : -1, call: rv.call ? rv.call[j] : 0 });
   }
   D.rcAt = i => D.rcRows ? D.rcRows.get(i) : undefined;
-  D.comparators = (await npy("cells/comparators.npy")).data;
-  // the closest comparator is the rank-1 comparator, so it is read from the comparators: up to 0.11.0 the tool wrote the
-  // taxa's five closest relatives (taxa x 5, as in taxa/closest.npy) over cells/closest.npy
-  { const cl = new Int32Array(D.comparators.length / D.K); for (let r = 0; r < cl.length; r++) cl[r] = D.comparators[r * D.K]; D.cols.closest = cl; }
   D.closest = (await npy("taxa/closest.npy")).data;
-  if (!D.dense) {
-    const sl = (await npy("cells/sparse_locus.npy")).data, st = (await npy("cells/sparse_taxon.npy")).data;
-    D.sparse = new Map(); for (let i = 0; i < sl.length; i++) D.sparse.set(st[i] * D.nloc + sl[i], i);
+  // ---- the per-cell numbers: a "source" is {cols, idx, comps, tests} - where cell (g, li)'s values sit
+  const readCols = async (z, prefix, names) => { const out = {}; for (const k of names) if (z.has(`${prefix}${k}.npy`)) out[k] = parseNpy(await z.read(`${prefix}${k}.npy`)).data; return out; };
+  const srcOf = (cols, idx, comps, tests) => ({ cols, idx, comps, tests });
+  if (folder) {
+    // the core: every masked or flagged cell's exact numbers, inline
+    const cl = (await npy("core/locus.npy")).data, cg = (await npy("core/taxon.npy")).data;
+    const ccols = await readCols(zip, "core/", CELL_COLS);
+    const ccomps = (await npy("core/comparators.npy")).data, ctests = { div: (await npy("core/comp_div_log10p.npy")).data, sim: (await npy("core/comp_sim_log10p.npy")).data };
+    D.core = { map: new Map(), cols: ccols, comps: ccomps, tests: ctests };
+    for (let j = 0; j < cl.length; j++) D.core.map.set(cg[j] * D.nloc + cl[j], j);
+    // the sample: a fixed random set of cells carrying the ribbons' inputs, for the dataset-wide drawings
+    const sl = (await npy("sample/locus.npy")).data, sg = (await npy("sample/taxon.npy")).data;
+    const scols = await readCols(zip, "sample/", ["excess_m", "sim_log10p", "locus_closest_log10p", "min_comp_sim", "bs_stat"]);
+    D.sample = { map: new Map(), cols: scols, g: sg, li: sl };
+    for (let j = 0; j < sl.length; j++) D.sample.map.set(sg[j] * D.nloc + sl[j], j);
+    D.chunks = { locus: new Map(), taxa: new Map(), pending: new Map() };
+    D.hasBS = !!man.broad_sample && !!ccols.bs_stat;
+  } else {
+    // the legacy inline bundle: every column dense (or sparse over the carried rows)
+    for (const k of CELL_COLS) { const nm = k.startsWith("bs_") ? `cells/${bsp}_${k.slice(3)}.npy` : `cells/${k}.npy`; if (zip.has(nm)) D.cols[k] = (await npy(nm)).data; }
+    for (const k of ["lam", "lam_p", "row_factor", "dir_log10p", "depth_factor"]) if (zip.has(`cells/${k}.npy`)) D.cols[k] = (await npy(`cells/${k}.npy`)).data;   // older formats' extras
+    D.comparators = (await npy("cells/comparators.npy")).data;
+    { const cl = new Int32Array(D.comparators.length / D.K); for (let r = 0; r < cl.length; r++) cl[r] = D.comparators[r * D.K]; D.cols.closest = cl; }   // up to 0.11.0 cells/closest held the taxa's five closest
+    if (!D.dense) { const sl = (await npy("cells/sparse_locus.npy")).data, st = (await npy("cells/sparse_taxon.npy")).data; D.sparse = new Map(); for (let i = 0; i < sl.length; i++) D.sparse.set(st[i] * D.nloc + sl[i], i); }
+    if (zip.has("cells/comp_div_log10p.npy")) D.tests = { div: (await npy("cells/comp_div_log10p.npy")).data, sim: (await npy("cells/comp_sim_log10p.npy")).data };   // from format 7
+    D.hasBS = !!D.cols.bs_stat;
   }
-  D.num = (k, g, li) => {                                     // a numeric column of cell (g, li), or null when not carried
-    const arr = D.cols[k]; if (!arr) return null;
-    if (D.dense) { const v = arr[g * D.nloc + li]; return Number.isNaN(v) ? null : v; }
-    const r = D.sparse.get(g * D.nloc + li); if (r === undefined) return null; const v = arr[r]; return Number.isNaN(v) ? null : v;
+  const LRU = (map, max) => { while (map.size > max) { const k = map.keys().next().value; map.delete(k); } };
+  const parseChunk = async (b64, extra) => {
+    const z = new Zip(b64ToBytes(b64));
+    const cols = await readCols(z, "cells/", CELL_COLS);
+    const comps = z.has("cells/comparators.npy") ? parseNpy(await z.read("cells/comparators.npy")).data : null;
+    const tests = z.has("cells/comp_div_log10p.npy") ? { div: parseNpy(await z.read("cells/comp_div_log10p.npy")).data, sim: parseNpy(await z.read("cells/comp_sim_log10p.npy")).data } : null;
+    return Object.assign({ zip: z, cols, comps, tests }, extra);
   };
-  if (zip.has("cells/comp_div_log10p.npy")) D.tests = { div: (await npy("cells/comp_div_log10p.npy")).data, sim: (await npy("cells/comp_sim_log10p.npy")).data };   // from format 7: both tests of every comparator, by rank
+  D.loadLocus = li => {                                        // the locus's chunk: every cell's exact numbers, its codes, sequences, trees and records
+    if (!folder) return Promise.resolve(null);
+    if (D.chunks.locus.has(li)) { const v = D.chunks.locus.get(li); D.chunks.locus.delete(li); D.chunks.locus.set(li, v); return Promise.resolve(v); }
+    const key = "locus:" + li; if (D.chunks.pending.has(key)) return D.chunks.pending.get(key);
+    const p = (async () => { const ch = await parseChunk(await Chunks.load(folder.dir, "locus", li), {}); D.chunks.locus.set(li, ch); LRU(D.chunks.locus, 24); D.chunks.pending.delete(key); return ch; })();
+    D.chunks.pending.set(key, p); return p;
+  };
+  D.loadTaxon = g => {                                         // the taxon's block: its cells' exact numbers across every locus
+    if (!folder) return Promise.resolve(null);
+    const b = Math.floor(g / folder.taxa_block);
+    if (D.chunks.taxa.has(b)) { const v = D.chunks.taxa.get(b); D.chunks.taxa.delete(b); D.chunks.taxa.set(b, v); return Promise.resolve(v); }
+    const key = "taxa:" + b; if (D.chunks.pending.has(key)) return D.chunks.pending.get(key);
+    const p = (async () => { const ch = await parseChunk(await Chunks.load(folder.dir, "taxa", b), { g0: b * folder.taxa_block }); D.chunks.taxa.set(b, ch); LRU(D.chunks.taxa, 8); D.chunks.pending.delete(key); return ch; })();
+    D.chunks.pending.set(key, p); return p;
+  };
+  D.src = (g, li) => {                                         // where cell (g, li)'s exact numbers are, or null; the sample is not "exact"
+    const i = g * D.nloc + li;
+    if (folder) {
+      const j = D.core.map.get(i); if (j !== undefined) return srcOf(D.core.cols, j, D.core.comps, D.core.tests);
+      const lc = D.chunks.locus.get(li); if (lc) return srcOf(lc.cols, g, lc.comps, lc.tests);
+      const tc = D.chunks.taxa.get(Math.floor(g / folder.taxa_block)); if (tc) return srcOf(tc.cols, (g - tc.g0) * D.nloc + li, tc.comps, tc.tests);
+      return null;
+    }
+    if (D.dense) return srcOf(D.cols, i, D.comparators, D.tests);
+    const r = D.sparse.get(i); return r === undefined ? null : srcOf(D.cols, r, D.comparators, D.tests);
+  };
+  D.exact = (g, li) => D.src(g, li) !== null;
+  D.num = (k, g, li) => {                                     // a numeric column of cell (g, li), or null when not carried here
+    const sc = D.src(g, li);
+    if (sc) { const arr = sc.cols[k]; if (!arr) return null; const v = arr[sc.idx]; return Number.isNaN(v) ? null : v; }
+    if (folder) { const j = D.sample.map.get(g * D.nloc + li); if (j === undefined) return null; const arr = D.sample.cols[k]; if (!arr) return null; const v = arr[j]; return Number.isNaN(v) ? null : v; }
+    return null;
+  };
   D.compTests = (g, li) => {                                  // comparator -> {div, sim}, log10 p of its two tests against the cell; null when not carried
-    if (!D.tests) return null;
-    let base; if (D.dense) base = (g * D.nloc + li) * D.K; else { const q = D.sparse.get(g * D.nloc + li); if (q === undefined) return null; base = q * D.K; }
-    const out = new Map(); for (let k = 0; k < D.K; k++) { const c = D.comparators[base + k]; if (c >= 0) out.set(c, { div: D.tests.div[base + k], sim: D.tests.sim[base + k] }); }
+    const sc = D.src(g, li); if (!sc || !sc.tests || !sc.comps) return null;
+    const base = sc.idx * D.K; const out = new Map();
+    for (let k = 0; k < D.K; k++) { const c = sc.comps[base + k]; if (c >= 0) out.set(c, { div: sc.tests.div[base + k], sim: sc.tests.sim[base + k] }); }
     return out;
   };
   D.comps = (g, li) => {                                      // the cell's comparators in rank order
-    let base; if (D.dense) base = (g * D.nloc + li) * D.K; else { const r = D.sparse.get(g * D.nloc + li); if (r === undefined) return []; base = r * D.K; }
-    const out = []; for (let r = 0; r < D.K; r++) { const c = D.comparators[base + r]; if (c >= 0) out.push(c); } return out;
+    const sc = D.src(g, li); if (!sc || !sc.comps) return [];
+    const base = sc.idx * D.K; const out = []; for (let r = 0; r < D.K; r++) { const c = sc.comps[base + r]; if (c >= 0) out.push(c); } return out;
+  };
+  D.minCompSim = (g, li) => {                                 // the strongest in-set pair evidence: min over the comparator slots
+    const ct = D.compTests(g, li);
+    if (ct) { let m = null; for (const t of ct.values()) { const v = t.sim; if (Number.isFinite(v) && (m === null || v < m)) m = v; } return m; }
+    if (!folder) return null;
+    const j = D.sample.map.get(g * D.nloc + li); if (j === undefined || !D.sample.cols.min_comp_sim) return null;
+    const v = D.sample.cols.min_comp_sim[j]; return Number.isNaN(v) ? null : v;
+  };
+  const member = async (li, name) => {                        // a per-locus member: from the locus chunk (folder) or the inline bundle
+    const z = folder ? (await D.loadLocus(li)).zip : zip; return z.has(name) ? z : null;
   };
   D.codes = async li => {
     if (D.cache.codes.has(li)) return D.cache.codes.get(li);
-    const p = (async () => { if (!zip.has(`codes/${li}.npy`)) return null; const b = await npy(`codes/${li}.npy`), c = await npy(`codes/${li}_cells.npy`); return { cells: c.data, blk: b.data, len: b.shape[1], rows: b.shape[0] }; })();
+    const p = (async () => { const z = await member(li, `codes/${li}.npy`); if (!z) return null; const b = parseNpy(await z.read(`codes/${li}.npy`)), c = parseNpy(await z.read(`codes/${li}_cells.npy`)); return { cells: c.data, blk: b.data, len: b.shape[1], rows: b.shape[0] }; })();
     D.cache.codes.set(li, p); return p;
   };
   D.seq = async li => {
     if (D.cache.seq.has(li)) return D.cache.seq.get(li);
-    const p = (async () => { if (!zip.has(`seq/${li}.npy`)) return null; const b = await npy(`seq/${li}.npy`), t = await npy(`seq/${li}_taxa.npy`); return { taxa: t.data, blk: b.data, len: b.shape[1], rows: b.shape[0] }; })();
+    const p = (async () => { const z = await member(li, `seq/${li}.npy`); if (!z) return null; const b = parseNpy(await z.read(`seq/${li}.npy`)), t = parseNpy(await z.read(`seq/${li}_taxa.npy`)); return { taxa: t.data, blk: b.data, len: b.shape[1], rows: b.shape[0] }; })();
     D.cache.seq.set(li, p); return p;
   };
   D.similar = async li => {                                   // the locus's too-similar tests (from format 4; a locus with none has no file), or null before
     if (!D.cache.similar) D.cache.similar = new Map();
     if (D.cache.similar.has(li)) return D.cache.similar.get(li);
-    const p = (async () => zip.has(`similar/${li}.json`) ? json(`similar/${li}.json`) : D.format >= 4 ? [] : null)(); D.cache.similar.set(li, p); return p;
+    const p = (async () => { const z = await member(li, `similar/${li}.json`); return z ? JSON.parse(td.decode(await z.read(`similar/${li}.json`))) : D.format >= 4 ? [] : null; })(); D.cache.similar.set(li, p); return p;
   };
   D.trees = async li => {                                     // {cells, expected, observed, moved, tips} or null
     if (!D.cache.trees) D.cache.trees = new Map();
     if (D.cache.trees.has(li)) return D.cache.trees.get(li);
-    const p = (async () => zip.has(`trees/${li}.json`) ? json(`trees/${li}.json`) : null)(); D.cache.trees.set(li, p); return p;
+    const p = (async () => { const z = await member(li, `trees/${li}.json`); return z ? JSON.parse(td.decode(await z.read(`trees/${li}.json`))) : null; })(); D.cache.trees.set(li, p); return p;
   };
   deriveStates(D);
   return D;
@@ -170,9 +257,9 @@ async function loadBundle(bytes) {
 const ST = { ABSENT: 0, UNTESTED: 1, GREY: 2, RED: 20, BLUE: 40, BOTH: 60 };   // BOTH + pairs (1..3): masked by both tests
 function deriveStates(D) {
   const { n, nloc, K, M } = D; const N = n * nloc; const st = new Uint8Array(N), sev = new Uint8Array(N);
-  const fs = D.cols.focal_sites, nc = D.cols.n_comp, nf = D.cols.n_fail, ns = D.cols.n_similar, sd = D.cols.side, sd2 = D.cols.side2; const both = new Uint8Array(N);
+  const pr = D.cols.present, nc = D.cols.n_comp, nf = D.cols.n_fail, ns = D.cols.n_similar, sd = D.cols.side, sd2 = D.cols.side2; const both = new Uint8Array(N);
   for (let i = 0; i < N; i++) {
-    if (fs[i] === 0) { st[i] = ST.ABSENT; sev[i] = 0; continue; }
+    if (pr[i] === 0) { st[i] = ST.ABSENT; sev[i] = 0; continue; }
     both[i] = (sd[i] & 3) === 3 ? 1 : 0;
     if (nc[i] === 0) { st[i] = ST.UNTESTED; sev[i] = 1; continue; }
     const s = sd[i];
@@ -215,7 +302,7 @@ function deriveStates(D) {
   D.taxCount = { masked: new Int32Array(n), div: new Int32Array(n), sim: new Int32Array(n), tested: new Int32Array(n), present: new Int32Array(n), near: new Int32Array(n) };
   D.locCount = { masked: new Int32Array(nloc), div: new Int32Array(nloc), sim: new Int32Array(nloc), tested: new Int32Array(nloc), present: new Int32Array(nloc), near: new Int32Array(nloc) };
   for (let g = 0; g < n; g++) for (let li = 0; li < nloc; li++) {
-    const i = g * nloc + li; if (fs[i] === 0) continue;
+    const i = g * nloc + li; if (pr[i] === 0) continue;
     D.taxCount.present[g]++; D.locCount.present[li]++;
     if (nc[i] === 0) continue;
     D.taxCount.tested[g]++; D.locCount.tested[li]++;
@@ -225,14 +312,15 @@ function deriveStates(D) {
     if (s & 2) { D.taxCount.sim[g]++; D.locCount.sim[li]++; }
     if (!m && nf[i] > 0) { D.taxCount.near[g]++; D.locCount.near[li]++; }
   }
-  // the residual axis shared by every ribbon: the range of excess_m over the carried cells
-  let lo = Infinity, hi = -Infinity; const ex = D.cols.excess_m;
-  for (let i = 0; i < ex.length; i++) { const v = ex[i]; if (Number.isFinite(v)) { if (v < lo) lo = v; if (v > hi) hi = v; } }
+  // the residual axis shared by every ribbon: the range of excess_m over every cell (the tool's figure for a folder report)
+  let lo = Infinity, hi = -Infinity;
+  if (D.folder) { const rb = D.man.ribbons || {}; if (rb.excess_min !== null && rb.excess_min !== undefined) { lo = rb.excess_min; hi = rb.excess_max; } }
+  else { const ex = D.cols.excess_m; for (let i = 0; i < ex.length; i++) { const v = ex[i]; if (Number.isFinite(v)) { if (v < lo) lo = v; if (v > hi) hi = v; } } }
   D.exDomain = [Math.min(Number.isFinite(lo) ? lo * 1.3 : -30, -30), Math.max(Number.isFinite(hi) ? hi * 1.3 : 300, 300)];
 }
 function stateReason(D, g, li) {
   const i = g * D.nloc + li;
-  if (D.cols.focal_sites[i] === 0) return "the taxon has no residue at this locus";
+  if (D.cols.present[i] === 0) return "the taxon has no residue at this locus";
   if (D.cols.n_comp[i] === 0) {
     if (D.taxa.status[g] !== "tested") return "taxon " + D.taxa.status[g];
     if (D.loci.status[li] !== "tested") return "locus " + D.loci.status[li];
@@ -300,7 +388,7 @@ function similarRole(D, g, li) {
 // stage-1 one (the comparator with the most extreme standardised residual, either side); -1 only in older bundles
 function bsRepOf(D, i, rcr) {
   if (rcr && rcr.pt >= 0) return rcr.pt;
-  return D.cols.bs_rep && D.cols.bs_rep[i] >= 0 ? D.cols.bs_rep[i] : null;
+  const r = D.num("bs_rep", Math.floor(i / D.nloc), i % D.nloc); return r !== null && r >= 0 ? r : null;
 }
 function cellTests(D, g, li, sim, sr) {
   const bar = D.man.test && D.man.test.log10_bar != null ? D.man.test.log10_bar : null;
@@ -439,6 +527,10 @@ async function start(bytes) {
   await new Promise(r => setTimeout(r, 0));                            // let the note paint before the decode blocks the thread
   try { sessionStorage.removeItem("lmRetry"); } catch (e) { }
   const D = await loadBundle(bytes); App.D = D;
+  if (D.folder) {                                                      // the chunks live beside the page: prove the folder is there before anything asks for it
+    try { await Chunks.index(D.folder.dir); }
+    catch (e) { window.__lmBooted = true; $("#app").replaceChildren(el("div", { class: "error" }, LM_STR.fatal.no_folder)); return; }
+  }
   window.__lmBooted = true;
   App.order.taxa = d3.range(D.n); App.order.loci = d3.range(D.nloc);
   buildShell(); readHash(); renderAll();
@@ -884,14 +976,18 @@ const Overview = (() => {
     const D = App.D; if (c.row < 0 || c.row >= D.n || c.col < 0 || c.col >= D.nloc) return;
     if (V.cw < 4 || V.ch < 4) { const { w, h } = canvasArea(); const fx = c.x / w, fy = c.y / h; V.cw = Math.max(V.cw * 4, 6); V.ch = Math.max(V.ch * 4, 6); V.x0 = c.col - fx * w / V.cw; V.y0 = c.row - fy * h / V.ch; V.user = true; labelSpace(); redraw(); return; }
     const g = App.order.taxa[c.row], li = App.order.loci[c.col];
-    if (D.cols.focal_sites[g * D.nloc + li] === 0) return;
+    if (D.cols.present[g * D.nloc + li] === 0) return;
     Sequence.open(g, li);
   }
+  let hoverSeq = 0;
   function hoverAt(c, ev) {
     const D = App.D; if (c.row < 0 || c.row >= D.n || c.col < 0 || c.col >= D.nloc) { hideHover(); return; }
     const cells = []; for (let r = c.rows[0]; r <= Math.min(c.rows[1], D.n - 1); r++) for (let k = c.cols[0]; k <= Math.min(c.cols[1], D.nloc - 1); k++) cells.push([App.order.taxa[r], App.order.loci[k]]);
     cells.sort((a, b) => D.sev[b[0] * D.nloc + b[1]] - D.sev[a[0] * D.nloc + a[1]]);
     const box = el("div"); const show = cells.slice(0, 4);
+    const my = ++hoverSeq; const pos = { clientX: ev.clientX, clientY: ev.clientY };
+    const missing = show.filter(([g, li]) => D.folder && !D.exact(g, li) && D.cols.n_comp[g * D.nloc + li] > 0);
+    if (missing.length && missing.length <= 2) Promise.all(missing.map(([, li]) => D.loadLocus(li))).then(() => { if (hoverSeq === my) hoverAt(c, pos); });
     if (cells.length > 1) box.append(el("div", { class: "more" }, `${fmtInt(cells.length)} cells under the pointer, worst first:`));
     for (const [g, li] of show) box.append(cellHover(g, li, cells.length > 1));
     if (cells.length > show.length) box.append(el("div", { class: "more" }, `… and ${fmtInt(cells.length - show.length)} more; zoom in to see them`));
@@ -1028,7 +1124,7 @@ function cellHover(g, li, compact) {
   const mp_ = maskP(D, g, li);
   if (mp_) row("mask significance", `p = ${lmP(mp_.p)}${starsOf(D, mp_.p) ? " " + starsOf(D, mp_.p) : ""} (the ${mp_.test} test)`);
   if (nc > 0) {
-    row("residues", fmtInt(D.cols.focal_sites[i]));
+    if (D.num("focal_sites", g, li) !== null) row("residues", fmtInt(D.num("focal_sites", g, li)));
     // ---- the closest-match test (one direction: too similar; two arms by where the expectation comes from)
     if (D.format >= 5 && ns) row("too-similar pairs", `${ns}${ns >= 255 ? "+" : ""}${ns > 1 ? "; the strongest below" : ""}`);
     else if (v4 && ns) row("too-similar partners", `${ns}${ns >= 255 ? "+" : ""} significant, among every taxon at the locus${ns > 1 ? (sd & (2 | 32) ? "; its source below" : "; the strongest below") : ""}`);
@@ -1043,9 +1139,9 @@ function cellHover(g, li, compact) {
     if (s2v & 1) {
       const rcr = D.rcAt && D.rcAt(i); const rcman = bsMan(D);
       let vp = rcr && !Number.isNaN(rcr.var_p) ? rcr.var_p : null;
-      if (vp === null && D.cols.bs_log10p && !Number.isNaN(D.cols.bs_log10p[i])) vp = D.cols.bs_log10p[i];
+      if (vp === null) vp = D.num("bs_log10p", g, li);
       if (!compact || s2v & (2 | 4 | 8 | 64)) row("broad sample", `${rcman ? rcman.per_cell : ""} comparators drawn from the taxon's pool${vp !== null ? `; stage 1 p = ${lmP(vp)}` : ""}${s2v & 2 ? ` — past the run's bar${barNote(D)}` : ", nothing unusual"}`);
-      if (D.cols.bs_rho && !Number.isNaN(D.cols.bs_rho[i]) && !compact) row("own rate ρ", `${fmt3(D.cols.bs_rho[i])} × the locus rate (the median over its comparators)`);
+      if (D.num("bs_rho", g, li) !== null && !compact) row("own rate ρ", `${fmt3(D.num("bs_rho", g, li))} × the locus rate (the median over its comparators)`);
       if (s2v & 4 && rcr) row("broad: too close", `the far shortfall, p = ${lmP(rcr.lo)} at α${s2v & 32 ? " — another mask already covers the cell" : ""}`);
       if (s2v & 8 && rcr) row("broad: too divergent", `half the far sample leans high, p = ${lmP(rcr.hi)} at α${s2v & 32 ? " — another mask already covers the cell" : ""}`);
       if (s2v & 64 && rcr) row("broad: the donor side", `the divergent mask stands; without ρ the far shortfall names the donor side, p = ${lmP(rcr.lo)}${barNote(D)}`);
@@ -1078,12 +1174,7 @@ function unitHover(kind, i) {
 
 // ------------------------------------------------------------------ residual ribbons: the cells of one unit on an asinh axis
 // draws the residuals of the cells of a locus (by="locus") or a taxon into a canvas row; returns the drawn points for hover
-function minCompSim(D, g, li) {                              // the strongest in-set pair evidence: min over the comparator slots
-  if (!D.tests) return null;
-  let base; if (D.dense) base = (g * D.nloc + li) * D.K; else { const q = D.sparse.get(g * D.nloc + li); if (q === undefined) return null; base = q * D.K; }
-  let m = null; for (let k = 0; k < D.K; k++) { const v = D.tests.sim[base + k]; if (Number.isFinite(v) && (m === null || v < m)) m = v; }
-  return m;
-}
+function minCompSim(D, g, li) { return D.minCompSim(g, li); }   // the strongest in-set pair evidence: min over the comparator slots
 function cmArms(D, g, li) {                                  // the closest-match test's two evidences for one cell
   const i = g * D.nloc + li;
   const out = (D.cols.side[i] & 64) ? D.num("locus_closest_log10p", g, li) : null;   // the outside arm ran
@@ -1098,8 +1189,8 @@ function residualOf(D, g, li, mode) {                        // one residual per
   if (mode === "cm_outside") { const v = cmArms(D, g, li).out; return v === null ? null : -v; }
   const i = g * D.nloc + li;
   if (mode === "broad_sample") {                             // observed / expected variance, log2
-    const v = D.cols.bs_stat ? D.cols.bs_stat[i] : NaN;
-    return Number.isFinite(v) && v > 0 ? Math.log2(v) : null;
+    const v = D.num("bs_stat", g, li);
+    return v !== null && Number.isFinite(v) && v > 0 ? Math.log2(v) : null;
   }
   return D.num("excess_m", g, li);                           // close_relative: the excess beyond expectation, in m
 }
@@ -1163,7 +1254,10 @@ function ribbonColour(D, g, li, mode) {                      // the mark's colou
 }
 function residualScale(D, mode, W, padL, padR) {
   if (mode === "cm_relative" || mode === "cm_outside") return d3.scaleLinear().domain([0, Math.max(6, -(D.man.test && D.man.test.log10_bar || -6) * 2.5)]).range([padL, W - padR]);
-  if (mode === "broad_sample") { const d = D._bsDom || (D._bsDom = (() => { let m = 2; const v = D.cols.bs_stat; if (v) for (let q = 0; q < v.length; q++) { const x = v[q]; if (Number.isFinite(x) && x > 0) { const a = Math.abs(Math.log2(x)); if (a > m) m = a; } } return Math.min(m, 10); })());
+  if (mode === "broad_sample") { const d = D._bsDom || (D._bsDom = (() => { let m = 2;
+      if (D.folder) { const b = D.man.ribbons && D.man.ribbons.bs_log2_max; if (b) m = Math.max(m, b); }
+      else { const v = D.cols.bs_stat; if (v) for (let q = 0; q < v.length; q++) { const x = v[q]; if (Number.isFinite(x) && x > 0) { const a = Math.abs(Math.log2(x)); if (a > m) m = a; } } }
+      return Math.min(m, 10); })());
     return d3.scaleLinear().domain([-d, d]).range([padL, W - padR]); }
   return d3.scaleSymlog().constant(1).domain(D.exDomain).range([padL, W - padR]);
 }
@@ -1280,10 +1374,13 @@ const Detail = (() => {
     App.stageEl.append(P.el); Nav.layout();
     new ResizeObserver(debounce(() => { if (App.panels.detail && cur) draw(); }, 120)).observe(P.body);
   }
-  function open(kind, i) {
+  async function open(kind, i) {
     cur = { kind, i }; ensurePanel();
     if (kind === "locus" && view === "matches") view = "scatter";
-    render(); writeHash(); Overview.highlight(kind === "taxon" ? "row" : "col", i); Nav.layout();
+    Overview.highlight(kind === "taxon" ? "row" : "col", i); Nav.layout();
+    await (kind === "taxon" ? App.D.loadTaxon(i) : App.D.loadLocus(i));           // the unit's exact numbers, from its chunk
+    if (!cur || cur.kind !== kind || cur.i !== i) return;
+    render(); writeHash();
   }
   // the copies' site ribbons in blocks by donor, recipient or pair (mode); key: one block alone, null for all
   function openCopies(mode, key) { cur = { kind: "copies", mode, key: key === undefined ? null : key }; ensurePanel(); render(); writeHash(); Nav.layout(); }
@@ -1621,8 +1718,9 @@ const Sequence = (() => {
     const D = App.D; const { g, li } = cur; const P = App.panels.sequence.P; const i = g * D.nloc + li;
     P.setCrumb([D.man.dataset || D.man.input.file, el("a", { href: "#", onclick: ev => { ev.preventDefault(); Detail.open("taxon", g); } }, D.taxa.names[g]), el("a", { href: "#", onclick: ev => { ev.preventDefault(); Detail.open("locus", li); } }, D.loci.names[li])]);
     P.body.replaceChildren(el("div", { class: "loading" }, "loading the sequences…"));
-    const [C, S, SIM] = await Promise.all([D.codes(li), D.seq(li), D.similar(li)]);
+    const [C, S, SIM] = await Promise.all([D.codes(li), D.seq(li), D.similar(li), D.loadLocus(li), D.loadTaxon(g)]);
     if (!cur || cur.g !== g || cur.li !== li) return;
+    Nav.layout();                                                      // the bands' thumbnails now have the unit's numbers
     const comps = D.comps(g, li); const partner = D.num("partner", g, li); const sd = D.cols.side[i]; const sr = similarRole(D, g, li);
     const T = cellTests(D, g, li, SIM, sr); let drawNow = null; const redrawNow = () => { if (drawNow) drawNow(); };
     // the rows, the same shape for every cell: the focal; its closest match at this locus, the candidate of the similarity
@@ -1721,7 +1819,7 @@ const Sequence = (() => {
       if (r.role === "focal") { const mp = maskP(D, g, li); const fp = mp ? mp.p : dv && sm ? Math.min(divP ?? Infinity, simP ?? Infinity) : dv ? divP : sm ? simP : null; bg = dv && sm ? D.col.both : dv ? D.col.red : sm ? D.col.blue : D.col.passCell; txt = dv || sm ? T.stars(fp) : "–"; if (dv || sm) ink = "#ffffff"; }
       else if (r.role === "closest") { if (r.g !== null && T.blue.has(r.g)) { bg = D.col.blue; txt = T.stars(T.blue.get(r.g).p); ink = "#ffffff"; } }
       else if (r.role === "broad") { let vp = rcr0 && !Number.isNaN(rcr0.var_p) ? rcr0.var_p : null;
-        if (vp === null && D.cols.bs_log10p && !Number.isNaN(D.cols.bs_log10p[i])) vp = D.cols.bs_log10p[i];
+        if (vp === null) vp = D.num("bs_log10p", g, li);
         const bsC = (s2v & 4) && !(s2v & 32), bsD = (s2v & 8) && !(s2v & 32);
         if (bsC || bsD) { bg = bsC ? D.col.blue : D.col.red; ink = "#ffffff"; }
         txt = vp !== null && T.stars(vp) ? T.stars(vp) : vp !== null ? "–" : "–"; if ((bsC || bsD) && !T.stars(vp)) txt = "*"; }
@@ -1861,7 +1959,7 @@ const Card = (() => {
     const box = el("div", { class: "cd-spine" }); const W = 700, RH = 32, PAD = 24;
     const counts = kind === "sequence" ? null : spineCounts(D, kind, u);
     for (const mode of ["close_relative", "cm_relative", "cm_outside", "broad_sample"]) {
-      if (mode === "broad_sample" && !D.cols.bs_stat) continue;       // old bundles have no variance statistic to place
+      if (mode === "broad_sample" && !D.hasBS) continue;              // old bundles have no variance statistic to place
       const row = el("div", { class: "cd-rib" },
         el("span", { class: "cd-ribname" }, LM_STR.ribbons["test_" + mode], counts ? el("i", { class: "cd-ribn" }, fmtInt(counts[mode])) : null));
       const cv = el("canvas"); row.append(cv); box.append(row);
@@ -1877,11 +1975,12 @@ const Card = (() => {
     const c = cv.getContext("2d"); c.scale(dpr, dpr);
     const xs = residualScale(D, mode, W, 20, 20); const cy = H / 2; const jit = d3.randomUniform.source(d3.randomLcg(0.41))(-(H / 2 - 4), H / 2 - 4);
     c.strokeStyle = cssVar("--model"); c.beginPath(); c.moveTo(xs(0) + 0.5, 1); c.lineTo(xs(0) + 0.5, H - 1); c.stroke();
-    const N = D.n * D.nloc; const step = Math.max(1, Math.floor(N / 30000));
     c.fillStyle = cssVar("--pass"); c.globalAlpha = 0.25;
-    for (let i = 0; i < N; i += step) { if (D.cols.n_comp[i] === 0 || (D.cols.side[i] & 3)) continue;
-      const v = residualOf(D, Math.floor(i / D.nloc), i % D.nloc, mode); if (v === null) continue;
-      c.beginPath(); c.arc(clamp(xs(v), 20, W - 20), cy + jit(), 1.5, 0, 2 * Math.PI); c.fill(); }
+    const grey = (g, li) => { const i = g * D.nloc + li; if (D.cols.n_comp[i] === 0 || (D.cols.side[i] & 3)) return;
+      const v = residualOf(D, g, li, mode); if (v === null) return;
+      c.beginPath(); c.arc(clamp(xs(v), 20, W - 20), cy + jit(), 1.5, 0, 2 * Math.PI); c.fill(); };
+    if (D.folder) { for (let j = 0; j < D.sample.g.length; j++) grey(D.sample.g[j], D.sample.li[j]); }      // the tool's fixed sample of cells
+    else { const N = D.n * D.nloc; const step = Math.max(1, Math.floor(N / 30000)); for (let i = 0; i < N; i += step) grey(Math.floor(i / D.nloc), i % D.nloc); }
     c.globalAlpha = 1;
     for (const q of maskIndex(D)) { const v = residualOf(D, q.g, q.li, mode); if (v === null) continue;
       const col = ribbonColour(D, q.g, q.li, mode); if (!col) continue;        // not this test's mask: it stays in the grey cloud
@@ -1918,7 +2017,7 @@ const Card = (() => {
     if (mode === "cm_outside") return cmArms(D, g, li).out;
     const i = g * D.nloc + li; const rcr = D.rcAt ? D.rcAt(i) : null;
     if (rcr && !Number.isNaN(rcr.var_p)) return rcr.var_p;
-    return D.cols.bs_log10p && Number.isFinite(D.cols.bs_log10p[i]) ? D.cols.bs_log10p[i] : null;
+    return D.num("bs_log10p", g, li);
   }
   function topPerTest(D, masks, N) {                          // per test, its own top masks by its own evidence
     const out = {};
@@ -2035,8 +2134,8 @@ const Card = (() => {
       row(CH.closest_match, lmFmt(S().r_cm, { name: D.taxa.names[pt], arm: arm === "out" ? S().r_cm_arm_out : S().r_cm_arm_rel, p: cp === null || Number.isNaN(cp) ? "\u2013" : lmP(cp) }), Number.isFinite(cp) ? cp : null);
     const s2v = D.s2 ? D.s2(i) : 0; const rcr = D.rcAt && D.rcAt(i);
     if (s2v & 1) {
-      const v = D.cols.bs_stat ? D.cols.bs_stat[i] : NaN;
-      const vp = rcr && !Number.isNaN(rcr.var_p) ? rcr.var_p : D.cols.bs_log10p && Number.isFinite(D.cols.bs_log10p[i]) ? D.cols.bs_log10p[i] : null;
+      const v = D.num("bs_stat", g, li) === null ? NaN : D.num("bs_stat", g, li);
+      const vp = rcr && !Number.isNaN(rcr.var_p) ? rcr.var_p : D.num("bs_log10p", g, li);
       if (vp !== null || Number.isFinite(v)) {
         const call = (s2v & 8) ? S().r_bs_divergent : (s2v & (4 | 64)) ? S().r_bs_close : "";
         row(CH.broad_sample, lmFmt(S().r_bs, { v: fv(v), p: vp === null ? "\u2013" : lmP(vp), call }), vp);
@@ -2044,8 +2143,9 @@ const Card = (() => {
     }
     return box;
   }
-  function open(kind, a, b) {
+  async function open(kind, a, b) {
     ensure(); const D = App.D;
+    if (kind === "locus") await D.loadLocus(a); else if (kind === "taxon") await D.loadTaxon(a); else if (kind === "sequence") await Promise.all([D.loadLocus(b), D.loadTaxon(a)]);
     const masksAll = maskIndex(D);
     let title, masks, cells, m, spineEl, shape, extra = null, seqState = null;
     if (kind === "dataset") {
@@ -2128,7 +2228,7 @@ const Table = (() => {
     const body = el("div", { class: "tbody" }); const inner = el("div"); body.append(inner);
     const chips = el("span", { class: "chips" }, ...[["all", T().chips.all], ["close_relative", T().chips.close_relative], ["closest_match", T().chips.closest_match], ["broad_sample", T().chips.broad_sample]].map(([k, t]) =>
       el("button", { class: "chip" + (family === k ? " on" : ""), "data-fam": k, onclick: () => { family = k; render(root); } }, t)));
-    const foot = el("div", { class: "tfoot" }, chips, el("label", null, el("input", { type: "checkbox", checked: maskedOnly ? "" : null, onchange: e => { maskedOnly = e.target.checked; build(); paint(); } }), " " + T().masked_only), el("span", { class: "n" }));
+    const foot = el("div", { class: "tfoot" }, chips, el("span", { class: "n" }));
     root.append(head, body, foot);
     const RH = 22;
     const paint = () => { inner.style.height = rows.length * RH + "px"; inner.style.position = "relative"; inner.replaceChildren(); const top = body.scrollTop; const i0 = Math.max(0, Math.floor(top / RH) - 5), i1 = Math.min(rows.length, i0 + Math.ceil(body.clientHeight / RH) + 10);
@@ -2139,13 +2239,13 @@ const Table = (() => {
     body.addEventListener("scroll", paint); paint();
   }
   function download() {
-    const D = App.D; const keepM = maskedOnly, keepF = family; maskedOnly = false; family = "all"; build(); maskedOnly = keepM; family = keepF;
+    const D = App.D; const keepF = family; family = "all"; build(); family = keepF;
     const v4 = D.format >= 4;                                 // from format 4: the cell's role in its reported pair and the tests' log10 p, in the tests' names
     const p6 = v => v === null || v === undefined || v === "" || Number.isNaN(v) ? "" : Math.min(Math.pow(10, v), 1).toFixed(6);
     const lines = ["taxon\tlocus\tstate\tmask_test\tmask_p\tn_fail\tn_similar\tobserved_divergence\texpected_divergence\texcess_m\tbest_match\tbest_match_identity\tpartner\tdirection_lrt" + (v4 ? "\tclosest_match_role\tclose_relative_p\tclosest_match_p\tbroad_sample_p" : "")];
     for (const r of rows) { const pt = D.num("partner", r.g, r.li); const bm = D.num("best_match", r.g, r.li); const sr = v4 ? similarRole(D, r.g, r.li) : null;
       const i = r.g * D.nloc + r.li; const rcr = D.rcAt ? D.rcAt(i) : null;
-      const bsp = rcr && !Number.isNaN(rcr.var_p) ? rcr.var_p : (D.cols.bs_log10p && !Number.isNaN(D.cols.bs_log10p[i]) ? D.cols.bs_log10p[i] : null);
+      const bsp = rcr && !Number.isNaN(rcr.var_p) ? rcr.var_p : D.num("bs_log10p", r.g, r.li);
       lines.push([r.taxon, r.locus, D.labelOf(r.code), r.test, p6(r.p), r.n_fail, r.n_similar, r.obs ?? "", r.exp ?? "", r.excess_m ?? "", bm !== null && bm >= 0 ? D.taxa.names[bm] : "", r.bm_id ?? "", pt !== null && pt >= 0 ? D.taxa.names[pt] : "", r.lam ?? "", ...(v4 ? [sr ? sr.role : "", p6(D.num("div_log10p", r.g, r.li)), p6(D.num("sim_log10p", r.g, r.li)), p6(bsp)] : [])].join("\t")); }
     const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/tab-separated-values" })); a.download = `${D.man.dataset || "report"}_cells.tsv`; a.click(); build();
   }

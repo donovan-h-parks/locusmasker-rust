@@ -67,6 +67,7 @@ class TestSummary:
         html, R = report_of("dna_small"); open_report(page, html)
         sel = page.query_selector(".worst .worst-row:nth-child(1) .col:nth-child(1) .row .nm") and ".worst .worst-row:nth-child(1) .col:nth-child(1) .row" or ".worst .worst-row:nth-child(1) .col:nth-child(1) .chiprow .chip"
         name = page.text_content(sel + (" .nm" if ".row" == sel[-4:] else "")).strip().split(" ·")[0]; page.click(sel); page.wait_for_selector(".panel[data-key=detail]")
+        page.wait_for_function("() => document.querySelector('.panel[data-key=detail] .crumb').textContent.length > 0")   # the unit's chunk arrives first
         assert name in page.text_content(".panel[data-key=detail] .crumb")
 
 
@@ -84,7 +85,7 @@ class TestMatrix:
         V = page.evaluate("() => { const V = LM.App.D && window.LM.App.panels.overview ? null : null; return null; }")
         page.mouse.move(box[0] + 20, box[1] + 10); page.wait_for_timeout(200)
         txt = hover_text(page); assert txt and " · " in txt and any(n in txt for n in R.taxa["names"]) and any(l in txt for l in R.loci["names"])
-        page.mouse.click(box[0] + 20, box[1] + 10); page.wait_for_selector(".panel[data-key=sequence]", timeout=10000)
+        page.mouse.click(box[0] + 20, box[1] + 10); page.wait_for_selector(".panel[data-key=sequence] .seq-head", timeout=10000)   # the stage fills once its chunk arrives
         assert page.query_selector(".seq-head") is not None
 
     def test_order_controls_reorder_the_rows(self, page, report_of):
@@ -118,8 +119,7 @@ class TestRibbonsAndTable:
         first = page.eval_on_selector_all(".trow", "els => els.map(e => e.children[0].textContent)")
         page.click(".thead span >> nth=0"); page.wait_for_timeout(200)
         after = page.eval_on_selector_all(".trow", "els => els.map(e => e.children[0].textContent)"); assert after == sorted(after) and len(after) == len(first)
-        page.click(".tfoot input[type=checkbox]"); page.wait_for_timeout(300)
-        assert page.text_content(".tfoot .n").startswith(f"{c['cells']} rows")
+        assert page.query_selector(".tfoot input[type=checkbox]") is None            # the table is the masked cells; no all-cells switch
 
     def test_a_table_row_opens_the_alignment(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html); page.evaluate("() => LM.setView('table')"); page.wait_for_timeout(300)
@@ -130,7 +130,7 @@ class TestRibbonsAndTable:
         html, R = report_of("dna_small"); open_report(page, html)
         with page.expect_download() as dl: page.click("button:has-text('cells.tsv')")
         d = dl.value; assert d.suggested_filename == "dna_small_cells.tsv"
-        txt = open(d.path(), encoding="utf-8").read().split("\n"); assert txt[0].startswith("taxon\tlocus\tstate") and len(txt) - 2 >= R.man["counts"]["cells"] - 1
+        txt = open(d.path(), encoding="utf-8").read().split("\n"); assert txt[0].startswith("taxon\tlocus\tstate") and len(txt) - 2 >= R.man["counts"]["masked"] - 1   # the masked cells' rows
         page.evaluate("() => LM.setView('matrix')"); page.wait_for_timeout(300)
         with page.expect_download() as dl: page.click("button:has-text('PNG')")
         assert dl.value.suggested_filename == "dna_small_overview.png"

@@ -1,5 +1,5 @@
 """The report files: report.npz as numpy opens it, the manifest, and report.html as one self-contained page."""
-import base64, json, os, re, zipfile
+import io, base64, json, os, re, zipfile
 import numpy as np
 import pytest
 from tests.conftest import lo, dataset, run_tool
@@ -30,12 +30,37 @@ class TestNpz:
 
 @pytest.mark.e2e
 class TestHtml:
-    def test_the_page_is_one_self_contained_file_with_the_data_inside(self, runs):
-        r = runs("dna_small"); html = open(r.file("report.html"), encoding="utf-8").read(); data = open(r.file("report.npz"), "rb").read()
-        assert base64.b64encode(data).decode("ascii") in html
-        assert 'id="lm-bundle"' in html and not r.exists("report_data.js") and '<script src="report_data.js">' not in html
+    def test_the_page_carries_the_core_and_the_folder_carries_the_chunks(self, runs):
+        """the report is a page plus report_files/ (Rob, 4 Nov 2026: a folder at every size): the page holds the core inline
+        (manifest, names, states, every masked or flagged cell's numbers, the ribbon sample); the folder holds one chunk per
+        locus and one per block of taxa, each a one-line script handing the page a base64 zip"""
+        r = runs("dna_small"); html = open(r.file("report.html"), encoding="utf-8").read(); R = r.report
+        assert 'id="lm-bundle"' in html and "@@BUNDLE@@" not in html and "@@META@@" not in html
         assert not re.search(r'<script src="[^"]+"></script>', html) and not re.search(r'<link rel="stylesheet" href=', html)
-        assert "@@BUNDLE@@" not in html and "@@SIDECAR@@" not in html
+        core = zipfile.ZipFile(io.BytesIO(base64.b64decode(re.search(r'id="lm-bundle">([^<]*)<', html).group(1))))
+        man = json.loads(core.read("manifest.json")); lay = man["layout"]
+        assert lay["kind"] == "folder" and lay["dir"] == "report_files" and lay["loci"] == R.nloc
+        assert 1 <= lay["taxa_block"] <= lo.REPORT_TAXA_BLOCK and lay["taxa_blocks"] == -(-R.n // lay["taxa_block"])
+        names = set(core.namelist())
+        assert {"cells/side.npy", "cells/n_comp.npy", "cells/present.npy", "core/locus.npy", "core/taxon.npy", "core/partner.npy", "core/comparators.npy", "sample/locus.npy", "sample/excess_m.npy"} <= names
+        assert not any(k.startswith(("codes/", "seq/", "trees/", "similar/")) for k in names)          # per-locus members live in the chunks
+        side = R.arr("cells/side.npy"); cl = np.load(io.BytesIO(core.read("core/locus.npy"))); cg = np.load(io.BytesIO(core.read("core/taxon.npy")))
+        assert set(zip(cg.tolist(), cl.tolist())) == {(int(g), int(l)) for g, l in zip(*np.nonzero((side & (1 | 2 | 16 | 32)) > 0))}
+        files = sorted(os.listdir(r.file("report_files")))
+        assert files == sorted([f"locus_{li}.js" for li in range(R.nloc)] + [f"taxa_{b}.js" for b in range(lay["taxa_blocks"])] + ["index.js"])
+        idx = open(r.file("report_files/index.js"), encoding="utf-8").read(); assert idx.startswith("window.LM_INDEX=") and json.loads(idx[len("window.LM_INDEX="):].rstrip(";\n"))["loci"] == R.nloc
+        li = 3; txt = open(r.file(f"report_files/locus_{li}.js"), encoding="utf-8").read()
+        m = re.fullmatch(r'LM_CHUNK\("locus",3,"([A-Za-z0-9+/=]+)"\);\n', txt); assert m
+        ch = zipfile.ZipFile(io.BytesIO(base64.b64decode(m.group(1)))); cn = set(ch.namelist())
+        assert {"cells/med_identity.npy", "cells/partner.npy", "cells/comparators.npy", "cells/comp_div_log10p.npy", "cells/focal_sites.npy"} <= cn
+        for k in ("med_identity", "partner", "excess_m"):                                               # a chunk column is the npz column's slice
+            assert np.array_equal(np.load(io.BytesIO(ch.read(f"cells/{k}.npy"))), R.arr(f"cells/{k}.npy")[:, li], equal_nan=True)
+        assert np.array_equal(np.load(io.BytesIO(ch.read("cells/comparators.npy"))), R.arr("cells/comparators.npy")[:, li])
+        if R.has(f"seq/{li}.npy"): assert np.array_equal(np.load(io.BytesIO(ch.read(f"seq/{li}.npy"))), R.arr(f"seq/{li}.npy"))
+        tb = open(r.file("report_files/taxa_0.js"), encoding="utf-8").read(); mb = re.fullmatch(r'LM_CHUNK\("taxa",0,"([A-Za-z0-9+/=]+)"\);\n', tb); assert mb
+        tz = zipfile.ZipFile(io.BytesIO(base64.b64decode(mb.group(1)))); B = min(lay["taxa_block"], R.n)
+        assert np.array_equal(np.load(io.BytesIO(tz.read("cells/excess_m.npy"))), R.arr("cells/excess_m.npy")[:B], equal_nan=True)
+        assert np.load(io.BytesIO(tz.read("cells/comparators.npy"))).shape == (B, R.nloc, R.K)
 
     def test_icons_are_inlined(self, runs):
         html = open(runs("dna_small").file("report.html"), encoding="utf-8").read()
@@ -46,43 +71,27 @@ class TestHtml:
         html = open(runs("dna_small").file("report.html"), encoding="utf-8").read()
         assert "LocusMasker report viewer" in html and "<style>" in html and "d3" in html and "<title>LocusMasker report</title>" in html
 
-    def test_the_data_always_goes_inside_the_page(self, runs):
-        """the report is one file whatever its size (Rob, 29 Oct 2026): no size cap, no sidecar"""
-        assert not hasattr(lo, "REPORT_INLINE_MAX")
-        r = runs("dna_clean"); html = open(r.file("report.html"), encoding="utf-8").read()
-        assert base64.b64encode(open(r.file("report.npz"), "rb").read()).decode("ascii") in html and not r.exists("report_data.js")
-
-    def test_the_page_size_is_the_data_plus_a_small_viewer(self, runs):
+    def test_the_page_is_small_whatever_the_data(self, runs):
+        """the page carries the core only: the states (a few bytes per cell) and the masked cells' numbers; the chunks carry the rest"""
         r = runs("dna_small"); page = os.path.getsize(r.file("report.html")); data = os.path.getsize(r.file("report.npz"))
-        assert data * 4 / 3 < page < data * 4 / 3 + 1_300_000                 # the viewer, d3, fuse and the embedded Inter face
+        core = len(re.search(r'id="lm-bundle">([^<]*)<', open(r.file("report.html"), encoding="utf-8").read()).group(1)) * 3 // 4
+        assert core < data and page < core * 4 / 3 + 1_300_000                 # the viewer, d3, fuse and the embedded Inter face
 
 
-class TestOneFileCeiling:
-    """report.html carries the bundle up to REPORT_ONE_FILE_MAX; above it the run says so at the start and the end, and
-    the tables stand in; the files are whole or absent; every run leaves run.log"""
-    def test_above_the_ceiling_the_tables_stand_in_for_the_page(self, runs, tmp_out, monkeypatch):
-        monkeypatch.setattr(lo, "REPORT_ONE_FILE_MAX", 1)
-        ds = dataset("dna_small"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts); assert r.rc == 0, r.log
-        assert not r.exists("report.html") and r.exists("report.npz") and "report.html not written" in r.log and "above the one-file ceiling" in r.log
-        assert "likely to exceed" in r.log and r.log.index("likely to exceed") < r.log.index("pair sweep:")
-        taxa = open(r.file("taxa.tsv")).read().splitlines(); loci = open(r.file("loci.tsv")).read().splitlines()
-        with zipfile.ZipFile(r.file("report.npz")) as Z: man = json.loads(Z.read("manifest.json")); tj = json.loads(Z.read("taxa.json")); lj = json.loads(Z.read("loci.json"))
-        assert len(taxa) == ds.ntaxa + 1 and len(loci) == ds.nloci + 1 and taxa[0].startswith("taxon\tstatus\tloci_present") and loci[0].startswith("locus\tlength\tstatus")
-        assert [l.split("\t")[0] for l in taxa[1:]] == tj["names"] and [l.split("\t")[0] for l in loci[1:]] == lj["names"]
-        assert json.load(open(r.file("summary.json"))) == man
-        cols = taxa[0].split("\t"); row = dict(zip(cols, taxa[1].split("\t"))); assert row["status"] == tj["status"][0] and int(row["loci_present"]) == tj["loci_present"][0]
-        assert all(c in cols for c in ("masked_divergent", "masked_similar", "short_of_comparators", "closest_1"))
-        assert not [f for f in os.listdir(tmp_out) if f.endswith(".part")] and "taxa.tsv" in r.log.split("outputs:")[1] and "report.html" not in r.log.split("outputs:")[1]
-        base = runs("dna_small"); assert open(r.file("masked.csv")).read() == open(base.file("masked.csv")).read()
-
+class TestWholeFiles:
+    """the files are whole or absent; every run leaves run.log; a stale report_files folder never survives"""
     def test_a_normal_run_writes_whole_files_and_a_log(self, runs):
         r = runs("dna_small")
         assert r.exists("report.html") and r.exists("run.log") and not r.exists("taxa.tsv") and not r.exists("summary.json")
         assert not [f for f in os.listdir(r.out) if f.endswith(".part")]
         log = open(r.file("run.log"), encoding="utf-8").read(); assert "LocusMasker" in log and "outputs:" in log and "run.log" in log.split("outputs:")[1]
 
-    def test_the_tables_of_an_earlier_run_are_removed(self, tmp_out, monkeypatch):
+    def test_no_report_removes_the_folder_of_an_earlier_run(self, tmp_out):
         ds = dataset("dna_small")
-        with monkeypatch.context() as mp:
-            mp.setattr(lo, "REPORT_ONE_FILE_MAX", 1); r = run_tool(ds.aln, tmp_out, "dna", ds.parts); assert r.rc == 0 and r.exists("taxa.tsv")
-        r = run_tool(ds.aln, tmp_out, "dna", ds.parts); assert r.rc == 0 and r.exists("report.html") and not r.exists("taxa.tsv") and not r.exists("loci.tsv") and not r.exists("summary.json")
+        r = run_tool(ds.aln, tmp_out, "dna", ds.parts); assert r.rc == 0 and r.exists("report.html") and os.path.isdir(r.file("report_files"))
+        open(r.file("report_files/locus_999.js"), "w").write("stale")                        # a leftover from another run of another size
+        r = run_tool(ds.aln, tmp_out, "dna", ds.parts); assert r.rc == 0 and not os.path.exists(r.file("report_files/locus_999.js"))
+        r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--no-report"]); assert r.rc == 0           # an earlier run's report stays, named as stale
+        assert r.exists("report.html") and os.path.isdir(r.file("report_files")) and "report_files" in r.log and "earlier run" in r.log
+
+
