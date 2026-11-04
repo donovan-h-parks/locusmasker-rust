@@ -23,7 +23,7 @@ class TestLoads:
 
     def test_the_api_the_tests_use_is_exposed(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html)
-        assert page.evaluate("() => Object.keys(window.LM).sort()") == ["App", "openCard", "openCell", "openCopies", "openUnit", "setView", "start", "step", "up"]
+        assert page.evaluate("() => Object.keys(window.LM).sort()") == ["App", "masks", "openCard", "openCell", "openCopies", "openUnit", "setView", "start", "step", "up"]
         assert page.evaluate("() => [LM.App.D.n, LM.App.D.nloc, LM.App.D.format, LM.App.D.K, LM.App.D.M]") == [R.n, R.nloc, 9, R.K, R.M]
 
     def test_the_loading_screen_is_gone(self, page, report_of):

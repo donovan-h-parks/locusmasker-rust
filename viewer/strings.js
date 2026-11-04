@@ -78,14 +78,31 @@ const LM_STR = {
     axis_broad: "◀ steadier than expected · observed / expected variance over the broad sample, log2 · wilder ▶",
   },
 
-  // ---- the overview table: one row per cell. Headers; the family filter chips; the footer.
+  // ---- the masks bar, under the topbar at every level: the one filter and order behind the table and the ← → paging.
+  filter: {
+    label: "masks",
+    all: "all tests",                                // the chip that widens back to every test
+    arm_close_relative: "close-relative",            // the five arms, one chip each (a click keeps that arm; more clicks add or drop arms)
+    arm_cm_relative: "closest-match · relative",
+    arm_cm_outside: "closest-match · outside",
+    arm_bs_close: "broad-sample · too close",
+    arm_bs_divergent: "broad-sample · too divergent",
+    any_taxon: "any taxon", any_locus: "any locus",  // the name boxes' placeholders (type to search, pick to narrow)
+    clear: "any",                                    // the ✕ beside a chosen name
+    order: "order", order_p: "most significant first", order_locus: "by locus", order_taxon: "by taxon",
+    count: "{n} masks",                              // how many the filter leaves
+    position: "{k} of {n}", none: "– of {n}",        // where the open sequence sits in the list; a dash when it is not in it
+    prev: "previous mask (←)", next: "next mask (→)",
+    this_unit: "page its masks",                     // on a taxon or locus panel: narrow the list to this unit
+  },
+
+  // ---- the overview table: one row per mask of the bar's list. Headers; the footer.
   table: {
     h_taxon: "taxon", h_locus: "locus",
     h_test: "test",                                        // which test masked it (the strongest, as masked.csv's mask_test)
     h_p: "p",                                              // the mask's one significance, with its stars
     h_obs: "observed %", h_exp: "expected %",              // divergence to the close relatives, median
     h_excess: "excess (m)", h_partner: "partner", h_best: "best match",
-    chips: { all: "all", close_relative: "close-relative", closest_match: "closest-match", broad_sample: "broad-sample" },
     foot: "{n} rows · click a row for the alignment · click a header to sort, shift-click for the tie-breaking key",
   },
 

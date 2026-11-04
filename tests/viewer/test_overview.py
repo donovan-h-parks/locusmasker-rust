@@ -74,7 +74,7 @@ class TestSummary:
 class TestMatrix:
     def test_matrix_draws_and_the_views_switch(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html)
-        assert page.eval_on_selector_all("select option", "els => els.map(e => e.value)")[:5] == ["summary", "matrix", "loci", "taxa", "table"]
+        assert page.eval_on_selector_all(".panel[data-key=overview] select option", "els => els.map(e => e.value)")[:5] == ["summary", "matrix", "loci", "taxa", "table"]   # the overview's own view select (the masks bar has one too)
         page.select_option(".viewctl select, .panel[data-key=overview] select >> nth=0", "matrix"); page.wait_for_timeout(300)
         nonblank = page.evaluate("() => { const c = document.querySelector('canvas.matrix'); const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 3; i < d.length; i += 4) if (d[i]) n++; return [n, c.width, c.height]; }")
         assert nonblank[0] > 0.5 * nonblank[1] * nonblank[2]

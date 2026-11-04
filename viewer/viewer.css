@@ -42,6 +42,20 @@ a { color: var(--accent); }
 .panels .bands { flex: 0 0 auto; display: flex; flex-direction: column; }
 .panels .stage { flex: 1 1 0; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .panel { display: flex; flex-direction: column; min-height: 0; min-width: 0; border: 1px solid var(--spine); border-top: 0; border-left: 0; background: var(--surface); position: relative; flex: 1 1 0; }
+.maskbar { display: flex; align-items: center; gap: 10px; padding: 4px 16px; min-height: 32px; border-bottom: 1px solid var(--spine); background: var(--surface); font-size: 12px; flex-wrap: wrap; }
+.maskbar .lbl { color: var(--muted); }
+.maskbar .chips { margin-right: 0; }
+.maskbar .cnt { color: var(--muted); font-variant-numeric: tabular-nums; }
+.maskbar .pos { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.maskbar .pos .step { padding: 0 7px; line-height: 1.5; }
+.mpick { position: relative; display: inline-flex; align-items: center; gap: 2px; }
+.mpick input { width: 150px; }
+.mpick .mpick-x { display: none; padding: 0 5px; line-height: 1.5; }
+.mpick.set .mpick-x { display: inline-block; }
+.mpick.set input { border-color: var(--accent); }
+.mpick .dd { position: absolute; top: 100%; left: 0; z-index: 6; background: var(--surface); border: 1px solid var(--spine); border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,0.15); min-width: 220px; max-height: 240px; overflow: auto; display: none; }
+.mpick .dd button { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 3px 8px; cursor: pointer; font-size: 12px; }
+.mpick .dd button:hover { background: var(--surface-2); }
 .band { display: flex; align-items: center; gap: 12px; padding: 4px 16px; min-height: 40px; border-bottom: 1px solid var(--spine); background: var(--surface-2); cursor: pointer; font-size: 12.5px; }
 .band:hover { background: var(--surface-3); }
 .band b { font-weight: 650; }
