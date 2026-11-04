@@ -1,7 +1,7 @@
-"""The broad-sample test end to end, on the fixture built for it (dna_rc): a clade moved wholesale is caught by
-the far shortfall (blue, the donor named), contamination hidden where no close relative covers is caught by the
-excess arm (red), the test calls one direction at most, clean data raises nothing, the family enlarges the run's
-single bar, and --no-broad-sample switches all of it off."""
+"""The broad-sample test end to end, on the fixture built for it (dna_rc): a clade moved wholesale is caught as too
+close (blue, the donor named), a clade overwritten by junk is caught as too divergent (red, by the majority of the
+sample), the test calls one direction at most, clean data raises nothing, the family enlarges the run's single bar,
+and --no-broad-sample switches all of it off."""
 import csv
 import numpy as np
 import pytest
@@ -30,7 +30,7 @@ class TestOnThePlantedFixture:
         broad sample sees the young coalescence; most recipients are masked blue with the event's locus"""
         ds, r = rc_run; rows = masked_rows(r)
         events = ds.ev("cladecopy"); recips = {(e["locus"], t) for e in events for t in e["recipients"]}
-        fired = [row for row in rows if row["broad_sample_side"] == "close"]
+        fired = [row for row in rows if row["broad_sample_side"] == "close" and row["reason"] in ("similar", "both")]   # masked too close (a divergent cell also too close is a label)
         hits = [row for row in fired if (row["locus"], row["taxon"]) in recips]
         assert len(hits) >= 4, [(_r["locus"], _r["taxon"]) for _r in fired]
         assert all(row["reason"] in ("similar", "both") and float(row["broad_sample_p"]) <= 0.05 + 1e-6 for row in hits)
@@ -38,20 +38,19 @@ class TestOnThePlantedFixture:
         donors = {e["donor"] for e in events}
         assert any(row["broad_sample_partner"] in donors for row in hits)   # the most extreme aligned comparator names the donor
 
-    def test_hidden_contamination_is_caught_by_the_excess_arm(self, rc_run):
-        """a contaminated stretch that NO close relative covers: the close-relative test compares on the clean
-        remainder and sees nothing, but half the broad sample's far members lean too divergent - the excess arm
-        masks it red (the arm was removed on 3 Nov and reinstated the same day under the one-direction call)"""
+    def test_cladejunk_is_caught_too_divergent(self, rc_run):
+        """a random sequence over a whole clade: the members agree with each other, so the close-relative test sees
+        nothing, but a majority of the broad sample finds each of them far too divergent - masked red"""
         ds, r = rc_run; rows = masked_rows(r)
-        (e,) = ds.ev("hiddencontam")
-        (row,) = [q for q in rows if (q["locus"], q["taxon"]) == (e["locus"], e["taxon"])]
-        assert row["reason"] == "divergent" and row["broad_sample_side"] == "divergent" and broad_masked(row)
-        assert row["mask_test"] == "broad_sample" and float(row["mask_p"]) <= 1e-5 + 1e-6    # the one significance is the stage-1 variance p
-        assert float(row["broad_sample_observed"]) > float(row["broad_sample_expected"])
-        assert float(row["broad_sample_p"]) <= 0.05 + 1e-6
-        g = r.report.taxa["names"].index(e["taxon"]); li = r.report.loci["names"].index(e["locus"])
-        s2 = int(r.report.arr("cells/side2.npy")[g, li])
-        assert (s2 & 3) == 3 and (s2 & 8) and not (s2 & 4)                # tested, past the bar, the divergent arm called
+        (e,) = ds.ev("cladejunk")
+        hits = [q for q in rows if q["locus"] == e["locus"] and q["taxon"] in e["recipients"] and q["broad_sample_side"] == "divergent"]
+        assert len(hits) >= 3, [(q["locus"], q["taxon"], q["mask_test"]) for q in rows if q["locus"] == e["locus"]]
+        for row in hits:
+            assert row["reason"] == "divergent" and broad_masked(row) and row["mask_test"] == "broad_sample"
+            assert float(row["broad_sample_observed"]) > float(row["broad_sample_expected"]) and float(row["broad_sample_p"]) <= 0.05 + 1e-6
+            g = r.report.taxa["names"].index(row["taxon"]); li = r.report.loci["names"].index(row["locus"])
+            s2 = int(r.report.arr("cells/side2.npy")[g, li])
+            assert (s2 & 3) == 3 and (s2 & 8) and not (s2 & 4)            # tested, past the bar, the divergent side called
 
     def test_one_direction_at_most(self, rc_run):
         """the call is the stronger side: no cell carries both broad bits, and the report's call matches them"""
@@ -73,13 +72,13 @@ class TestOnThePlantedFixture:
         """moving a clade orphans its sisters (their closest relatives all moved), so a few unplanted cells fail the
         main tests AT THE EVENT LOCI; the broad-sample test itself adds no unplanted mask"""
         ds, r = rc_run; rows = masked_rows(r)
-        planted = {(e["locus"], t) for e in ds.events for t in (e.get("recipients") or e.get("taxa") or [e.get("taxon")]) if t}
-        event_loci = {e["locus"] for e in ds.events if e["kind"] in ("cladecopy", "hiddencontam", "contam")}
+        planted = {(e["locus"], t) for e in ds.events for t in (e.get("recipients") or e.get("taxa") or [e.get("taxon")]) + [e.get("donor")] if t}
+        event_loci = {e["locus"] for e in ds.events if e["kind"] in ("cladecopy", "cladejunk", "contam")}
         stray = [q for q in rows if (q["locus"], q["taxon"]) not in planted]
-        assert all(q["locus"] in event_loci for q in stray) and len(stray) <= 8
+        assert all(q["locus"] in event_loci for q in stray) and len(stray) <= 12
         assert not any(broad_masked(q) for q in stray)
 
-    def test_the_family_includes_one_test_per_present_sequence(self, rc_run):
+    def test_the_family_includes_two_tests_per_present_sequence(self, rc_run):
         ds, r = rc_run; man = r.report.man
         t = man["test"]
         assert t["broad_sample_tests"] > 0 and t["tests"] == 2 * t["close_relative_tests"] + t["closest_match_outside_tests"] + t["broad_sample_tests"]

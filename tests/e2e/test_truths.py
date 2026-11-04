@@ -78,7 +78,7 @@ class TestPlanted:
         planted |= {(r, e["locus"]) for e in ds.events if "recipients" in e for r in e["recipients"]}
         extra = [(r["taxon"], r["locus"], r["reason"]) for r in run.masked if (r["taxon"], r["locus"]) not in planted]
         if ds.ev("cladecopy"):                                                 # moving a whole clade orphans its sisters (their closest relatives
-            event_loci = {e["locus"] for e in ds.events if e["kind"] in ("cladecopy", "hiddencontam")}   # all moved), so collateral masks at the event loci are the method
+            event_loci = {e["locus"] for e in ds.events if e["kind"] in ("cladecopy", "cladejunk")}   # all moved), so collateral masks at the event loci are the method
             assert all(l in event_loci for _, l, _ in extra), extra            # speaking, not noise; elsewhere the dataset must stay clean
             limit = 15
         else:

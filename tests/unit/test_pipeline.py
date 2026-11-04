@@ -129,10 +129,10 @@ class TestDivergent:
             slots = np.sort(cd[g, li][comp[g, li] >= 0]); assert np.isclose(v, slots[need - 1], atol=1e-6), (g, li)
 
     def test_excess_and_medians_are_consistent(self, ctx):
-        R = ctx["R"]; mi = R.arr("cells/med_identity.npy"); me = R.arr("cells/med_expected.npy"); ex = R.arr("cells/excess_m.npy"); side = R.arr("cells/side.npy")
+        R = ctx["R"]; mi = R.arr("cells/med_identity.npy"); me = R.arr("cells/med_expected.npy"); ex = R.arr("cells/excess_m.npy"); side = R.arr("cells/side.npy"); s2 = R.arr("cells/side2.npy")
         for g, li in cells_tested(R):
             assert 0 <= mi[g, li] <= 100 and 0 <= me[g, li] <= 100 and np.isfinite(ex[g, li])
-            if side[g, li] & 1 and not (side[g, li] & 4): assert mi[g, li] < me[g, li] and ex[g, li] > 0
+            if side[g, li] & 1 and not (side[g, li] & 4) and not (s2[g, li] & 8): assert mi[g, li] < me[g, li] and ex[g, li] > 0   # a broad-sample red mask may agree with its relatives
 
 
 # ------------------------------------------------------------------ test 2
@@ -149,7 +149,7 @@ class TestSimilar:
         s2 = R.arr("cells/side2.npy") if R.has("cells/side2.npy") else np.zeros_like(side)
         for g, li in cells_tested(R):
             sd = int(side[g, li])
-            if (sd & (2 | 128)) and not (int(s2[g, li]) & 4):                   # a broad-sample mask names a comparator (broadsample/<locus>.json), not a pair
+            if (sd & (2 | 128)) and not (int(s2[g, li]) & (4 | 8)):             # a broad-sample mask, either side, names a comparator (broadsample/<locus>.json), not a pair
                 p = int(pt[g, li]); assert p >= 0 and (li, min(g, p), max(g, p)) in pairs, (g, li)
             assert not (sd & 32)
 
@@ -259,11 +259,11 @@ class TestFamily:
             D += len(prs)
         S = int(((side & 64) > 0).sum())
         assert t["close_relative_tests"] == D and t["closest_match_relative_tests"] == D and t["closest_match_outside_tests"] == S
-        assert t["tests"] == 2 * D + S + t["broad_sample_tests"]                  # one broad-sample test per present sequence of a kept taxon
-        pres = (ctx["R"].arr("cells/focal_sites.npy") > 0); thin = set(ctx["R"].man["counts"].get("excluded_taxa") and [] or [])
-        assert t["broad_sample_tests"] in (0, int(pres.sum()) - int(pres[[i for i, st in enumerate(ctx["R"].taxa["status"]) if st != "tested"]].sum()))
-        assert np.isclose(t["log10_bar"], math.log10(R.man["options"]["alpha"] / (2 * D + S + t["broad_sample_tests"])), atol=1e-4)
-        assert t["log_bar"] == pytest.approx(math.log(R.man["options"]["alpha"] / (2 * D + S + t["broad_sample_tests"])), abs=1e-4)
+        assert t["tests"] == 2 * D + S + t["broad_sample_tests"]                  # two broad-sample tests (one per side) per present sequence of a kept taxon
+        pres = (ctx["R"].arr("cells/focal_sites.npy") > 0)
+        assert t["broad_sample_tests"] in (0, 2 * (int(pres.sum()) - int(pres[[i for i, st in enumerate(ctx["R"].taxa["status"]) if st != "tested"]].sum())))
+        assert np.isclose(t["log10_bar"], math.log10(R.man["options"]["alpha"]), atol=1e-4)          # every p is Bonferroni-adjusted (p x N), so the bar is alpha
+        assert t["log_bar"] == pytest.approx(math.log(R.man["options"]["alpha"]), abs=1e-4) and t["p_values"].startswith("adjusted by Bonferroni")
 
     def test_counts_match_the_side_bits(self, ctx):
         R = ctx["R"]; side = R.arr("cells/side.npy"); nc = R.arr("cells/n_comp.npy"); c = R.man["counts"]
@@ -298,7 +298,6 @@ class TestOutputs:
                 assert r["broad_sample_partner"] != "" and r["broad_sample_side"] != "" and float(r["broad_sample_p"]) <= 0.05 + 1e-6; continue
             assert int(r["close_relative_fails"]) == nf[g, li] and int(r["close_relative_comparators"]) == nc[g, li]
             assert r["comparators"] == "; ".join(R.taxa["names"][c] for c in R.comps(g, li))
-            assert float(r["p_bar"]) == pytest.approx(10 ** R.man["test"]["log10_bar"], abs=1e-6)
             if sd & 2:
                 role = r["closest_match_role"]; partner = r["closest_match_partner"]
                 assert (role in ("copy", "uncertain") or int(R.cell("n_similar", g, li)) > 1) and partner == R.taxa["names"][int(R.cell("partner", g, li))]   # a cell masked as the copy of one pair may be the source of a stronger one

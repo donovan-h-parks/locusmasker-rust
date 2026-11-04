@@ -212,5 +212,5 @@ class TestRandomTrees:
                 while k < min(len(pa), len(pb)) and pa[k] is pb[k]: k += 1
                 return pref[a][-1] + pref[b][-1] - 2 * pref[a][k]
             for x in cells:
-                d = {o: dist(x["taxon"], o) for o in paths if o != x["taxon"]}; ranks.append(sorted(d, key=d.get).index(x["closest_match_partner"]) + 1)
+                d = {o: dist(x["taxon"], o) for o in paths if o != x["taxon"]}; ranks.append(sorted(d, key=d.get).index(x["closest_match_partner"] or x["broad_sample_partner"]) + 1)
         ranks = np.array(ranks); assert len(ranks) > 1000 and (ranks == 1).mean() >= 0.9 and (ranks <= 5).all(), np.bincount(ranks)[:8]

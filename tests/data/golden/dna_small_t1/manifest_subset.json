@@ -14,7 +14,7 @@
   "similar_sources": 5,
   "similar_uncertain": 0,
   "near_miss": {
-   "1": 18,
+   "1": 17,
    "2": 1
   },
   "excluded_taxa": 1,
@@ -29,19 +29,20 @@
   "uncovered_sites": 0
  },
  "test": {
-  "tests": 2906,
+  "tests": 3286,
   "close_relative_tests": 1259,
-  "broad_sample_tests": 380,
+  "broad_sample_tests": 760,
   "closest_match_relative_tests": 1259,
   "closest_match_outside_tests": 8,
   "similar_candidates": 8,
   "comparisons": 1259,
-  "bonferroni_k": 4.1421,
-  "log_bar": -10.9703,
-  "log10_bar": -4.7643,
+  "bonferroni_k": 4.1702,
+  "log_bar": -2.9957,
+  "log10_bar": -1.301,
+  "p_values": "adjusted by Bonferroni correction: p x N, capped at 1",
   "phi_dataset": 0.010117,
   "half": 0.5
  },
  "format_version": 9,
- "version": "0.13.1"
+ "version": "0.14.0"
 }

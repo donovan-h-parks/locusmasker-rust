@@ -29,19 +29,20 @@
   "uncovered_sites": 0
  },
  "test": {
-  "tests": 197302,
+  "tests": 222046,
   "close_relative_tests": 85799,
-  "broad_sample_tests": 24744,
+  "broad_sample_tests": 49488,
   "closest_match_relative_tests": 85799,
   "closest_match_outside_tests": 960,
   "similar_candidates": 960,
   "comparisons": 85799,
-  "bonferroni_k": 5.0237,
-  "log_bar": -15.1882,
-  "log10_bar": -6.5962,
+  "bonferroni_k": 5.0463,
+  "log_bar": -2.9957,
+  "log10_bar": -1.301,
+  "p_values": "adjusted by Bonferroni correction: p x N, capped at 1",
   "phi_dataset": 0.0,
   "half": 0.5
  },
  "format_version": 9,
- "version": "0.13.1"
+ "version": "0.14.0"
 }
