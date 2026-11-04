@@ -111,9 +111,11 @@ class TestLayout:
 
 class TestHeaderAndColours:
     @pytest.mark.parametrize("kind", ["clean", "near_miss", "divergent", "copy", "source", "uncertain", "both", "ambiguous", "closest_tested"])
-    def test_verdict_names_and_stars(self, page, ctx, kind):
-        if kind not in ctx["kinds"]: pytest.skip(f"the fixture has no {kind} cell")
-        R = ctx["R"]; g, li = ctx["kinds"][kind]; E = Expect(R, g, li); open_report(page, ctx["html"]); open_cell(page, g, li)
+    def test_verdict_names_and_stars(self, page, ctx, kind, report_of):
+        html, R, kinds = ctx["html"], ctx["R"], ctx["kinds"]
+        if kind not in kinds: html, R = report_of("dna_blocks"); kinds = cells_of_kind(R)   # dna_small has no uncertain pair since the excess leaves out junk relatives
+        if kind not in kinds: pytest.skip(f"no fixture has a {kind} cell")
+        g, li = kinds[kind]; E = Expect(R, g, li); open_report(page, html); open_cell(page, g, li)
         verdict = page.text_content(".seq-line .state")
         S = lambda k: lm_str(page, "seq." + k)
         assert verdict.startswith(S("v_masked") if E.side & 3 else S("v_not_masked"))

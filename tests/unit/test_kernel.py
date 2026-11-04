@@ -164,4 +164,4 @@ class TestDispatch:
         assert r.log.count("numba is not installed") == 1 and "compiled kernel" not in r.log and outputs(r) == outputs(runs("dna_small"))
 
     def test_the_option_is_documented(self):
-        assert "--no-numba" in run_cli(["--help"]).stdout and "--no-numba" in lo.__doc__
+        assert "--no-numba" not in run_cli(["--help"]).stdout and "--no-numba" in lo.__doc__     # not user-facing: absent from -h, documented in the module

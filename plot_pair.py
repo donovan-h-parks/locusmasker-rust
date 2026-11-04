@@ -4,7 +4,7 @@ the loci where the pair failed a test highlighted.
 
     python plot_pair.py DIR TAXON_A TAXON_B [--out FILE] [--label N]
 
-Reads tests.tsv.gz, which locus_outliers.py writes only with --all-tests: every test of the run. A pair is tested
+Reads tests.tsv.gz, which locusmasker.py writes only with --all-tests: every test of the run. A pair is tested
 at a locus when one is among the other's comparators there (the too-divergent test and the too-similar comparator
 test, in both directions) or one is the other's closest match at the locus outside its comparators (the too-similar
 closest-match test). Also masked.csv (which of the two is the copy where a too-similar pair's direction was called,
@@ -23,7 +23,7 @@ a = ap.parse_args()
 if a.a == a.b: raise SystemExit("give two different taxa")
 tp = os.path.join(a.dir, "tests.tsv.gz")
 if not os.path.exists(tp):
-    raise SystemExit(f"{tp} not found: a pair's tests at every locus are in tests.tsv.gz, which locus_outliers.py writes only with --all-tests. "
+    raise SystemExit(f"{tp} not found: a pair's tests at every locus are in tests.tsv.gz, which locusmasker.py writes only with --all-tests. "
                      f"Re-run it with --all-tests (the same --aln and options, a new --out) and give this script that directory")
 rp = os.path.join(a.dir, "report.npz"); Z = zipfile.ZipFile(rp) if os.path.exists(rp) else None
 if Z is not None:                                                    # name a taxon the run does not have before reading every test
@@ -38,7 +38,7 @@ rows = {}; keys = {(a.a, a.b), (a.b, a.a)}; pats = tuple(f"\t{x}\t{y}\t".encode(
 with gzip.open(tp, "rb") as fh:
     head = fh.readline().decode().rstrip("\n").split("\t"); c = {k: i for i, k in enumerate(head)}
     missing = [k for k in COLS if k not in c]
-    if missing: raise SystemExit(f"{tp} has no column {', '.join(missing)}: it was written by another version of locus_outliers.py (its columns: {', '.join(head)})")
+    if missing: raise SystemExit(f"{tp} has no column {', '.join(missing)}: it was written by another version of locusmasker.py (its columns: {', '.join(head)})")
     for line in fh:
         if pats[0] in line or pats[1] in line:
             f = line.decode().rstrip("\n").split("\t")

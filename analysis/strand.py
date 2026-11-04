@@ -7,7 +7,7 @@ alignment was translated from, codon-matched (loci paired by a shared ENSG id, a
 
 DIR is a LocusMasker run (0.11 or later: masked.csv and report.npz) on AA.nex. For every row of DIR/masked.csv:
 the ungapped DNA of the masked sequence against the ungapped DNA of up to five of its closest relatives
-genome-wide (by m, which a run does not write: recomputed from AA.nex with locus_outliers.divergence_matrix)
+genome-wide (by m, which a run does not write: recomputed from AA.nex with locusmasker.divergence_matrix)
 that have the locus, 12-mer sharing forward and reverse-complement, the median over references (so one
 relative carrying the same error cannot decide): reverse if the reverse-complement share beats the forward
 share by 0.05, forward if the opposite, undecided otherwise. A control of 1,500 unmasked sequences is
@@ -15,7 +15,7 @@ scored the same way. --example prints one locus in full (the taxon's forward tra
 reverse-complement frames next to the reference protein). --windows runs the same test on the windows of
 a bad_exon.py table: do the windows share 12-mers with the reference's coding sequence in either orientation?"""
 import argparse, csv, hashlib, io, json, os, re, sys, zipfile, collections, numpy as np
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")); import locus_outliers as lo
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")); import locusmasker as lo
 ap = argparse.ArgumentParser(); ap.add_argument("dir"); ap.add_argument("--aa", required=True); ap.add_argument("--dna", required=True)
 ap.add_argument("--example"); ap.add_argument("--taxon", default="MACAC_FAS"); ap.add_argument("--windows"); ap.add_argument("--ref", default="HOMO_SAP"); ap.add_argument("--out")
 ap.add_argument("--threads", type=int, default=8, help="threads for recomputing m")

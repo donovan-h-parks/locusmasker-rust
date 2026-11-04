@@ -14,6 +14,19 @@ class TestArguments:
         for opt in ("--aln", "--partitions", "--out", "--datatype", "--n-comp", "--fit-overlap", "--alpha", "--donor-threshold", "--threads", "--no-report", "--all-tests", "--name"):
             assert opt in r.stdout, opt
 
+    def test_h_and_help_print_the_readme_options_only(self):
+        """-h and --help are the same page: the README's options, grouped as there, and none of the hidden ones"""
+        h = run_cli(["-h"]); hh = run_cli(["--help"])
+        assert h.returncode == 0 and hh.returncode == 0 and h.stdout == hh.stdout and h.stderr == "" and h.stdout.startswith("usage: python locusmasker.py")
+        for opt in ("--aln", "--datatype", "--out", "--partitions", "--name", "--n-comp", "--fit-overlap", "--alpha", "--donor-threshold",
+                    "--threads", "--memory", "--restart", "--progress", "--no-report", "--all-tests", "-h, --help"):
+            assert opt in h.stdout, opt
+        for hidden in ("--mask-similar-only", "--mask-different-only", "--no-broad-sample", "--candidates", "--block-taxa", "--no-numba", "--report-codes", "--report-sequences"):
+            assert hidden not in h.stdout, hidden
+        for group in ("input and output:", "method:", "performance (none of these change the results):", "report:", "help:"):
+            assert group in h.stdout, group
+        assert "Method:" not in h.stdout and len(h.stdout.splitlines()) < 60          # the module docstring is not the help page
+
     def test_required_arguments(self, tmp_out):
         ds = dataset("dna_small")
         r = run_cli(["--aln", ds.aln, "--out", tmp_out, "--partitions", ds.parts]); assert r.returncode == 2 and "--datatype" in r.stderr
@@ -186,7 +199,7 @@ class TestRunRecord:
         ds = dataset("dna_small")
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts)
-        assert r.rc == 0 and [str(x.message) for x in w if "locus_outliers" in (x.filename or "") and not issubclass(x.category, ResourceWarning)] == []
+        assert r.rc == 0 and [str(x.message) for x in w if "locusmasker" in (x.filename or "") and not issubclass(x.category, ResourceWarning)] == []
 
 
 class TestMemoryAndWorkers:

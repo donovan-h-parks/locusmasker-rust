@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TOOL_MODULE = "locus_outliers"
+TOOL_MODULE = "locusmasker"
 TOOL_PATH = os.path.join(ROOT, TOOL_MODULE + ".py")
 DATA = os.path.join(ROOT, "tests", "data")
 PY = sys.executable

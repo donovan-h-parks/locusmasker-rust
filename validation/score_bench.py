@@ -5,7 +5,7 @@
 A planted cell's relative divergence is the swap pair's m over the median m of the planted taxon's five closest taxa,
 both from the dataset's m.npz (the genome-wide divergence matrix of the baseline). It is detected when it fails the
 too-divergent test (flag, or amb with fewer comparators than requested) or is masked as the identified recipient of a
-too-similar pair (sim). A job is scored only when the same locus_outliers.py made it and its baseline."""
+too-similar pair (sim). A job is scored only when the same locusmasker.py made it and its baseline."""
 import argparse, glob, json, os, sys
 import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)

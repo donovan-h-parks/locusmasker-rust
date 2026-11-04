@@ -1,24 +1,24 @@
-locus,taxon,reason,mask_test,mask_p,residues_masked,close_relative_fails,close_relative_comparators,close_relative_observed,close_relative_expected,close_relative_excess_m,close_relative_p,closest_match_partner,closest_match_arm,closest_match_role,closest_match_observed,closest_match_expected,closest_match_row_factor,closest_match_p,closest_match_relatives,closest_match_partner_excess_m,broad_sample_partner,broad_sample_side,broad_sample_observed,broad_sample_expected,broad_sample_p,comparators
-locus3,t17,divergent,close_relative,0.000000,311,5,5,72.03,11.95,217.763,0.000000,t26,outside,,61.11,31.48,,1.000000,t08; t10; t01; t11; t19,-8.788,,,,,,t08; t10; t01; t11; t19
-locus4,t12,both,closest_match,0.000000,419,5,5,47.02,23.44,35.108,0.000000,t92,outside,copy,5.97,44.39,,0.000000,t01; t08; t17; t10; t11,-5.640,t92,close,5.97,47.18,0.000000,t01; t08; t17; t10; t11
-locus4,t13,similar,broad_sample,0.000000,419,0,5,45.82,33.42,20.345,1.000000,t92,outside,copy,5.73,43.20,,0.000000,t01; t08; t17,-5.640,t92,close,5.73,47.90,0.000000,t12; t01; t08; t17; t96
-locus4,t16,both,closest_match,0.000000,419,5,5,44.39,21.21,32.378,0.000000,t92,outside,copy,5.73,44.39,,0.000000,t08; t17; t10; t01; t11,-5.640,t92,close,5.73,45.35,0.000000,t08; t17; t10; t01; t11
-locus4,t96,both,closest_match,0.000000,419,4,5,46.30,21.45,35.823,0.000000,t92,outside,copy,4.30,43.79,,0.000000,t01; t08; t17; t10,-5.640,t25,close,17.66,45.09,0.000000,t97; t01; t08; t17; t10
-locus4,t97,both,closest_match,0.000000,419,4,5,46.54,23.77,33.763,0.000000,t92,outside,copy,5.97,43.79,,0.000000,t01; t08; t17; t10,-5.640,t92,close,5.97,47.33,0.000000,t96; t01; t08; t17; t10
-locus10,t07,divergent,close_relative,0.000000,375,5,5,74.67,16.45,156.483,0.000000,t50,outside,,71.20,50.13,,1.000000,t24; t23; t44; t83; t21,0.839,,,,,,t24; t23; t44; t83; t21
-locus12,t45,both,close_relative,0.000000,297,4,5,71.49,13.83,224.008,0.000000,t15,outside,copy,7.74,73.30,,0.000000,t65; t70; t06; t69; t04,-8.732,,,,,,t65; t70; t06; t69; t04
-locus14,t12,divergent,close_relative,0.000000,324,4,5,41.67,12.25,76.351,0.000000,t17,relative,,10.80,12.25,1.000,1.000000,,84.698,,,,,,t01; t08; t17; t10; t11
-locus14,t16,both,close_relative,0.000000,324,4,5,40.12,10.98,73.307,0.000000,t17,outside,uncertain,6.79,41.98,,0.000000,t08; t10; t01; t11; t19,84.698,,,,,,t08; t17; t10; t01; t11
-locus14,t17,both,close_relative,0.000000,324,5,5,41.36,7.13,84.698,0.000000,t16,outside,uncertain,6.79,41.98,,0.000000,t08; t10; t01; t11; t19,73.307,,,,,,t08; t10; t01; t11; t19
-locus14,t19,similar,broad_sample,0.000000,324,2,5,12.04,6.93,9.408,0.653694,t93,outside,copy,5.56,17.90,,0.020011,t92; t58; t50; t28; t25,2.763,t93,close,5.56,32.34,0.000000,t10; t42; t11; t08; t17
-locus14,t42,divergent,close_relative,0.000000,324,4,5,40.12,9.78,75.538,0.000000,t82,relative,,7.10,9.80,1.000,1.000000,,72.445,,,,,,t19; t10; t11; t82; t08
-locus14,t81,divergent,close_relative,0.000000,324,3,5,39.81,11.33,71.569,0.000000,t82,relative,,4.32,7.87,1.000,1.000000,,72.445,,,,,,t82; t19; t10; t42; t11
-locus14,t82,divergent,close_relative,0.000000,324,3,5,39.81,10.87,72.445,0.000000,t81,relative,,4.32,7.87,1.000,1.000000,,71.569,,,,,,t81; t42; t19; t10; t11
-locus14,t96,divergent,close_relative,0.000000,324,3,5,39.51,11.11,70.932,0.000000,t97,relative,,5.56,4.94,1.000,1.000000,,69.446,,,,,,t97; t01; t08; t17; t10
-locus14,t97,divergent,close_relative,0.000000,324,3,5,39.81,12.45,69.446,0.000000,t96,relative,,5.56,4.94,1.000,1.000000,,70.932,,,,,,t96; t01; t08; t17; t10
-locus12,t06,divergent,broad_sample,0.000000,297,,,,,,,,,,,,,,,,t65,divergent,74.75,19.30,0.000000,
-locus12,t09,divergent,broad_sample,0.000000,297,,,,,,,,,,,,,,,,t62,divergent,73.06,32.11,0.000000,
-locus12,t14,divergent,broad_sample,0.000000,297,,,,,,,,,,,,,,,,t19,divergent,74.07,33.08,0.000000,
-locus12,t15,divergent,broad_sample,0.000000,297,,,,,,,,,,,,,,,,t42,divergent,76.09,33.58,0.000000,
-locus14,t08,similar,broad_sample,0.000000,324,,,,,,,,,,,,,,,,t93,close,5.86,32.12,0.000000,
-locus14,t10,similar,broad_sample,0.000000,324,,,,,,,,,,,,,,,,t93,close,5.86,32.56,0.000000,
+id,locus,taxon,reason,mask_test,mask_p,residues_masked,close_relative_fails,close_relative_comparators,close_relative_observed,close_relative_expected,close_relative_excess_m,close_relative_p,closest_match_partner,closest_match_arm,closest_match_role,closest_match_observed,closest_match_expected,closest_match_row_factor,closest_match_p,closest_match_relatives,closest_match_partner_excess_m,broad_sample_side,broad_sample_role,broad_sample_partner,broad_sample_partner_mismatches,broad_sample_partner_expected,broad_sample_rate_factor,broad_sample_close_p,broad_sample_members_failing,broad_sample_members,broad_sample_divergent_observed,broad_sample_divergent_expected,broad_sample_divergent_p,comparators
+1,locus3,t17,divergent,close_relative,0.000000,311,5,5,72.03,11.95,219.716,0.000000,t26,outside,,61.11,31.48,,1.000000,t08; t10; t01; t11; t19,-4.399,,,t33,128,65.7,1.000,1.000000,48,48,71.70,31.85,0.000000,t08; t10; t01; t11; t19
+2,locus4,t12,both,closest_match,0.000000,419,5,5,47.02,23.44,35.709,0.000000,t92,outside,copy,5.97,44.39,,0.000000,t01; t08; t17; t10; t11,-2.496,close,,t92,25,152.7,0.773,0.000000,4,49,47.49,42.61,1.000000,t01; t08; t17; t10; t11
+3,locus4,t13,similar,broad_sample,0.000000,419,0,5,45.82,33.42,22.746,1.000000,t92,outside,copy,5.73,43.20,,0.000000,t01; t08; t17,-2.496,close,copy,t92,24,155.1,0.773,0.000000,0,48,46.06,45.28,1.000000,t12; t01; t08; t17; t96
+4,locus4,t16,both,closest_match,0.000000,419,5,5,44.39,21.21,33.182,0.000000,t92,outside,copy,5.73,44.39,,0.000000,t08; t17; t10; t01; t11,-2.496,close,,t92,24,146.8,0.773,0.000000,1,46,47.26,42.30,1.000000,t08; t17; t10; t01; t11
+5,locus4,t96,both,closest_match,0.000000,419,4,5,46.30,21.45,37.127,0.000000,t92,outside,copy,4.30,43.79,,0.000000,t01; t08; t17; t10,-2.496,close,,t25,74,188.9,1.000,0.000000,15,46,47.73,37.37,1.000000,t97; t01; t08; t17; t10
+6,locus4,t97,both,closest_match,0.000000,419,4,5,46.54,23.77,34.834,0.000000,t92,outside,copy,5.97,43.79,,0.000000,t01; t08; t17; t10,-2.496,close,,t92,25,153.3,0.773,0.000000,9,44,47.85,39.97,1.000000,t96; t01; t08; t17; t10
+7,locus10,t07,divergent,close_relative,0.000000,375,5,5,74.67,16.45,156.483,0.000000,t50,outside,,71.20,50.13,,1.000000,t24; t23; t44; t83; t21,0.110,,,t88,280,158.0,1.000,1.000000,48,48,74.79,42.27,0.000000,t24; t23; t44; t83; t21
+8,locus12,t06,divergent,broad_sample,0.000000,297,,,,,,,,,,,,,,,,divergent,,t79,218,87.1,0.887,1.000000,34,46,73.18,31.73,0.000000,
+9,locus12,t09,divergent,broad_sample,0.000000,297,,,,,,,,,,,,,,,,divergent,,t21,217,69.3,0.901,1.000000,34,48,73.74,34.37,0.000000,
+10,locus12,t14,divergent,broad_sample,0.000000,297,,,,,,,,,,,,,,,,divergent,,t12,218,75.5,0.741,1.000000,34,47,73.40,34.78,0.000000,
+11,locus12,t15,divergent,broad_sample,0.000000,297,,,,,,,,,,,,,,,,divergent,,t81,163,54.9,0.761,1.000000,36,47,73.74,34.02,0.000000,
+12,locus12,t45,both,close_relative,0.000000,297,4,5,71.49,13.83,225.240,0.000000,t15,outside,copy,7.74,73.30,,0.000000,t65; t70; t06; t69; t04,-5.286,,,t41,220,117.6,1.000,1.000000,33,45,73.06,32.75,0.000000,t65; t70; t06; t69; t04
+13,locus14,t08,similar,broad_sample,0.000000,324,,,,,,,,,,,,,,,,close,copy,t93,19,104.1,1.000,0.000000,0,46,39.26,23.79,1.000000,
+14,locus14,t10,similar,broad_sample,0.000000,324,,,,,,,,,,,,,,,,close,copy,t93,19,105.5,1.000,0.000000,0,45,38.27,23.09,1.000000,
+15,locus14,t12,divergent,close_relative,0.000000,324,4,5,41.67,12.25,75.750,0.000000,t17,relative,,10.80,12.25,1.000,1.000000,,84.502,,,t26,81,105.1,1.000,1.000000,0,44,24.54,26.74,1.000000,t01; t08; t17; t10; t11
+16,locus14,t16,both,close_relative,0.000000,324,4,5,40.12,10.98,77.961,0.000000,t17,outside,uncertain,6.79,41.98,,0.000000,t08; t10; t01; t11; t19,84.502,,,t53,104,102.0,0.936,1.000000,0,44,24.69,25.65,1.000000,t08; t17; t10; t01; t11
+17,locus14,t17,both,close_relative,0.000000,324,5,5,41.36,7.13,84.502,0.000000,t16,outside,uncertain,6.79,41.98,,0.000000,t08; t10; t01; t11; t19,77.961,,,t61,69,64.7,0.895,1.000000,0,44,24.85,24.96,1.000000,t08; t10; t01; t11; t19
+18,locus14,t19,similar,broad_sample,0.000000,324,2,5,12.04,6.93,9.408,0.653694,t93,outside,copy,5.56,17.90,,0.020011,t92; t58; t50; t28; t25,0.485,close,copy,t93,18,104.8,1.000,0.000000,0,43,39.20,25.03,1.000000,t10; t42; t11; t08; t17
+19,locus14,t42,divergent,close_relative,0.000000,324,4,5,40.12,9.78,82.407,0.000000,t82,relative,,7.10,9.80,1.000,1.000000,,76.760,,,t24,69,72.4,1.000,1.000000,1,45,26.54,25.99,1.000000,t19; t10; t11; t82; t08
+20,locus14,t81,divergent,close_relative,0.000000,324,3,5,39.81,11.33,74.152,0.000000,t82,relative,,4.32,7.87,1.000,1.000000,,76.760,,,t09,82,86.4,1.000,1.000000,0,46,28.09,28.89,1.000000,t82; t19; t10; t42; t11
+21,locus14,t82,divergent,close_relative,0.000000,324,3,5,39.81,10.87,76.760,0.000000,t81,relative,,4.32,7.87,1.000,1.000000,,74.152,,,t68,88,89.6,0.892,1.000000,0,45,26.85,28.65,1.000000,t81; t42; t19; t10; t11
+22,locus14,t96,divergent,close_relative,0.000000,324,3,5,39.51,11.11,73.051,0.000000,t97,relative,,5.56,4.94,1.000,1.000000,,69.446,,,t24,57,58.7,1.000,1.000000,0,46,22.69,23.72,1.000000,t97; t01; t08; t17; t10
+23,locus14,t97,divergent,close_relative,0.000000,324,3,5,39.81,12.45,69.446,0.000000,t96,relative,,5.56,4.94,1.000,1.000000,,73.051,,,t76,88,96.9,1.000,1.000000,0,43,24.07,25.34,1.000000,t96; t01; t08; t17; t10

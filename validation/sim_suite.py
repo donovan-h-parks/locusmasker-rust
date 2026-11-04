@@ -1,10 +1,10 @@
-"""Simulation suite for locus_outliers.py (LocusMasker 0.11 outputs): random trees, planted truths, scoring.
+"""Simulation suite for locusmasker.py (LocusMasker 0.11 outputs): random trees, planted truths, scoring.
 
 Each config: a random bifurcating tree, 14 loci (lengths 200-3000, rates 0.3-3x, gamma site
 rates, lognormal branch noise, optional fragment missingness), then planted events on disjoint
 taxa: contaminants (random residues), swaps (random partner), near-copies (partner among the 5
 patristically nearest; recipient recorded), a chimera (5 loci from one distant donor), and a
-misalignment window (30% of a cell's sites shuffled). Runs locus_outliers.py (LO_TOOL overrides the
+misalignment window (30% of a cell's sites shuffled). Runs locusmasker.py (LO_TOOL overrides the
 path; LO_BASE the working directory, where each config keeps its alignment, the run's outputs in
 scan/ and the run's log in scan.log) and scores masked.csv and report.npz against the truth.
 
@@ -48,7 +48,7 @@ import numpy as np
 from concurrent.futures import ProcessPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TOOL = os.environ.get("LO_TOOL", os.path.join(os.path.dirname(HERE), "locus_outliers.py"))
+TOOL = os.environ.get("LO_TOOL", os.path.join(os.path.dirname(HERE), "locusmasker.py"))
 BASE = os.environ.get("LO_BASE", f"{HERE}/simsuite")
 PROTEIN = "ACDEFGHIKLMNPQRSTVWY"
 KINDS = ("contam", "swap", "nearcopy", "chimera", "misalign")

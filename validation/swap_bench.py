@@ -1,4 +1,4 @@
-"""Empirical validation of locus_outliers by random locus swapping (the planted-swap benchmark).
+"""Empirical validation of locusmasker by random locus swapping (the planted-swap benchmark).
 
 For each benchmark dataset: convert to FASTA+partitions once, run a baseline, then in each
 replicate plant swap events (pick two random taxa, exchange their sequence in one locus) with
@@ -19,7 +19,7 @@ Layout under --bench (default validation/bench):
   <dataset>/v<version>/m.npz                         names and m (%, NaN where undefined), as the tool computes them
   results/v<version>/<dataset>_rep<r>.json           one per job
 Each tool version gets its own baselines and results, so an earlier benchmark is never overwritten. Within a version a
-baseline or result made by a different locus_outliers.py (sha256) is redone: a stale baseline would count the code
+baseline or result made by a different locusmasker.py (sha256) is redone: a stale baseline would count the code
 change as false positives.
 
 Usage: python swap_bench.py pilot|full [--bench DIR] [--datasets A,B] [--reps N] [--workers 16]
@@ -34,12 +34,12 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = f"{REPO}/test_data"
 HERE = os.path.dirname(os.path.abspath(__file__))
-TOOL = f"{REPO}/locus_outliers.py"
+TOOL = f"{REPO}/locusmasker.py"
 HEAVY = {"Wu_2018_dna", "Wu_2018_aa", "Shen_2018", "Jarvis_2015", "Irisarri_2017", "Misof_2014"}
 MIN_LOCI = 10                                   # the tool refuses an alignment with fewer loci
 DATATYPE = {"dna": "dna", "aa": "aa", "protein": "aa"}   # meta.json's datatype (as the NEXUS file declares it) -> --datatype
 sys.path.insert(0, REPO)
-import locus_outliers as lo
+import locusmasker as lo
 TAG = f"v{lo.__version__}"
 
 

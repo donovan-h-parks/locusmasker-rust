@@ -118,20 +118,27 @@ class TestRibbonsAndTable:
     def test_table_counts_sorts_and_filters(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html); page.evaluate("() => LM.setView('table')"); page.wait_for_timeout(400); c = R.man["counts"]
         assert page.text_content(".tfoot .n") == lm_fmt(lm_str(page, "table.foot"), n=c["masked"])
-        heads = page.eval_on_selector_all(".thead span", "els => els.map(e => e.textContent)"); assert heads[0] == lm_str(page, "table.h_taxon") and lm_str(page, "table.h_excess") in heads
-        first = page.eval_on_selector_all(".trow", "els => els.map(e => e.children[0].textContent)")
-        page.click(".thead span >> nth=0"); page.wait_for_timeout(200)
-        after = page.eval_on_selector_all(".trow", "els => els.map(e => e.children[0].textContent)"); assert after == sorted(after) and len(after) == len(first)
+        heads = page.eval_on_selector_all(".thead span", "els => els.map(e => e.textContent)")
+        assert heads[0] == lm_str(page, "table.h_id") and heads[1] == lm_str(page, "table.h_taxon") and lm_str(page, "table.h_bs") in heads and lm_str(page, "table.h_reason") in heads
+        first = page.eval_on_selector_all(".trow", "els => els.map(e => e.children[1].textContent)")
+        page.click(".thead span >> nth=1"); page.wait_for_timeout(200)
+        after = page.eval_on_selector_all(".trow", "els => els.map(e => e.children[1].textContent)"); assert after == sorted(after) and len(after) == len(first)
         assert page.query_selector(".tfoot input[type=checkbox]") is None            # the table is the masked cells; no all-cells switch
+        assert page.text_content(".tfoot .src") == lm_str(page, "table.source")        # a summary of masked.csv
+        assert page.query_selector("button[data-act=tsv]") is None                   # and no export of its own
+        # the ids are masked.csv's: the row with id k names the same cell as the file's k-th row
+        page.click(".thead span >> nth=0"); page.wait_for_timeout(200)
+        shown = page.eval_on_selector_all(".trow", "els => els.map(e => [e.children[0].textContent, e.children[1].textContent.trim(), e.children[2].textContent])")
+        import csv as _csv, os as _os; rows = list(_csv.DictReader(open(_os.path.join(_os.path.dirname(R.path), "masked.csv"))))
+        byid = {r["id"]: (r["taxon"], r["locus"]) for r in rows}
+        assert len(shown) == len(rows) and all(byid[i] == (t, l) for i, t, l in shown)
 
     def test_a_table_row_opens_the_alignment(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html); page.evaluate("() => LM.setView('table')"); page.wait_for_timeout(300)
-        name = page.text_content(".trow >> nth=0 >> span >> nth=0"); page.click(".trow >> nth=0"); page.wait_for_selector(".panel[data-key=sequence]")
+        name = page.text_content(".trow >> nth=0 >> span >> nth=1"); page.click(".trow >> nth=0"); page.wait_for_selector(".panel[data-key=sequence]")
         assert name.strip() in page.text_content(".panel[data-key=sequence] .crumb")
 
-    def test_downloads(self, page, report_of):
+    def test_no_exports(self, page, report_of):
+        """the table is a summary of masked.csv and the cards are the printable form: no TSV or PNG export of their own"""
         html, R = report_of("dna_small"); open_report(page, html)
-        with page.expect_download() as dl: page.click("button[data-act=tsv]")
-        d = dl.value; assert d.suggested_filename == "dna_small_cells.tsv"
-        txt = open(d.path(), encoding="utf-8").read().split("\n"); assert txt[0].startswith("taxon\tlocus\tstate") and len(txt) - 2 >= R.man["counts"]["masked"] - 1   # the masked cells' rows
-        assert page.query_selector("button[data-act=png]") is None                            # no PNG export: the cards are the printable form
+        assert page.query_selector("button[data-act=tsv]") is None and page.query_selector("button[data-act=png]") is None

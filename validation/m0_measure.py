@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """M0 of the large-data plan (notes/LARGEDATA_2026-11.md): measure, on the OLD engine (feea34b, the last commit before the
 block sweep: it reads prepare()'s S, W, m, mj and tri_idx, which the sweep no longer builds; run it with that commit's
-locus_outliers.py beside it), the quantities that decide the
+locusmasker.py beside it), the quantities that decide the
 block-sweep engine's constants and rules, dataset by dataset, from prepare()'s structures and the pinned report of each
 dataset (a profile_corpus.py run made with --keep-outputs).
 
@@ -9,7 +9,7 @@ dataset (a profile_corpus.py run made with --keep-outputs).
 
 Per dataset it writes <out>/<dataset>.json and prints one summary line; --report prints the table of every JSON in <out>.
 What is measured, and why (the plan's M0):
-  closest match   per (taxon, locus), today's search (locus_outliers.py 1665-1686) rerun with bookkeeping: bands of
+  closest match   per (taxon, locus), today's search (locusmasker.py 1665-1686) rerun with bookkeeping: bands of
                   candidates within 1e-9 of the minimum d that hold more than one member, bands whose members have
                   UNEQUAL d (impossible unless 2 o1 o2 >= 1e9), ties of the (vals) key broken by index, those ties with
                   members in different index blocks of the planned block size, the largest o1 o2 seen, and cells where
@@ -31,7 +31,7 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT); sys.path.insert(0, HERE)
-import locus_outliers as lo
+import locusmasker as lo
 from profile_corpus import corpus
 
 CS = (50, 100, 200, 400, 1000)

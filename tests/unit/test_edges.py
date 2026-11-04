@@ -55,7 +55,7 @@ class TestOsFallbacks:
 
 class TestReportTemplate:
     def test_a_missing_viewer_still_writes_the_data(self, tmp_out, tmp_path, monkeypatch):
-        monkeypatch.setattr(lo, "__file__", str(tmp_path / "elsewhere" / "locus_outliers.py"))
+        monkeypatch.setattr(lo, "__file__", str(tmp_path / "elsewhere" / "locusmasker.py"))
         ds = dataset("dna_clean"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts)
         assert r.rc == 0 and r.exists("report.npz") and not r.exists("report.html") and "report.html not written" in r.log
 

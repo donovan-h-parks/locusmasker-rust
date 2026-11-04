@@ -11,7 +11,7 @@ pytestmark = pytest.mark.viewer
 class TestLoads:
     def test_header_shows_the_dataset_and_the_counts(self, page, report_of):
         html, R = report_of("dna_small"); open_report(page, html); c = R.man["counts"]
-        assert page.title() == "LocusMasker report"
+        assert page.title() == lm_fmt(lm_str(page, "loading.tab_title"), dataset=R.man["dataset"])      # the loader retitles the tab from the catalog
         assert page.text_content(".topbar h1") == R.man["dataset"] == "dna_small"
         sub = page.text_content(".topbar .sub"); assert sub == lm_fmt(lm_str(page, "about.sub"), masked=c["masked"], cells=c["cells"], pct=f"{100 * c['masked'] / c['cells']:.1f}%", taxa=c["taxa"], loci=c["loci"])
         meta = page.text_content(".topbar .meta summary"); assert R.man["version"] in meta and R.man["date"] in meta

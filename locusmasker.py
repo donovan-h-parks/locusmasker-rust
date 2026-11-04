@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Per-locus outlier detection and masking in a multi-locus alignment.
 
-    python locus_outliers.py --aln alignment.nex --datatype dna --out DIR
-    python locus_outliers.py --aln alignment.fasta --partitions partitions.txt --datatype aa --out DIR
-    python locus_outliers.py --aln alignment.phy   --partitions partitions.txt --datatype dna --out DIR
+    python locusmasker.py --aln alignment.nex --datatype dna --out DIR
+    python locusmasker.py --aln alignment.fasta --partitions partitions.txt --datatype aa --out DIR
+    python locusmasker.py --aln alignment.phy   --partitions partitions.txt --datatype dna --out DIR
 
 Input: a NEXUS alignment whose SETS block defines the loci, one charset per locus (read with
 Biopython's Bio.Nexus, so only what Bio.Nexus accepts: whitespace-separated site lists, quoted
@@ -95,9 +95,10 @@ Method:
             deep pair's saturation move the relatives as much as the sequence. A copy from
             outside its five closest genomes shows here; one from a close relative in (a).
             A failing pair is too similar. Its COPY is the member that fits its own relatives
-            worse: the larger |test-1 excess| (median over its comparators of observed minus
-            expected divergence, in units of m; absolute, because a foreign sequence in a fast
-            lineage is CLOSER to the lineage's relatives than expected). The copy is masked; the
+            worse: the larger |test-1 excess| (median over its comparators, leaving out those
+            that fail test 1 here, of corrected observed minus expected divergence, in units of
+            m; absolute, because a foreign sequence in a fast lineage is CLOSER to the
+            lineage's relatives than expected). The copy is masked; the
             other member is its source and is not masked for it.
             The bar is alpha / N, N every test the run performs: one too-divergent and one
             too-similar test per distinct comparator pair, and one closest-match test per
@@ -133,11 +134,16 @@ Outputs (in --out; <stem> is the alignment file's name without extension)
                        (%; before the row factor), closest_match_p and
                        closest_match_partner_excess_m (the partner's divergence excess, next to this
                        sequence's close_relative_excess_m: the margin of the copy call). BROAD-SAMPLE
-                       test: broad_sample_partner (the most extreme aligned member of the sample, by
-                       standardised residual), broad_sample_side (close or divergent - the test calls
-                       one direction at most, the stronger side), observed and expected (%) against the
-                       partner and broad_sample_p (on a divergent row with no broad mask these are
-                       the donor-side label). Then its comparators, closest first. Every p in this
+                       test, both sides for every masked cell it tested: broad_sample_side (close or
+                       divergent when the test fired on the cell, including a close label on a divergent
+                       row), broad_sample_role (copy, source or uncertain, for a too-close call), then
+                       the too-close side - the partner (the member with the smallest lower tail), the
+                       sites that differ between them, the differences expected (the curve at their
+                       depth times the rate factor, the two sequences' own rates at this locus) and its
+                       p - and the too-divergent side - the members failing of the members judged, the
+                       median observed and expected divergence (%) over them and its p. Then its
+                       comparators, closest first. The first column numbers the masks: rows are by
+                       locus, then taxon, and the report numbers them the same way. Every p in this
                        file and in the report is Bonferroni-adjusted: the test's p times N, the
                        number of tests in the run, capped at 1, so each is read against alpha.
   tests.tsv.gz         with --all-tests only: one row per test performed, the focal sequence first.
@@ -2538,29 +2544,46 @@ def divergence_matrix(aln, partitions=None, datatype="dna", fit_overlap=20, n_co
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--aln", required=True); ap.add_argument("--partitions"); ap.add_argument("--out", required=True)
-    ap.add_argument("--datatype", required=True, choices=("dna", "aa"))
-    ap.add_argument("--n-comp", type=int, default=5); ap.add_argument("--fit-overlap", type=int, default=20)
-    ap.add_argument("--alpha", type=float, default=0.05)
-    ap.add_argument("--donor-threshold", type=float, default=2.0, help="the direction of a too-similar pair is called (the copy masked, its source not) when the larger of the "
-                    "two members' test-1 excesses, in absolute value, is more than this many times the smaller; otherwise the direction is uncertain and both members are masked (default 2)")
-    ap.add_argument("--mask-similar-only", action="store_true"); ap.add_argument("--mask-different-only", action="store_true")
-    ap.add_argument("--no-broad-sample", action="store_true", help="skip the broad-sample test (the third test: a broad sample of taxa against each sequence, catching transfers "
-                    "and contamination that moved a whole clade, which the closest-relative tests cannot see); this is for comparison runs")
-    ap.add_argument("--threads", type=int, default=1, help="at most this many threads or worker processes (0: every CPU this process may use); each stage takes as many as pay off")
-    ap.add_argument("--candidates", type=int, help=f"the closest genomes each taxon keeps as its candidate comparators (default {CANDIDATES}); a taxon whose list runs out at a locus gets its full row computed afterwards, so any value gives the same results")
-    ap.add_argument("--block-taxa", type=int, help="the taxon block of the pair sweep (default from the taxa count, the threads and the memory room); any block size gives the same results, so this is for testing")
-    ap.add_argument("--no-numba", action="store_true", help="the pair stage in numpy even when numba is installed (the compiled kernel gives the same numbers, 3-8x faster at scale; this is for checking that)")
-    ap.add_argument("--memory", type=float, help="GB of memory the run may use (default: half of what is available when it starts; 0: no budget); the stages size their threads and chunks to stay within it, and a run that cannot fit stops before it starts")
-    ap.add_argument("--progress", choices=("auto", "bar", "none"), default="auto", help="auto: a progress bar on a terminal, progress lines at 2%% steps otherwise")
-    ap.add_argument("--report-codes", choices=("fails", "masked", "none"), default="fails", help="site codes in the report: for every cell with a failing comparator (default), masked cells only, or none")
-    ap.add_argument("--report-sequences", choices=("auto", "all", "fails", "masked", "none"), default="auto",
-                    help="sequences in the report: the whole alignment, the rows of every cell with a failing comparator, of masked cells only, or none; auto: all when the alignment is small, else fails")
-    ap.add_argument("--no-report", action="store_true", help="write no report.html / report.npz")
-    ap.add_argument("--restart", action="store_true", help="ignore the restart points an earlier run left in --out (restart/: the pair sweeps' results, reused by a rerun of the same input and options) and recompute everything")
-    ap.add_argument("--all-tests", action="store_true", help="also write tests.tsv.gz: one row per test the run performed (every comparison, every pair of taxa at every locus, every direction test) with its statistic, exact p-value and result; large")
-    ap.add_argument("--name", help="dataset name shown in the report (default: the alignment file's stem, or its folder when the file is called alignment.*)")
+    # -h prints the options of the README and nothing else; the rest exist for the tests and for comparison runs
+    S = argparse.SUPPRESS
+    ap = argparse.ArgumentParser(prog="locusmasker.py", add_help=False, usage="python locusmasker.py --aln FILE --datatype dna|aa --out DIR [options]",
+                                 formatter_class=lambda prog: argparse.RawDescriptionHelpFormatter(prog, max_help_position=28, width=100),
+                                 description=f"LocusMasker {__version__}: find and mask the per-locus outliers of a multi-locus alignment.\n\n"
+                                             "  python locusmasker.py --aln alignment.nex --datatype dna --out scan\n"
+                                             "  python locusmasker.py --aln alignment.fasta --partitions partitions.txt --datatype dna --out scan\n"
+                                             "  python locusmasker.py --aln alignment.nex --datatype dna --out scan --threads 0")
+    g = ap.add_argument_group("input and output")
+    g.add_argument("--aln", required=True, metavar="FILE", help="the alignment (required)")
+    g.add_argument("--datatype", required=True, choices=("dna", "aa"), metavar="dna|aa",
+                   help="DNA or amino acids (required). DNA is analysed on A, C, G, T (U is read as T); amino acids on the 20 standard residues. Everything else counts as missing")
+    g.add_argument("--out", required=True, metavar="DIR", help="the output folder (required)")
+    g.add_argument("--partitions", metavar="FILE", help="a RAxML-style partitions file defining the loci. Required unless the alignment is a nexus file with a SETS block")
+    g.add_argument("--name", metavar="NAME", help="the dataset name shown in the report. Default is the alignment file's name")
+    g = ap.add_argument_group("method")
+    g.add_argument("--n-comp", type=int, default=5, metavar="N", help="the number of close relatives each sequence is compared to. Must be odd and at least 3 (default 5)")
+    g.add_argument("--fit-overlap", type=int, default=20, metavar="N", help="the minimum number of sites a pair must share at a locus to be compared there (default 20)")
+    g.add_argument("--alpha", type=float, default=0.05, metavar="P", help="the significance level, applied after Bonferroni correction across every test in the run (default 0.05)")
+    g.add_argument("--donor-threshold", type=float, default=2.0, metavar="X",
+                   help="in the closest-match and broad-sample tests, a too-similar pair gets a direction (copy masked, source not) when one member's deviation from its own "
+                        "expectation is more than this many times the other's. Otherwise the direction is uncertain and both are masked (default 2)")
+    g = ap.add_argument_group("performance (none of these change the results)")
+    g.add_argument("--threads", type=int, default=1, metavar="N", help="the maximum number of threads to use. 0 means all available (default 1)")
+    g.add_argument("--memory", type=float, metavar="GB", help="the RAM budget in GB. Default is half of what's free when the run starts; 0 means all available RAM")
+    g.add_argument("--restart", action="store_true", help="ignore the restart points an earlier run left in the output folder and recompute everything. By default a rerun with the same input and options picks up where it left off")
+    g.add_argument("--progress", choices=("auto", "bar", "none"), default="auto", metavar="auto|bar|none", help="a progress bar on a terminal, progress lines otherwise (default auto)")
+    g = ap.add_argument_group("report")
+    g.add_argument("--no-report", action="store_true", help="write no report at all")
+    g.add_argument("--all-tests", action="store_true", help="also write tests.tsv.gz, one row per test performed with its statistic, p-value and result. Useful if you want to do your own analysis of the results, but large")
+    g = ap.add_argument_group("help")
+    g.add_argument("-h", "--help", action="help", help="print these options")
+    # not user-facing: one tool, one set of rules. Kept for the tests and for comparison runs; absent from -h
+    ap.add_argument("--mask-similar-only", action="store_true", help=S); ap.add_argument("--mask-different-only", action="store_true", help=S)
+    ap.add_argument("--no-broad-sample", action="store_true", help=S)           # skip the broad-sample test (comparison runs)
+    ap.add_argument("--candidates", type=int, help=S)                            # the closest genomes each taxon keeps as candidate comparators (default CANDIDATES); any value gives the same results
+    ap.add_argument("--block-taxa", type=int, help=S)                            # the taxon block of the pair sweep; any block size gives the same results
+    ap.add_argument("--no-numba", action="store_true", help=S)                   # the pair stage in numpy even when numba is installed; the same numbers
+    ap.add_argument("--report-codes", choices=("fails", "masked", "none"), default="fails", help=S)                  # site codes in the report: every cell with a failing comparator, masked cells only, or none
+    ap.add_argument("--report-sequences", choices=("auto", "all", "fails", "masked", "none"), default="auto", help=S)  # sequences in the report: all, the rows of failing cells, of masked cells, or none; auto: all when small, else fails
     a = ap.parse_args(); K = a.n_comp
     global PROG, STOP_AFTER
     if os.environ.get("LOCUSMASKER_STOP_AFTER") in ("rates", "pairs"): STOP_AFTER = os.environ["LOCUSMASKER_STOP_AFTER"]
@@ -2672,11 +2695,13 @@ def fork_map(fn, items, workers, chunksize=1):
     finally: _FORK_FN = None
 
 
-MASKED_COLUMNS = ["locus", "taxon", "reason", "mask_test", "mask_p", "residues_masked",
+MASKED_COLUMNS = ["id", "locus", "taxon", "reason", "mask_test", "mask_p", "residues_masked",
                   "close_relative_fails", "close_relative_comparators", "close_relative_observed", "close_relative_expected", "close_relative_excess_m", "close_relative_p",
                   "closest_match_partner", "closest_match_arm", "closest_match_role", "closest_match_observed", "closest_match_expected", "closest_match_row_factor", "closest_match_p", "closest_match_relatives", "closest_match_partner_excess_m",
-                  "broad_sample_partner", "broad_sample_side", "broad_sample_observed", "broad_sample_expected", "broad_sample_p",
+                  "broad_sample_side", "broad_sample_role", "broad_sample_partner", "broad_sample_partner_mismatches", "broad_sample_partner_expected", "broad_sample_rate_factor", "broad_sample_close_p",
+                  "broad_sample_members_failing", "broad_sample_members", "broad_sample_divergent_observed", "broad_sample_divergent_expected", "broad_sample_divergent_p",
                   "comparators"]
+BS_BLANK = 12                     # the broad-sample block of masked.csv: filled from the test's per-cell results once every verdict is in
 
 
 def pfmt(lnp):
@@ -2924,9 +2949,6 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
             Pm = cell_matrix(v); Pm.sort(axis=1)                    # NaN sorts last
             return (Pm[ar, (kc - 1) // 2] + Pm[ar, kc // 2]) / 2    # np.median's mean of the middle two
         med_i = cell_median(ident); med_e = cell_median(100 - dhat)
-        # the cell's extra divergence beyond expectation, as corrected distance in units of m (a typical locus's
-        # divergence): a foreign or paralogous sequence adds a constant here whatever the comparator
-        exm = (corr(100 - med_i) - corr(100 - med_e)) / rate_c
 
         # ---- test 2, too similar, two arms that feed one pair decision.
         # COMPARATOR ARM: every comparison of test 1 again, lower tail: closer to a comparator than the locus rate at
@@ -2980,6 +3002,16 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
         flag = (kc >= K_eff) & (nf >= M_eff)
         amb = (kc < K_eff) & (nf >= kc // 2 + 1)
         dflag = flag | amb
+        # the cell's extra divergence beyond expectation, as corrected distance in units of m (a typical locus's
+        # divergence): the median over its comparators of each comparison's corrected observed minus corrected expected
+        # divergence (a foreign or paralogous sequence adds a constant here whatever the comparator), leaving out the
+        # comparators that fail test 1 here (a junk relative does not set a sequence's excess); a cell whose
+        # comparators all fail keeps the median over all of them
+        d_cmp = (corr(100.0 - ident) - corr(dhat)) / rate_c
+        junk_c = (qpos[ci] >= 0) & dflag[np.maximum(qpos[ci], 0)]
+        kk = kc - np.add.reduceat(junk_c.astype(np.intp), starts)
+        Pm = cell_matrix(np.where(junk_c, np.nan, d_cmp)); Pm.sort(axis=1)
+        exm = np.where(kk > 0, (Pm[ar, np.maximum(kk - 1, 0) // 2] + Pm[ar, np.maximum(kk, 1) // 2]) / 2, cell_median(d_cmp))
         lp_in = np.zeros(len(gi))                                   # natural-log lower tails; 0 (p = 1) above expectation
         lp_in[dn] = t_dn
         if len(r_ff): lp_in[r_ff] = np.maximum(lp_in[r_ff], t_ff)
@@ -3101,7 +3133,7 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
             mt, mp = (min(mc)[1], pfmt(min(mc)[0] + ladj)) if mc else ("", ""); mlp = min(mc)[0] if mc else np.inf   # the exact value, for the broad test's later comparison
             s = int(starts[q]); comps = [names[int(c)] for c in ci[s:s + kc[q]]]
             row_ = [name, names[g], reason, mt, mp, int(nres[g]), int(nf[q]), int(kc[q]), fnum(100 - med_i[q], 2), fnum(100 - med_e[q], 2),
-                    fnum(exm[q], 3), pfmt(div_lp[q] + ladj)] + cm_cols(q) + ["", "", "", "", ""] + ["; ".join(comps)]
+                    fnum(exm[q], 3), pfmt(div_lp[q] + ladj)] + cm_cols(q) + [""] * BS_BLANK + ["; ".join(comps)]
             mrows_out.append((g, reason, row_, mlp))
 
         # ---- the report's view of this locus: cell columns, best matches, site codes, sequence rows, trees, pairs
@@ -3115,7 +3147,7 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
         # tail against E x f (f <= 1 the row factor over the other members) times the member count, the too-divergent
         # side a majority of members failing the upper tail; both at the run's bar. A member that fails the
         # too-divergent rule itself judges nobody on that side. Divergent-masked cells get the too-bclose side only
-        # (the label). The direction of a too-bclose pair is recorded by the closest-match test's copy rule, not acted on.
+        # (the label). The direction of a too-close pair is called (the leaning-members score, then the copy rule); the copy is masked, the source noted.
         bs_blk = None; bsrep_full = np.full(n, -1, np.int64)
         if bs is not None:
             dmask = np.zeros(n, bool); cpmask = np.zeros(n, bool)
@@ -3192,7 +3224,7 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                 bcall = np.zeros(nr_, np.int8); bcall[bclose] = 1; bcall[red & ~bclose] = -1
                 both_ = bclose & red
                 if both_.any(): bcall[both_] = np.where(lo_stat[both_] <= p_red[both_], 1, -1)
-                # the direction of a too-bclose pair by the closest-match test's copy rule (recorded, not acted on)
+                # the direction of a too-close pair: the leaning-members score, then the closest-match test's copy rule, else uncertain; the source is not masked (below)
                 exm_full = np.full(n, np.nan)
                 if len(idx): exm_full[idx] = exm
                 a_e = np.abs(np.where(np.isfinite(exm_full[rows_bs]), exm_full[rows_bs], 0.0))
@@ -3641,8 +3673,6 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                         if j is not None and mrows[j][2] == "similar": tally["similar"] -= 1; tally["both"] += 1; mrows[j][2] = "both"
                     j = mrow_at.get((name, names[g]))
                     if j is not None:
-                        mrows[j][21] = names[partner] if partner >= 0 else ""; mrows[j][22] = side_txt
-                        mrows[j][23] = fnum(obs_, 2); mrows[j][24] = fnum(exp_, 2); mrows[j][25] = pfmt(lp_use + ladj)
                         v10 = var_lp10(li, g)                                   # the broad firing joins the cell's one significance when it is the most significant
                         cur_ln = mrow_lnp.get((name, names[g]), np.inf) + ladj  # the row's value on the same (adjusted) scale, exact
                         if np.isfinite(v10) and v10 * LN10 < cur_ln - 1e-9:
@@ -3652,9 +3682,7 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                     views[g][sites] = 45
                     reason = "similar" if b2 & 4 else "divergent"
                     tally[reason] += 1; tally_bs["close" if b2 & 4 else "divergent"] += 1
-                    mrows.append([name, names[g], reason, "broad_sample", pfmt10(var_lp10(li, g)), int(P.focal_sites[g, li])] + [""] * 6 + [""] * 9
-                                 + [names[partner] if partner >= 0 else "", side_txt, fnum(obs_, 2), fnum(exp_, 2), pfmt(lp_use + ladj)]
-                                 + [""])
+                    mrows.append([name, names[g], reason, "broad_sample", pfmt10(var_lp10(li, g)), int(P.focal_sites[g, li])] + [""] * 6 + [""] * 9 + [""] * BS_BLANK + [""])
                     mrow_at[(name, names[g])] = len(mrows) - 1
                     if dense:
                         rep["partner"][g, li] = partner
@@ -3673,10 +3701,7 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
                     rep["side2"][g, li] |= 64
                     bs_rows_rep.append((li, g, dp_i, np.nan, partner, 1))
                     j = mrow_at.get((name, names[g]))
-                    if j is not None:                                           # a label on the divergent row: the mask, its reason and its significance unchanged
-                        mrows[j][21] = names[partner] if partner >= 0 else ""; mrows[j][22] = "close"
-                        mrows[j][23] = fnum(obs_, 2); mrows[j][24] = fnum(exp_, 2); mrows[j][25] = pfmt(dp_i)
-                        tally_bs["labels"] += 1
+                    if j is not None: tally_bs["labels"] += 1                   # a label on the divergent row: the mask, its reason and its significance unchanged
                 if out["broad"]:
                     rep.setdefault("bs_records", {}).setdefault(li, []).extend(out["broad"])
                 if out["codes"] is not None:
@@ -3730,8 +3755,25 @@ def run_z(a, names, loci, P, masked, K_eff, M_eff, rep):
     for g, (cand, _, _, _) in P.ext.items(): cl[g] = -1; cl[g, :min(5, len(cand))] = cand[:5]
     rep.update(taxa_closest=cl, rate=rate, plateaus=plateaus, kq=kq, logbar=logbar, phi_bar=phi_bar,
                tests=dict(close_relative=D_tests, closest_match_relative=D_tests, closest_match_outside=S_tests, broad_sample=BS_tests, total=N_tests, locus_sets=nfork))
+    lidx = {nm: i for i, (nm, _) in enumerate(loci)}; tidx = {nm: i for i, nm in enumerate(names)}
+    if bs is not None:                                                        # the broad-sample block: both sides of the test for every masked, tested cell
+        rowpos = {}
+        for row_ in mrows:
+            li, g = lidx[row_[0]], tidx[row_[1]]; b = bsL[li] if li < len(bsL) else None
+            if b is None: continue
+            if li not in rowpos: rowpos[li] = {int(r_): k for k, r_ in enumerate(b["rows"].tolist())}
+            k = rowpos[li].get(g)
+            if k is None or b["nt"][k] < BS_MIN: continue
+            s2v = int(rep["side2"][g, li]); side_ = "divergent" if s2v & 8 else "close" if s2v & (4 | 64) else ""
+            role_ = {1: "copy", -1: "source", 0: "uncertain"}[int(b["dirc"][k])] if (s2v & 4) else ""
+            jl = int(b["lo_j"][k]); red_ok = b["ntr"][k] >= BS_MIN
+            row_[21:21 + BS_BLANK] = [side_, role_, names[jl] if jl >= 0 else "", str(int(b["lo_O"][k])) if jl >= 0 else "", fnum(b["lo_E"][k] * b["lo_f"][k], 1) if jl >= 0 else "",
+                                      fnum(b["lo_f"][k], 3) if jl >= 0 else "", pfmt(float(b["lo"][k]) + ladj) if jl >= 0 else "",
+                                      str(int(b["nfail"][k])) if red_ok else "", str(int(b["ntr"][k])) if red_ok else "",
+                                      fnum(b["obs_pct"][k], 2) if red_ok else "", fnum(b["exp_pct"][k], 2) if red_ok else "", pfmt(float(b["hi"][k]) + ladj) if red_ok else ""]
+    mrows.sort(key=lambda r_: (lidx[r_[0]], tidx[r_[1]]))                   # masked.csv's order: by locus, then taxon; the id numbers the rows (the report numbers its masks the same way)
     with open(f"{a.out}/masked.csv", "w", newline="") as fh:
-        mw = csv.writer(fh); mw.writerow(MASKED_COLUMNS); mw.writerows(mrows)
+        mw = csv.writer(fh); mw.writerow(MASKED_COLUMNS); mw.writerows([i + 1] + r_ for i, r_ in enumerate(mrows))
     skipped = [(loci[i][0], st) for i, st in enumerate(rep["loc_status"]) if st != "tested"]
     if skipped:
         LOG(f"{len(skipped)} loci not tested: " + "; ".join(f"{nm} ({st})" for nm, st in skipped[:20]) + (f"; and {len(skipped) - 20} more" if len(skipped) > 20 else ""))

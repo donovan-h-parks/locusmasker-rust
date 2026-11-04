@@ -3,7 +3,7 @@
 
     python plot_taxon.py DIR TAXON [--out FILE] [--label N]
 
-Reads DIR/report.npz (written by every run of locus_outliers.py 0.11.0 and later unless --no-report).
+Reads DIR/report.npz (written by every run of locusmasker.py 0.11.0 and later unless --no-report).
 One point per locus: x = the median over the taxon's comparators of the divergence the locus expects
 for that pair (its rate at the pair's m), y = the median over the same comparators of the divergence
 observed; these medians are what the too-divergent test uses. Diagonal = expectation. Colour is the
@@ -24,8 +24,8 @@ a = ap.parse_args()
 p = os.path.join(a.dir, "report.npz")
 if not os.path.exists(p):
     raise SystemExit(f"{a.dir} was written by LocusMasker 0.10 or earlier (cells.tsv, no report.npz): this script reads the report.npz of 0.11.0 and later; re-run "
-                     "locus_outliers.py, or use the plot scripts of the version that made the run" if os.path.exists(f"{a.dir}/cells.tsv") else
-                     f"{p} not found: this script reads report.npz, which every run of locus_outliers.py writes unless --no-report")
+                     "locusmasker.py, or use the plot scripts of the version that made the run" if os.path.exists(f"{a.dir}/cells.tsv") else
+                     f"{p} not found: this script reads report.npz, which every run of locusmasker.py writes unless --no-report")
 Z = zipfile.ZipFile(p); man = json.loads(Z.read("manifest.json"))
 if man.get("format_version", 0) < 4: raise SystemExit(f"{p} is report format {man.get('format_version')} (LocusMasker {man.get('version', '?')}); this script reads format 4 and later (0.11.0)")
 def npy(k): return np.load(io.BytesIO(Z.read(k)))

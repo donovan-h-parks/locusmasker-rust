@@ -295,7 +295,7 @@ class TestOutputs:
             assert float(r["mask_p"]) <= 10 ** R.man["test"]["log10_bar"] + 1e-6              # every masked sequence earns at least one star (six-decimal rounding)
             assert int(r["residues_masked"]) == fs[g, li]
             if r["close_relative_fails"] == "":                                  # masked by the broad-sample test alone: its own columns carry the evidence
-                assert r["broad_sample_partner"] != "" and r["broad_sample_side"] != "" and float(r["broad_sample_p"]) <= 0.05 + 1e-6; continue
+                assert r["broad_sample_side"] != "" and float(r["broad_sample_close_p" if r["broad_sample_side"] == "close" else "broad_sample_divergent_p"]) <= 0.05 + 1e-6; continue
             assert int(r["close_relative_fails"]) == nf[g, li] and int(r["close_relative_comparators"]) == nc[g, li]
             assert r["comparators"] == "; ".join(R.taxa["names"][c] for c in R.comps(g, li))
             if sd & 2:

@@ -3,11 +3,11 @@
     python best_match.py DIR ALIGNMENT TAXON [--out FILE] [--threads 8]
 DIR is a LocusMasker run (0.11 or later: masked.csv and report.npz); ALIGNMENT the NEXUS file it was run on. A run writes no
 divergence matrix, so the genome-wide divergences m are recomputed from ALIGNMENT with the run's options
-(locus_outliers.divergence_matrix: the same m the run used).
+(locusmasker.divergence_matrix: the same m the run used).
 """
 import argparse, csv, hashlib, io, json, os, re, sys, zipfile, numpy as np, matplotlib
 matplotlib.use("Agg"); import matplotlib.pyplot as plt
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")); import locus_outliers as lo
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")); import locusmasker as lo
 ap = argparse.ArgumentParser(); ap.add_argument("dir"); ap.add_argument("aln"); ap.add_argument("taxon"); ap.add_argument("--out"); ap.add_argument("--min-overlap", type=int, default=30)
 ap.add_argument("--threads", type=int, default=8, help="threads for recomputing m")
 a = ap.parse_args()

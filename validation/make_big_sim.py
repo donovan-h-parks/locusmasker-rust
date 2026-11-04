@@ -155,7 +155,7 @@ def main():
     tree = Tree(tree_path); assert len(tree.names) == a.taxa
     if a.pilot:
         nn = np.array([v[0] for v in tree.nearest_all().values()])
-        import locus_outliers as lo
+        import locusmasker as lo
         ds = os.path.join(ROOT, "test_data", "Crisp_2024"); names_, m, _ = lo.divergence_matrix(f"{ds}/alignment.fasta", f"{ds}/partitions.txt", "dna", threads=16)
         nn_m = np.nanmin(np.where(np.isfinite(m), m, np.nan), axis=1) / 100.0
         print(f"Crisp_2024 nearest-neighbour m (as a fraction): p10 {np.percentile(nn_m, 10):.4f} median {np.median(nn_m):.4f} p90 {np.percentile(nn_m, 90):.4f}")

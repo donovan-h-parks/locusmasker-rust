@@ -21,7 +21,7 @@ def masked_rows(r): return list(csv.DictReader(open(r.file("masked.csv"))))
 
 def broad_masked(row):
     """masked by the broad-sample test itself: broad columns filled, no other family claims the mask"""
-    return row["broad_sample_partner"] != "" and row["close_relative_fails"] == "" and row["closest_match_role"] == ""
+    return row["mask_test"] == "broad_sample" and row["close_relative_fails"] == "" and row["closest_match_role"] == ""
 
 
 class TestOnThePlantedFixture:
@@ -33,8 +33,9 @@ class TestOnThePlantedFixture:
         fired = [row for row in rows if row["broad_sample_side"] == "close" and row["reason"] in ("similar", "both")]   # masked too close (a divergent cell also too close is a label)
         hits = [row for row in fired if (row["locus"], row["taxon"]) in recips]
         assert len(hits) >= 4, [(_r["locus"], _r["taxon"]) for _r in fired]
-        assert all(row["reason"] in ("similar", "both") and float(row["broad_sample_p"]) <= 0.05 + 1e-6 for row in hits)
-        assert all(float(row["broad_sample_observed"]) < float(row["broad_sample_expected"]) for row in hits)
+        assert all(float(row["broad_sample_close_p"]) <= 0.05 + 1e-6 for row in hits)
+        assert all(row["broad_sample_role"] in ("copy", "uncertain") or row["reason"] == "both" for row in hits)   # a divergent cell's too-close firing is a label: no direction
+        assert all(float(row["broad_sample_partner_mismatches"]) < float(row["broad_sample_partner_expected"]) for row in hits)
         donors = {e["donor"] for e in events}
         assert any(row["broad_sample_partner"] in donors for row in hits)   # the most extreme aligned comparator names the donor
 
@@ -47,7 +48,8 @@ class TestOnThePlantedFixture:
         assert len(hits) >= 3, [(q["locus"], q["taxon"], q["mask_test"]) for q in rows if q["locus"] == e["locus"]]
         for row in hits:
             assert row["reason"] == "divergent" and broad_masked(row) and row["mask_test"] == "broad_sample"
-            assert float(row["broad_sample_observed"]) > float(row["broad_sample_expected"]) and float(row["broad_sample_p"]) <= 0.05 + 1e-6
+            assert float(row["broad_sample_divergent_observed"]) > float(row["broad_sample_divergent_expected"]) and float(row["broad_sample_divergent_p"]) <= 0.05 + 1e-6
+            assert int(row["broad_sample_members_failing"]) * 2 > int(row["broad_sample_members"])         # a majority
             g = r.report.taxa["names"].index(row["taxon"]); li = r.report.loci["names"].index(row["locus"])
             s2 = int(r.report.arr("cells/side2.npy")[g, li])
             assert (s2 & 3) == 3 and (s2 & 8) and not (s2 & 4)            # tested, past the bar, the divergent side called
@@ -100,12 +102,12 @@ class TestCleanAndOff:
         ds = dataset("dna_clean"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, []); assert r.rc == 0, r.log
         s2 = r.report.arr("cells/side2.npy")
         assert not np.any(s2 & (4 | 8 | 64)) and (s2 & 1).any()
-        assert all(row["broad_sample_partner"] == "" for row in masked_rows(r))
+        assert all(row["broad_sample_side"] == "" and row["broad_sample_partner"] == "" for row in masked_rows(r))
 
     def test_the_switch_turns_the_test_off(self, tmp_out):
         ds = dataset("dna_rc"); r = run_tool(ds.aln, tmp_out, "dna", ds.parts, ["--no-broad-sample"]); assert r.rc == 0, r.log
         assert r.report.man["test"]["broad_sample_tests"] == 0 and r.report.man["broad_sample"] is None
         assert "cells/bs_locus.npy" not in r.report.names
         assert not np.any(r.report.arr("cells/side2.npy"))
-        assert all(row["broad_sample_partner"] == "" for row in masked_rows(r))
+        assert all(row["broad_sample_side"] == "" and row["broad_sample_partner"] == "" for row in masked_rows(r))
         assert "broad sample:" not in r.log

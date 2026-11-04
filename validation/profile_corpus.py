@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Profile locus_outliers.py over the test_data corpus: wall time, CPU, peak memory, the tool's own stage timings and
+"""Profile locusmasker.py over the test_data corpus: wall time, CPU, peak memory, the tool's own stage timings and
 the thread counts it chose, per dataset and per thread cap; optionally a cProfile run (single thread, function level)
 and a py-spy run (threaded, every thread sampled). Every run is its own process under /usr/bin/time -v, one after the
 other unless --jobs says otherwise (only sensible for single-thread runs).
@@ -19,7 +19,7 @@ import argparse, collections, glob, json, os, pstats, re, shutil, subprocess, sy
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.dirname(HERE)
-TOOL = os.path.join(ROOT, "locus_outliers.py"); PY = sys.executable; DATA = os.path.join(ROOT, "test_data")
+TOOL = os.path.join(ROOT, "locusmasker.py"); PY = sys.executable; DATA = os.path.join(ROOT, "test_data")
 STAGES = ("read", "counts", "pairs0", "rates", "pairs", "comparators", "dispersion", "test", "write")
 
 
@@ -124,7 +124,7 @@ def run_cprofile(ds, out, timeout, keep):
     prof = os.path.join(d, "profile.prof"); txt = os.path.join(d, "cprofile.txt"); argv = tool_args(ds, 1, run_dir)
     code = f"""import cProfile, pstats, sys, io
 sys.argv = {argv!r}; sys.path.insert(0, {ROOT!r})
-import locus_outliers as lo
+import locusmasker as lo
 pr = cProfile.Profile(); pr.enable()
 try: lo.main()
 except SystemExit: pass

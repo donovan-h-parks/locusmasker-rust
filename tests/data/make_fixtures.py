@@ -335,7 +335,7 @@ SIM = {
 
 
 def write_real(d, name, spec):
-    import locus_outliers as lo
+    import locusmasker as lo
     src = os.path.join(ROOT, spec["src"])
     if not os.path.exists(src): print(f"  {name}: {spec['src']} not present, excerpt not rewritten"); return
     names, rows, charsets, info = lo.read_nexus_fast(src)
@@ -355,8 +355,8 @@ def write_real(d, name, spec):
 # ------------------------------------------------------------------ golden outputs
 def run_tool(aln, parts, out, dtype, extra=()):
     """the tool in this process, as the tests run it; stderr captured"""
-    import locus_outliers as lo
-    argv = ["locus_outliers.py", "--aln", aln, "--out", out, "--datatype", dtype, "--progress", "none"] + (["--partitions", parts] if parts else []) + list(extra)
+    import locusmasker as lo
+    argv = ["locusmasker.py", "--aln", aln, "--out", out, "--datatype", dtype, "--progress", "none"] + (["--partitions", parts] if parts else []) + list(extra)
     old = sys.argv, sys.stderr; sys.argv = argv; sys.stderr = io.StringIO()
     try: lo.main()
     finally: log = sys.stderr.getvalue(); sys.argv, sys.stderr = old
@@ -370,7 +370,7 @@ def array_hashes(npz):
 
 def write_golden(g, d, spec, extra=(), patch=None):
     """the tool's outputs on a dataset pinned under tests/data/golden; patch sets module constants for the run"""
-    import tempfile, shutil, locus_outliers as lo
+    import tempfile, shutil, locusmasker as lo
     out = tempfile.mkdtemp(prefix="golden_"); saved = {k: getattr(lo, k) for k in (patch or {})}
     for k, v in (patch or {}).items(): setattr(lo, k, v)
     try:

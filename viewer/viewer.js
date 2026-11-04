@@ -351,6 +351,11 @@ function maskP(D, g, li) {
   if (!c.length) return null;
   c.sort((a, b) => a[0] - b[0]); return { p: c[0][0], test: c[0][1] };
 }
+function maskIds(D) {                                      // masked.csv's id of every masked cell: rows by locus, then taxon, numbered from 1
+  if (D._maskIds) return D._maskIds;
+  const cells = maskIndex(D).map(q => q.g * D.nloc + q.li).sort((a, b) => (a % D.nloc) - (b % D.nloc) || Math.floor(a / D.nloc) - Math.floor(b / D.nloc));
+  const m = new Map(); cells.forEach((i, k) => m.set(i, k + 1)); return (D._maskIds = m);
+}
 function maskIndex(D) {                                     // every masked cell once, with its one significance (maskP)
   if (D._masks) return D._masks;
   const out = [];
@@ -797,7 +802,6 @@ const Overview = (() => {
     const viewCtl = el("span", { class: "viewctl" }); viewEl.viewCtl = viewCtl;             // the open view's own controls
     const controls = el("div", { class: "controls one-row" },
       el("label", null, SC.view + " ", viewSel), viewCtl,
-      el("button", { "data-act": "tsv", title: SC.tsv_hint, onclick: Table.download }, "⤓ " + SC.tsv),
       el("button", { class: "cardbtn", onclick: () => Card.open("dataset") }, "⎙ " + LM_STR.card.button));
     viewEl.matrixCtl = [el("label", null, SC.taxa + " ", taxaSel), el("label", null, SC.loci + " ", lociSel), search];
     P.body.append(controls);
@@ -2329,16 +2333,16 @@ const Card = (() => {
 const Table = (() => {
   let rows = [], keys = [{ k: "p", dir: 1 }], root = null;    // keys[0] sorts first, keys[1] breaks its ties
   const T = () => LM_STR.table;
-  const COLS = () => [["taxon", T().h_taxon], ["locus", T().h_locus], ["test", T().h_test], ["p", T().h_p], ["obs", T().h_obs], ["exp", T().h_exp], ["excess_m", T().h_excess], ["partner", T().h_partner], ["bm", T().h_best]];
+  const COLS = () => [["id", T().h_id], ["taxon", T().h_taxon], ["locus", T().h_locus], ["reason", T().h_reason], ["test", T().h_test], ["p", T().h_p], ["cr", T().h_cr], ["cm", T().h_cm], ["bs", T().h_bs], ["partner", T().h_partner]];
   function build() {
     const D = App.D; rows = [];
+    const ids = maskIds(D); const fin = v => v === null || v === undefined || Number.isNaN(v) ? null : v;
     for (const q of Masks.list()) { const { g, li } = q; const i = g * D.nloc + li;
-      const mp = maskP(D, g, li);
-      const mi = D.num("med_identity", g, li), me = D.num("med_expected", g, li); const bm = D.num("best_match", g, li), pt = D.num("partner", g, li);
-      rows.push({ g, li, taxon: D.taxa.names[g], locus: D.loci.names[li], test: mp ? mp.test : "", p: mp ? mp.p : null,
-        n_fail: D.cols.n_fail[i], n_similar: D.cols.n_similar[i], obs: mi === null ? null : 100 - mi, exp: me === null ? null : 100 - me,
-        excess_m: D.num("excess_m", g, li), bm_id: D.num("best_match_identity", g, li), lam: D.num("lam", g, li),
-        partner: pt !== null && pt >= 0 ? D.taxa.names[pt] : "", bm: bm !== null && bm >= 0 ? D.taxa.names[bm] : "", code: D.state[i] }); }
+      const mp = maskP(D, g, li); const pt = D.num("partner", g, li); const sd = D.cols.side[i] & 3; const arms = cmArms(D, g, li);
+      const cm = [arms.rel, arms.out].filter(v => Number.isFinite(v)); const rcr = D.rcAt && D.rcAt(i);
+      rows.push({ g, li, id: ids.get(i), taxon: D.taxa.names[g], locus: D.loci.names[li], reason: sd === 3 ? T().r_both : sd & 1 ? T().r_divergent : T().r_similar, test: mp ? mp.test : "", p: mp ? mp.p : null,
+        cr: fin(D.num("div_log10p", g, li)), cm: cm.length ? Math.min(...cm) : null, bs: rcr && !Number.isNaN(rcr.var_p) ? rcr.var_p : fin(D.num("bs_log10p", g, li)),
+        partner: pt !== null && pt >= 0 ? D.taxa.names[pt] : "", code: D.state[i] }); }
     sort();
   }
   function open(fam) { Masks.setFamily(fam || null); Overview.setView("table"); }
@@ -2354,30 +2358,19 @@ const Table = (() => {
       sort(); paint(); head.replaceChildren(...cols.map(([k2, t2, h2]) => el("span", { onclick: e => click(k2, e), title: h2 }, t2 + mark(k2)))); };
     const head = el("div", { class: "thead" }, ...cols.map(([k, t, h]) => el("span", { onclick: e => click(k, e), title: h }, t + mark(k))));
     const body = el("div", { class: "tbody" }); const inner = el("div"); body.append(inner);
-    const foot = el("div", { class: "tfoot" }, el("span", { class: "n" }));
+    const foot = el("div", { class: "tfoot" }, el("span", { class: "n" }), el("span", { class: "src" }, T().source));
     root.append(head, body, foot);
     const RH = 22;
     const paint = () => { inner.style.height = rows.length * RH + "px"; inner.style.position = "relative"; inner.replaceChildren(); const top = body.scrollTop; const i0 = Math.max(0, Math.floor(top / RH) - 5), i1 = Math.min(rows.length, i0 + Math.ceil(body.clientHeight / RH) + 10);
       for (let i = i0; i < i1; i++) { const r = rows[i]; const st = starsOf(D, r.p); inner.append(el("div", { class: "trow" + (r.g === App.brush ? " brushed" : ""), style: `position:absolute; top:${i * RH}px; left:0; right:0`, onclick: () => Sequence.open(r.g, r.li), onmouseenter: () => { App.sel.cells.clear(); App.sel.cells.add(r.g * D.nloc + r.li); Brush.hover(r.g); }, onmouseleave: () => Brush.unhover() },
-        el("span", null, sw(D.colorOf(r.code)), r.taxon), el("span", null, r.locus), el("span", null, r.test), el("span", { class: "pcol" }, r.p === null ? "" : lmP(r.p), st ? el("i", { class: "stars" }, " " + st) : null),
-        el("span", null, r.obs === null ? "" : fmt2(r.obs)), el("span", null, r.exp === null ? "" : fmt2(r.exp)), el("span", null, r.excess_m === null ? "" : fmt2(r.excess_m)), el("span", null, r.partner), el("span", null, r.bm))); }
+        el("span", { class: "idcol" }, String(r.id)), el("span", null, sw(D.colorOf(r.code)), r.taxon), el("span", null, r.locus), el("span", null, r.reason), el("span", null, r.test), el("span", { class: "pcol" }, r.p === null ? "" : lmP(r.p), st ? el("i", { class: "stars" }, " " + st) : null),
+        ...[r.cr, r.cm, r.bs].map(v => el("span", { class: "pcol" }, v === null ? "" : lmP(v), v !== null && starsOf(D, v) ? el("i", { class: "stars" }, " " + starsOf(D, v)) : null)), el("span", null, r.partner))); }
       $(".n", foot).textContent = lmFmt(T().foot, { n: fmtInt(rows.length) }); };
     body.addEventListener("scroll", paint); paint(); repaintFn = paint;
   }
   let repaintFn = null;
   function repaint() { if (repaintFn && root && root.isConnected) repaintFn(); }
-  function download() {
-    const D = App.D; build();
-    const v4 = D.format >= 4;                                 // from format 4: the cell's role in its reported pair and the tests' log10 p, in the tests' names
-    const p6 = v => v === null || v === undefined || v === "" || Number.isNaN(v) ? "" : Math.min(Math.pow(10, v), 1).toFixed(6);
-    const lines = ["taxon\tlocus\tstate\tmask_test\tmask_p\tn_fail\tn_similar\tobserved_divergence\texpected_divergence\texcess_m\tbest_match\tbest_match_identity\tpartner\tdirection_lrt" + (v4 ? "\tclosest_match_role\tclose_relative_p\tclosest_match_p\tbroad_sample_p" : "")];
-    for (const r of rows) { const pt = D.num("partner", r.g, r.li); const bm = D.num("best_match", r.g, r.li); const sr = v4 ? similarRole(D, r.g, r.li) : null;
-      const i = r.g * D.nloc + r.li; const rcr = D.rcAt ? D.rcAt(i) : null;
-      const bsp = rcr && !Number.isNaN(rcr.var_p) ? rcr.var_p : D.num("bs_log10p", r.g, r.li);
-      lines.push([r.taxon, r.locus, D.labelOf(r.code), r.test, p6(r.p), r.n_fail, r.n_similar, r.obs ?? "", r.exp ?? "", r.excess_m ?? "", bm !== null && bm >= 0 ? D.taxa.names[bm] : "", r.bm_id ?? "", pt !== null && pt >= 0 ? D.taxa.names[pt] : "", r.lam ?? "", ...(v4 ? [sr ? sr.role : "", p6(D.num("div_log10p", r.g, r.li)), p6(D.num("sim_log10p", r.g, r.li)), p6(bsp)] : [])].join("\t")); }
-    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/tab-separated-values" })); a.download = `${D.man.dataset || "report"}_cells.tsv`; a.click(); build();
-  }
-  return { render, download, open, repaint };
+  return { render, open, repaint };
 })();
 
 // ------------------------------------------------------------------ URL hash: view, ordering, viewport, open panels

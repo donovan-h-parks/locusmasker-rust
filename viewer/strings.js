@@ -99,11 +99,14 @@ const LM_STR = {
 
   // ---- the overview table: one row per mask of the bar's list. Headers; the footer.
   table: {
-    h_taxon: "taxon", h_locus: "locus",
+    h_id: "id", h_taxon: "taxon", h_locus: "locus",      // id: masked.csv's row number (rows by locus, then taxon)
+    h_reason: "reason",                                    // divergent, similar or both, as masked.csv's reason
     h_test: "test",                                        // which test masked it (the strongest, as masked.csv's mask_test)
     h_p: "p",                                              // the mask's one significance, with its stars
-    h_obs: "observed %", h_exp: "expected %",              // divergence to the close relatives, median
-    h_excess: "excess (m)", h_partner: "partner", h_best: "best match",
+    h_cr: "close-relative p", h_cm: "closest-match p", h_bs: "broad-sample p",   // each test's own p for the cell
+    h_partner: "partner",
+    r_divergent: "divergent", r_similar: "similar", r_both: "both",
+    source: "a summary of masked.csv, which carries every column",
     foot: "{n} rows · click a row for the alignment · click a header to sort, shift-click for the tie-breaking key",
   },
 
@@ -314,7 +317,6 @@ const LM_STR = {
     view_summary: "summary", view_matrix: "matrix", view_loci: "loci ribbons", view_taxa: "taxon ribbons", view_table: "table",
     order_input: "input order", order_masked: "most masked first", order_name: "name", order_length: "length", order_grouped: "grouped by shared masks",
     search: "find a taxon or locus  /",                                              // the finder's placeholder; / focuses it
-    tsv: "cells.tsv", tsv_hint: "download the cell table as TSV",                     // the two exports (a ⤓ precedes each)
     help: "pinch or ctrl+wheel: zoom (shift: loci only, alt: taxa only) · two-finger scroll or drag: move · shift+drag: zoom to a box · double-click: fit · click a label: open its panel · click a cell: open the alignment · arrows move, + and − zoom, / finds, Esc closes",
     tile_taxon: "{masked} of {tested} tested loci masked", tile_locus: "{masked} of {tested} tested taxa masked",   // the worst lists' hovers
     rib_name: "{name}: {masked} masked of {tested} tested",                          // a ribbon row's name hover
@@ -425,7 +427,7 @@ const LM_STR = {
 
   // ---- fatal states: shown in #app in place of the report.
   fatal: {
-    no_data: "This page carries no data: it is the viewer template without a report. Run locus_outliers.py; the report.html it writes has the data inside it.",
+    no_data: "This page carries no data: it is the viewer template without a report. Run locusmasker.py; the report.html it writes has the data inside it.",
     unreadable: "The report could not be read.",   // followed by the error detail, for a bug report
     // the page's data folder is missing (report.html was moved without report_files beside it)
     no_folder: "report_files is not beside report.html. Keep the two together: the page reads its data from that folder.",

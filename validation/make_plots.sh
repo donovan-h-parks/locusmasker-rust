@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run from a directory that holds one locus_outliers.py output folder per dataset, named as the dataset
+# Run from a directory that holds one locusmasker.py output folder per dataset, named as the dataset
 # (and test_data/<dataset>/alignment.nex in the repo for the matches page). A folder counts when it holds a run's
 # masked.csv and report.npz (a run made with --no-report has nothing to plot). Writes one PDF per dataset into
 # the repo's plots/datasets (cleared first; PLOTS_DIR=dir writes there instead) and keeps the page PNGs under pngs/

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Figures from a locus_outliers.py run (0.11.0 and later), written to one PDF (and PNGs with --png).
+"""Figures from a locusmasker.py run (0.11.0 and later), written to one PDF (and PNGs with --png).
 
     python plot_panels.py DIR [--plots taxa,loci,bars,matches,residuals_taxa,residuals_loci] [--top 100 | --all] [--cols 7] [--out DIR/plots.pdf] [--png] [--title NAME]
                           [--match-taxa 10] [--alignment ALN [--partitions FILE] [--datatype dna|aa]]
@@ -81,12 +81,12 @@ def open_report(d):
     if not os.path.exists(p):
         if os.path.exists(os.path.join(d, "cells.tsv")):
             raise SystemExit(f"{d} was written by LocusMasker 0.10 or earlier (cells.tsv, no report.npz); these plots read the report.npz of "
-                             "0.11.0 and later: re-run locus_outliers.py, or use the plot scripts of the version that made the run")
-        raise SystemExit(f"{p} not found: the plots read report.npz, which every run of locus_outliers.py writes unless --no-report")
+                             "0.11.0 and later: re-run locusmasker.py, or use the plot scripts of the version that made the run")
+        raise SystemExit(f"{p} not found: the plots read report.npz, which every run of locusmasker.py writes unless --no-report")
     z = zipfile.ZipFile(p); man = json.loads(z.read("manifest.json"))
     if man.get("format_version", 0) < 4:
         raise SystemExit(f"{p} is report format {man.get('format_version')} (LocusMasker {man.get('version', '?')}); these plots read "
-                         "format 4 and later (0.11.0): re-run locus_outliers.py")
+                         "format 4 and later (0.11.0): re-run locusmasker.py")
     return z, man
 Z, MAN = open_report(a.dir)
 def npy(k): return np.load(io.BytesIO(Z.read(k)))
@@ -384,7 +384,7 @@ def report_matches(taxon):
 def load_alignment():
     """the alignment as the tool encodes it (state index per site, -1 for anything outside the alphabet), and the run's
     genome-wide pair divergences m, recomputed by the tool (a run writes no matrix): the best-match tie-break"""
-    import locus_outliers as lo
+    import locusmasker as lo
     names, seqs, loci, fmt, declared, nexus = lo.read_input(a.alignment, a.partitions)
     if list(names) != list(TAXA): raise SystemExit(f"{a.alignment} does not hold the run's taxa in the run's order: give the alignment the run was made from")
     seqs = [q.encode() if isinstance(q, str) else bytes(q) for q in seqs]     # the reader returns one array, a row per taxon
