@@ -3,8 +3,9 @@
 //! locus; the classes of identical genomes; the full m up to FULL_M_MAX_TAXA).
 //!
 //! locusmasker.py walks pairs of taxon blocks with matrix products and reduces block results; its reductions are
-//! order-independent by construction, so this port walks the rows of the pair matrix directly, one taxon against
-//! every other, with the arithmetic of its compiled pair kernel (_pair_medians_py, _closest_rows_py).
+//! order-independent by construction, so this port walks the pair matrix directly with the arithmetic of its
+//! compiled pair kernel (_pair_medians_py, _closest_rows_py): each pair of taxa once, serving both of its rows
+//! (sweep_pairs_once), or a few given rows against every column (sweep_rows).
 use crate::input::Loci;
 use crate::npmath::*;
 use crate::pyfmt::commas;
@@ -120,6 +121,7 @@ impl Bits {
     }
     /// bytes of one taxon's planes
     pub fn row_bytes(&self) -> usize { (self.planes + 1) * self.wpr * 8 }
+    pub fn has_avx2(&self) -> bool { self.avx2 }
 }
 pub struct Slab { pub w: Vec<u32>, pub s: Vec<u32> }                // [tri(g, c) * nloc + li], g <= c
 
@@ -243,11 +245,13 @@ fn m_below(w: &[u32], s: &[u32], rr: Option<&[f64]>, ok_r: Option<&[bool]>, thr:
 }
 
 /// per-thread scratch of a pair: its counts at every locus, the medians' buffers, the kernel's masks
-struct Scratch { w: Vec<u32>, s: Vec<u32>, v: Vec<f64>, wv: Vec<f64>, f: Vec<f64>, wf: Vec<f64>, pa: Vec<u64>, eq: Vec<u64> }
+struct Scratch { w: Vec<u32>, s: Vec<u32>, v: Vec<f64>, wv: Vec<f64>, f: Vec<f64>, wf: Vec<f64>, pa: Vec<u64>, eq: Vec<u64>,
+                 z: Vec<f64>, wt: Vec<u64>, a: Vec<f64>, om: Vec<f64> }      // what the two directions of a pair share (sweep_pairs_once)
 impl Scratch {
     fn new(core: &Core) -> Scratch {
         let (nloc, wpr) = (core.nloc, core.bits.wpr);
-        Scratch { w: vec![0; nloc], s: vec![0; nloc], v: vec![0.0; nloc], wv: vec![0.0; nloc], f: vec![0.0; nloc], wf: vec![0.0; nloc], pa: vec![0; wpr], eq: vec![0; wpr] }
+        Scratch { w: vec![0; nloc], s: vec![0; nloc], v: vec![0.0; nloc], wv: vec![0.0; nloc], f: vec![0.0; nloc], wf: vec![0.0; nloc], pa: vec![0; wpr], eq: vec![0; wpr],
+                  z: vec![f64::NAN; nloc], wt: vec![0; nloc], a: vec![f64::NAN; nloc], om: vec![1.0; nloc] }
     }
 }
 
@@ -387,9 +391,18 @@ fn sweep_chunk(core: &Core, rows: &[usize], rr: Option<&[f64]>, ok_r: Option<&[b
     out
 }
 
-/// the sweep over the rows of the pair matrix (rows: the given taxa against everyone, for the second passes)
+/// the sweep over the rows of the pair matrix (rows: the given taxa against everyone, for the second passes; all of
+/// them: each pair once, sweep_pairs_once)
 #[allow(clippy::too_many_arguments)]
 pub fn sweep(core: &Core, rr: Option<&[f64]>, ok_r: Option<&[bool]>, key: Key, cmax: usize, fit: i64, want_closest: bool, want_full: bool, rows: Option<&[usize]>, stage: Option<&str>) -> SweepOut {
+    // every row against every column: each pair is computed once and serves both of its rows
+    if rows.is_none() && std::env::var_os("LOCUSMASKER_NO_PAIRS_ONCE").is_none() { return sweep_pairs_once(core, rr, ok_r, key, cmax, fit, want_closest, want_full, stage); }
+    sweep_rows(core, rr, ok_r, key, cmax, fit, want_closest, want_full, rows, stage)
+}
+
+/// the sweep row by row: the given rows (or all of them) against every column, each row on its own
+#[allow(clippy::too_many_arguments)]
+fn sweep_rows(core: &Core, rr: Option<&[f64]>, ok_r: Option<&[bool]>, key: Key, cmax: usize, fit: i64, want_closest: bool, want_full: bool, rows: Option<&[usize]>, stage: Option<&str>) -> SweepOut {
     let (n, nloc) = (core.n, core.nloc);
     let all: Vec<usize> = (0..n).collect(); let rows_v: &[usize] = rows.unwrap_or(&all);
     let prog = crate::log::prog();
@@ -405,8 +418,7 @@ pub fn sweep(core: &Core, rr: Option<&[f64]>, ok_r: Option<&[bool]>, key: Key, c
     let cmax = cmax.min(n);
     // the medians only where they are used, unless every m is kept (the full matrix) or a locus's rate is so small that
     // a value divided by it could overflow (the shortcut reads the loci that vote from the counts alone)
-    let lazy = !want_full && std::env::var_os("LOCUSMASKER_NO_LAZY").is_none()
-        && (0..nloc).all(|l| ok_r.map_or(true, |ok| !ok[l]) || rr.map_or(true, |r| r[l].is_finite() && r[l] >= 1e-300));
+    let lazy = lazy_ok(want_full, nloc, rr, ok_r);
     let res: Vec<Vec<RowRes>> = rows_v.par_chunks(chunk).map_init(|| Scratch::new(core),
         |sc, ch| { let r = sweep_chunk(core, ch, rr, ok_r, key, cmax, fit as f64, want_closest, want_full, lazy, sc); if stage.is_some() { prog.tick_k(ch.len(), None); } r }).collect();
     if stage.is_some() { prog.finish(); }
@@ -422,6 +434,360 @@ pub fn sweep(core: &Core, rr: Option<&[f64]>, ok_r: Option<&[bool]>, key: Key, c
         out.rows.push(r.list);
     }
     out.full = full; out
+}
+
+/// the medians only where they are used, unless every m is kept (the full matrix) or a locus's rate is so small or so
+/// large that a value divided by it could leave the normal range (the shortcuts read the loci that vote from the
+/// counts alone, and compare products against thresholds with a margin that assumes normal numbers)
+fn lazy_ok(want_full: bool, nloc: usize, rr: Option<&[f64]>, ok_r: Option<&[bool]>) -> bool {
+    !want_full && std::env::var_os("LOCUSMASKER_NO_LAZY").is_none()
+        && (0..nloc).all(|l| ok_r.map_or(true, |ok| !ok[l]) || rr.map_or(true, |r| r[l].is_finite() && r[l] >= 1e-300 && r[l] <= 1e300))
+}
+
+// ------------------------------------------------------------------ the sweep that computes each pair once
+// A pair's counts are the same from either side, so the rows of the pair matrix are swept above the diagonal only:
+// the pair (g, c), g < c, is counted once and offered to row g (as its column c) and to row c (as its column g). A
+// row's results are therefore gathered by many threads: each row has a state behind a lock (the cmax smallest keys
+// so far, the closest-match bands), and the cuts that decide whether a pair can matter to a row at all (the list's
+// largest kept key, each band's limit) are published in atomics that are read without the lock. A cut only ever
+// tightens, so a reader holding an old value lets through a pair that no longer matters, never the reverse: the lock
+// is taken for the few pairs that pass, and the state then decides with what it holds. What a row ends with is a
+// function of the set of its columns, not of the order they came in (the smallest keys by (key, column); the band
+// rule of band_insert), so the results are those of the row-by-row sweep, at any thread count.
+
+/// an entry of a row's candidate list, ordered by (key, column)
+#[derive(Clone, Copy)]
+struct Ent { key: f64, c: u32, m: f64, mfl: f64 }
+impl PartialEq for Ent { fn eq(&self, o: &Self) -> bool { self.cmp(o) == std::cmp::Ordering::Equal } }
+impl Eq for Ent {}
+impl PartialOrd for Ent { fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(o)) } }
+impl Ord for Ent { fn cmp(&self, o: &Self) -> std::cmp::Ordering { self.key.partial_cmp(&o.key).unwrap().then(self.c.cmp(&o.c)) } }
+
+const B_NONE: u32 = u32::MAX;            // no column yet at this locus
+const B_MULTI: u32 = u32::MAX - 1;       // more than one rate in the band: it is in `multi`
+
+/// a row's state: the cmax smallest entries so far (a heap, the largest on top) and, in sweep 2, the closest-match
+/// band of every locus. Nearly every band holds one rate, so one entry per locus is held in line (rate, vals,
+/// column) and the bands with more are kept aside
+struct RowState { heap: std::collections::BinaryHeap<Ent>, bd: Vec<f64>, bv: Vec<f64>, bc: Vec<u32>, multi: Vec<(u32, Band)> }
+
+impl RowState {
+    fn band(&self, li: usize) -> Band {
+        match self.bc[li] {
+            B_NONE => BAND_EMPTY,
+            B_MULTI => self.multi.iter().find(|x| x.0 == li as u32).expect("a band kept aside").1,
+            c => { let mut b = BAND_EMPTY; b.n = 1; b.e[0] = (self.bd[li], self.bv[li], c as i64); b }
+        }
+    }
+    /// a column whose rate d may be within the band of locus li: into the band if it is. Returns the band's limit
+    fn band_event(&mut self, li: usize, d: f64, mj: f64, col: usize) -> f64 {
+        let mut b = self.band(li);
+        let mut limit = if b.n == 0 { f64::INFINITY } else { b.e[0].0 + 1e-9 };
+        if d <= limit {
+            band_insert(&mut b, &mut limit, d, mj, col as i64);
+            let was_multi = self.bc[li] == B_MULTI;
+            if b.n == 1 {
+                if was_multi { self.multi.retain(|x| x.0 != li as u32); }
+                self.bd[li] = b.e[0].0; self.bv[li] = b.e[0].1; self.bc[li] = b.e[0].2 as u32;
+            } else if was_multi { self.multi.iter_mut().find(|x| x.0 == li as u32).unwrap().1 = b; }
+            else { self.multi.push((li as u32, b)); self.bc[li] = B_MULTI; }
+        }
+        limit
+    }
+    /// an entry whose key may be among the cmax smallest: into the list if it is. Returns the list's cut (its largest
+    /// kept key once it holds cmax entries)
+    fn list_event(&mut self, cmax: usize, e: Ent) -> f64 {
+        if self.heap.capacity() == 0 && cmax <= 4096 { self.heap.reserve_exact(cmax); }
+        if self.heap.len() < cmax { self.heap.push(e); }
+        else if let Some(mut top) = self.heap.peek_mut() { if e < *top { *top = e; } }
+        if self.heap.len() >= cmax { self.heap.peek().map_or(f64::INFINITY, |t| t.key) } else { f64::INFINITY }
+    }
+}
+
+/// values written from many threads, each element by one of them (the full m matrix: element (i, j) by the task that
+/// holds the pair)
+struct SharedF64(std::cell::UnsafeCell<Vec<f64>>);
+unsafe impl Sync for SharedF64 {}
+impl SharedF64 {
+    /// SAFETY: no two threads write the same element, and nothing reads until the writers are done
+    #[inline] unsafe fn set(&self, i: usize, v: f64) { *(*self.0.get()).as_mut_ptr().add(i) = v; }
+}
+
+/// What the two directions of a pair share, from its counts: per locus that votes (a rate, shared sites), the
+/// value z = x q with x the float32 divergence and q the reciprocal of the locus rate, and its weight; and for the
+/// closest match, a = mismatches + 1/2 and om = the shared sites, at the loci with enough of them (NaN elsewhere, so
+/// that every comparison fails there). Returns the total weight and the number of loci that vote.
+/// okm: -1 where the locus has a rate, 0 elsewhere. The loci from `from` on (the AVX2 version leaves its tail here)
+#[inline]
+fn derive_scalar(w: &[u32], s: &[u32], q: &[f64], okm: &[i32], fit: f64, bands: bool, z: &mut [f64], wt: &mut [u64], a: &mut [f64], om: &mut [f64], from: usize) -> (u64, usize) {
+    let (one, hundred) = (1.0f32, 100.0f32); let (mut tot, mut cnt) = (0u64, 0usize);
+    for l in from..w.len() {
+        let vote = (okm[l] != 0) & (w[l] > 0);
+        let x = (hundred * (one - s[l] as f32 / w[l] as f32)) as f64;
+        z[l] = if vote { x * q[l] } else { f64::NAN }; wt[l] = if vote { w[l] as u64 } else { 0 };
+        tot += wt[l]; cnt += vote as usize;
+        if bands { let o = w[l] as f64; a[l] = if o >= fit { o - s[l] as f64 + HALF } else { f64::NAN }; om[l] = o.max(1.0); }
+    }
+    (tot, cnt)
+}
+/// the same operations eight loci at a time (each is the IEEE operation of the scalar code: the same bits)
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn derive_avx2(w: &[u32], s: &[u32], q: &[f64], okm: &[i32], fit: f64, bands: bool, z: &mut [f64], wt: &mut [u64], a: &mut [f64], om: &mut [f64]) -> (u64, usize) {
+    use std::arch::x86_64::*;
+    let n = w.len(); let (one, hundred, nan) = (_mm256_set1_ps(1.0), _mm256_set1_ps(100.0), _mm256_set1_pd(f64::NAN));
+    let (vfit, vhalf, vone) = (_mm256_set1_pd(fit), _mm256_set1_pd(HALF), _mm256_set1_pd(1.0));
+    let mut acc = _mm256_setzero_si256(); let mut cnt = 0usize; let mut l = 0;
+    while l + 8 <= n {
+        let wi = _mm256_loadu_si256(w.as_ptr().add(l) as *const __m256i); let si = _mm256_loadu_si256(s.as_ptr().add(l) as *const __m256i);
+        // the loci that vote: a rate and shared sites (the counts are below 2^24: exact as float32, and as signed integers)
+        let vote = _mm256_and_si256(_mm256_loadu_si256(okm.as_ptr().add(l) as *const __m256i), _mm256_cmpgt_epi32(wi, _mm256_setzero_si256()));
+        cnt += (_mm256_movemask_ps(_mm256_castsi256_ps(vote)) as u32).count_ones() as usize;
+        let x = _mm256_mul_ps(hundred, _mm256_sub_ps(one, _mm256_div_ps(_mm256_cvtepi32_ps(si), _mm256_cvtepi32_ps(wi))));
+        for h in 0..2 {
+            let (x4, w4, s4, v4) = if h == 0 { (_mm256_castps256_ps128(x), _mm256_castsi256_si128(wi), _mm256_castsi256_si128(si), _mm256_castsi256_si128(vote)) }
+                                   else { (_mm256_extractf128_ps::<1>(x), _mm256_extracti128_si256::<1>(wi), _mm256_extracti128_si256::<1>(si), _mm256_extracti128_si256::<1>(vote)) };
+            let at = l + 4 * h; let v64 = _mm256_cvtepi32_epi64(v4);
+            let zz = _mm256_mul_pd(_mm256_cvtps_pd(x4), _mm256_loadu_pd(q.as_ptr().add(at)));
+            _mm256_storeu_pd(z.as_mut_ptr().add(at), _mm256_blendv_pd(nan, zz, _mm256_castsi256_pd(v64)));
+            let wv = _mm256_and_si256(_mm256_cvtepu32_epi64(w4), v64);
+            _mm256_storeu_si256(wt.as_mut_ptr().add(at) as *mut __m256i, wv); acc = _mm256_add_epi64(acc, wv);
+            if bands {
+                let o = _mm256_cvtepi32_pd(w4);
+                let av = _mm256_add_pd(_mm256_sub_pd(o, _mm256_cvtepi32_pd(s4)), vhalf);
+                _mm256_storeu_pd(a.as_mut_ptr().add(at), _mm256_blendv_pd(nan, av, _mm256_cmp_pd::<_CMP_GE_OQ>(o, vfit)));
+                _mm256_storeu_pd(om.as_mut_ptr().add(at), _mm256_max_pd(o, vone));
+            }
+        }
+        l += 8;
+    }
+    let mut t = [0u64; 4]; _mm256_storeu_si256(t.as_mut_ptr() as *mut __m256i, acc);
+    let (tot2, cnt2) = derive_scalar(w, s, q, okm, fit, bands, z, wt, a, om, l);
+    (t[0] + t[1] + t[2] + t[3] + tot2, cnt + cnt2)
+}
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn derive(w: &[u32], s: &[u32], q: &[f64], okm: &[i32], fit: f64, bands: bool, z: &mut [f64], wt: &mut [u64], a: &mut [f64], om: &mut [f64], avx2: bool) -> (u64, usize) {
+    #[cfg(target_arch = "x86_64")]
+    if avx2 { return unsafe { derive_avx2(w, s, q, okm, fit, bands, z, wt, a, om) }; }
+    let _ = avx2; derive_scalar(w, s, q, okm, fit, bands, z, wt, a, om, 0)
+}
+
+/// the weight of the loci whose z is below lo for certain, and whether any z lies in [lo, hi] (to be settled exactly)
+#[inline]
+fn below_scalar(z: &[f64], wt: &[u64], lo: f64, hi: f64) -> (u64, bool) {
+    let (mut below, mut unsure) = (0u64, false);
+    for l in 0..z.len() { if z[l] < lo { below += wt[l]; } unsure |= z[l] >= lo && z[l] <= hi; }
+    (below, unsure)
+}
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn below_avx2(z: &[f64], wt: &[u64], lo: f64, hi: f64) -> (u64, bool) {
+    use std::arch::x86_64::*;
+    let n = z.len(); let (vlo, vhi) = (_mm256_set1_pd(lo), _mm256_set1_pd(hi));
+    let mut acc = _mm256_setzero_si256(); let mut un = _mm256_setzero_pd(); let mut l = 0;
+    while l + 4 <= n {
+        let zv = _mm256_loadu_pd(z.as_ptr().add(l));
+        let lt = _mm256_cmp_pd::<_CMP_LT_OQ>(zv, vlo);
+        acc = _mm256_add_epi64(acc, _mm256_and_si256(_mm256_castpd_si256(lt), _mm256_loadu_si256(wt.as_ptr().add(l) as *const __m256i)));
+        un = _mm256_or_pd(un, _mm256_and_pd(_mm256_cmp_pd::<_CMP_GE_OQ>(zv, vlo), _mm256_cmp_pd::<_CMP_LE_OQ>(zv, vhi)));
+        l += 4;
+    }
+    let mut t = [0u64; 4]; _mm256_storeu_si256(t.as_mut_ptr() as *mut __m256i, acc);
+    let (mut below, mut unsure) = (t[0] + t[1] + t[2] + t[3], _mm256_movemask_pd(un) != 0);
+    while l < n { if z[l] < lo { below += wt[l]; } unsure |= z[l] >= lo && z[l] <= hi; l += 1; }
+    (below, unsure)
+}
+
+/// Without computing it: is the pair's m at most thr? The weighted median is at most thr exactly when the loci
+/// whose value is at most thr carry at least half the weight. A locus's value x / r is compared through z = x q:
+/// below thr (1 - 1e-12) it is below thr for certain, above thr (1 + 1e-12) above it for certain (the rates are
+/// normal numbers, lazy_ok), and when a locus lies in between the divisions are done
+#[inline]
+fn m_at_most(sc: &Scratch, tot: u64, thr: f64, rr: Option<&[f64]>, okm: &[i32], avx2: bool) -> bool {
+    let (lo, hi) = (thr * (1.0 - 1e-12), thr * (1.0 + 1e-12));
+    #[cfg(target_arch = "x86_64")]
+    let (mut below, unsure) = if avx2 { unsafe { below_avx2(&sc.z, &sc.wt, lo, hi) } } else { below_scalar(&sc.z, &sc.wt, lo, hi) };
+    #[cfg(not(target_arch = "x86_64"))]
+    let (mut below, unsure) = { let _ = avx2; below_scalar(&sc.z, &sc.wt, lo, hi) };
+    if unsure {
+        let (one, hundred) = (1.0f32, 100.0f32); below = 0;
+        for l in 0..sc.w.len() {
+            if okm[l] == 0 || sc.w[l] == 0 { continue; }
+            let x = (hundred * (one - sc.s[l] as f32 / sc.w[l] as f32)) as f64;
+            if x / (match rr { Some(rr) => rr[l], None => 1.0 }) <= thr { below += sc.w[l] as u64; }
+        }
+    }
+    2 * below >= tot
+}
+
+/// is any locus's a at most lim1 om: can the pair's rate be within a band of this row?
+#[inline]
+fn band_hit_scalar(a: &[f64], om: &[f64], lim1: &[f64]) -> bool { let mut hit = false; for l in 0..a.len() { hit |= a[l] <= lim1[l] * om[l]; } hit }
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn band_hit_avx2(a: &[f64], om: &[f64], lim1: &[f64]) -> bool {
+    use std::arch::x86_64::*;
+    let n = a.len(); let mut hit = _mm256_setzero_pd(); let mut l = 0;
+    while l + 4 <= n {
+        let p = _mm256_mul_pd(_mm256_loadu_pd(lim1.as_ptr().add(l)), _mm256_loadu_pd(om.as_ptr().add(l)));
+        hit = _mm256_or_pd(hit, _mm256_cmp_pd::<_CMP_LE_OQ>(_mm256_loadu_pd(a.as_ptr().add(l)), p)); l += 4;
+    }
+    let mut h = _mm256_movemask_pd(hit) != 0;
+    while l < n { h |= a[l] <= lim1[l] * om[l]; l += 1; }
+    h
+}
+#[inline]
+fn band_hit(a: &[f64], om: &[f64], lim1: &[f64], avx2: bool) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    if avx2 { return unsafe { band_hit_avx2(a, om, lim1) }; }
+    let _ = avx2; band_hit_scalar(a, om, lim1)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sweep_pairs_once(core: &Core, rr: Option<&[f64]>, ok_r: Option<&[bool]>, key: Key, cmax: usize, fit: i64, want_closest: bool, want_full: bool, stage: Option<&str>) -> SweepOut {
+    use std::sync::atomic::{AtomicI64, AtomicU64, Ordering::Relaxed};
+    use std::sync::Mutex;
+    let (n, nloc) = (core.n, core.nloc); let prog = crate::log::prog();
+    assert!(n < B_MULTI as usize, "too many taxa for a 32-bit column index");
+    let threads = rayon::current_num_threads().max(1);
+    let chunk = (SWEEP_CHUNK_BYTES / core.bits.row_bytes().max(1)).clamp(4, 64).min(n.div_ceil(4 * threads)).max(1);
+    if let Some(st) = stage {
+        log!("pair sweep {}: each pair of {} taxa once, {} rows at a time, {} thread{}, the pair counts {}", st, commas(n as i64), chunk, threads,
+             if threads > 1 { "s" } else { "" }, if core.slab.is_some() { "kept for the run" } else { "from the residues" });
+        prog.start(st, n);
+    }
+    let cmax = cmax.min(n).max(1); let fit_f = fit as f64; let avx2 = core.bits.has_avx2();
+    let lazy = lazy_ok(want_full, nloc, rr, ok_r);
+    let okm: Vec<i32> = (0..nloc).map(|l| if ok_r.map_or(true, |ok| ok[l]) { -1 } else { 0 }).collect();
+    let q: Vec<f64> = (0..nloc).map(|l| match rr { Some(r) if okm[l] != 0 => 1.0 / r[l], _ => 1.0 }).collect();
+    let inf = f64::INFINITY.to_bits();
+    let thr: Vec<AtomicU64> = (0..n).map(|_| AtomicU64::new(inf)).collect();
+    let lim1: Vec<AtomicU64> = if want_closest { (0..n * nloc).map(|_| AtomicU64::new(inf)).collect() } else { vec![] };
+    let nfin: Vec<AtomicI64> = (0..n).map(|_| AtomicI64::new(0)).collect();
+    let states: Vec<Mutex<RowState>> = (0..n).map(|_| Mutex::new(RowState { heap: std::collections::BinaryHeap::new(),
+        bd: if want_closest { vec![0.0; nloc] } else { vec![] }, bv: if want_closest { vec![0.0; nloc] } else { vec![] }, bc: if want_closest { vec![B_NONE; nloc] } else { vec![] }, multi: vec![] })).collect();
+    let full: Option<(SharedF64, SharedF64)> = if want_full { Some((SharedF64(std::cell::UnsafeCell::new(vec![f64::NAN; n * n])), SharedF64(std::cell::UnsafeCell::new(vec![f64::NAN; n * n])))) } else { None };
+    // progress in rows, in proportion to the pairs done (row g holds n - 1 - g pairs)
+    let total_pairs = (n as u64) * (n as u64 - 1) / 2; let done_pairs = AtomicU64::new(0); let ticked = AtomicU64::new(0);
+    let starts: Vec<usize> = (0..n).step_by(chunk).collect();
+    let parts: Vec<(Vec<(usize, usize)>, (i64, i64, i64))> = starts.par_iter().with_max_len(1).map_init(|| Scratch::new(core), |sc, &a| {
+        let b = (a + chunk).min(n); let nr = b - a;
+        let mut ident: Vec<(usize, usize)> = vec![]; let mut counters = (0i64, 0i64, 0i64);
+        // this chunk's rows: their cuts as last seen (other threads tighten them too; refreshed every few columns)
+        let mut lthr = vec![f64::INFINITY; nr]; let mut llim = if want_closest { vec![f64::INFINITY; nr * nloc] } else { vec![] };
+        let mut own_nfin = vec![0i64; nr]; let mut clim = if want_closest { vec![f64::INFINITY; nloc] } else { vec![] };
+        for c in a + 1..n {
+            let gmax = b.min(c);
+            if (c - a) & 7 == 1 {
+                for ri in 0..nr { lthr[ri] = f64::from_bits(thr[a + ri].load(Relaxed)); }
+                if want_closest { for (k, v) in llim.iter_mut().enumerate() { *v = f64::from_bits(lim1[a * nloc + k].load(Relaxed)); } }
+            }
+            // the column as a row: its cuts as they stand
+            let mut cthr = f64::from_bits(thr[c].load(Relaxed));
+            if want_closest { for l in 0..nloc { clim[l] = f64::from_bits(lim1[c * nloc + l].load(Relaxed)); } }
+            let mut c_nfin = 0i64;
+            for g in a..gmax {
+                let ri = g - a;
+                core.pair_counts(g, c, &mut sc.w, &mut sc.s, &mut sc.pa, &mut sc.eq);
+                let tot_same: u64 = sc.s.iter().map(|x| *x as u64).sum(); let tot_shared: u64 = sc.w.iter().map(|x| *x as u64).sum();
+                let is_ident = tot_shared > 0 && tot_same == tot_shared;
+                if is_ident { ident.push((g, c)); }
+                // mm, mf: the pair's m and floor once computed (have_m, have_f); m_fin: whether m is finite
+                let (mut mm, mut mf, mut have_m, mut have_f) = (f64::NAN, f64::NAN, false, false);
+                // nl: the loci that vote; tot_w: their weight (the lazy tests read it)
+                let mut tot_w = 0u64;
+                let (nl, m_fin) = if lazy {
+                    let (tw, cnt) = derive(&sc.w, &sc.s, &q, &okm, fit_f, want_closest, &mut sc.z, &mut sc.wt, &mut sc.a, &mut sc.om, avx2);
+                    tot_w = tw; (cnt, cnt >= MIN_LOCI_FOR_M)
+                } else {
+                    let r = pair_medians(&sc.w, &sc.s, rr, ok_r, &mut sc.v, &mut sc.wv, &mut sc.f, &mut sc.wf);
+                    mm = r.0; mf = r.1; have_m = true; have_f = true;
+                    if let Some((fm, ff)) = &full { unsafe { fm.set(g * n + c, mm); fm.set(c * n + g, mm); ff.set(g * n + c, mf); ff.set(c * n + g, mf); } }
+                    if want_closest { for l in 0..nloc { let o = sc.w[l] as f64; sc.a[l] = if o >= fit_f { o - sc.s[l] as f64 + HALF } else { f64::NAN }; sc.om[l] = o.max(1.0); } }
+                    (r.2, mm.is_finite())
+                };
+                if core.keep[g] && core.keep[c] { counters.1 += 1; if nl < MIN_LOCI_FOR_M { counters.0 += 1; } if m_fin { counters.2 += 1; } }
+                if !m_fin || is_ident { continue; }                  // no finite mj: the pair enters no list and no band
+                let base = (100.0 - 100.0 * tot_same as f64 / tot_shared as f64) * 1e-9;
+                if key == Key::Mj { own_nfin[ri] += 1; c_nfin += 1; }
+                // the two directions: row g with column c, row c with column g
+                for dir in 0..2 {
+                    let (row, col) = if dir == 0 { (g, c) } else { (c, g) };
+                    let t = if dir == 0 { lthr[ri] } else { cthr };
+                    if !lazy || m_at_most(sc, tot_w, t, rr, &okm, avx2) {
+                        if !have_m { mm = median_m(&sc.w, &sc.s, rr, ok_r, &mut sc.v, &mut sc.wv).0; have_m = true; }
+                        if key == Key::M0 && !have_f { mf = median_floor(&sc.w, rr, ok_r, &mut sc.f, &mut sc.wf); have_f = true; }
+                        let k = match key { Key::M0 => if mm > mf { mm } else { f64::INFINITY }, Key::Mj => mm + (base + col as f64 * 1e-12) };
+                        if k.is_finite() {
+                            if key == Key::M0 && !lazy { if dir == 0 { own_nfin[ri] += 1; } else { c_nfin += 1; } }
+                            if k <= t {
+                                if !have_f { mf = median_floor(&sc.w, rr, ok_r, &mut sc.f, &mut sc.wf); have_f = true; }
+                                let mut st = states[row].lock().unwrap();
+                                let t2 = st.list_event(cmax, Ent { key: k, c: col as u32, m: mm, mfl: mf });
+                                thr[row].store(t2.to_bits(), Relaxed); drop(st);
+                                if dir == 0 { lthr[ri] = t2; } else { cthr = t2; }
+                            }
+                        }
+                    }
+                    if want_closest {
+                        let lim: &mut [f64] = if dir == 0 { &mut llim[ri * nloc..(ri + 1) * nloc] } else { &mut clim };
+                        if band_hit(&sc.a, &sc.om, lim, avx2) {
+                            if !have_m { mm = median_m(&sc.w, &sc.s, rr, ok_r, &mut sc.v, &mut sc.wv).0; have_m = true; }
+                            let mj = mm + (base + col as f64 * 1e-12);
+                            let mut st = states[row].lock().unwrap();
+                            for li in 0..nloc {
+                                // d = a / om is above the limit for certain when a is above limit (1 + 1e-12) om
+                                if !(sc.a[li] <= lim[li] * sc.om[li]) { continue; }
+                                let l1 = st.band_event(li, sc.a[li] / sc.om[li], mj, col) * (1.0 + 1e-12);
+                                lim[li] = l1; lim1[row * nloc + li].store(l1.to_bits(), Relaxed);
+                            }
+                        }
+                    }
+                }
+            }
+            if c_nfin != 0 { nfin[c].fetch_add(c_nfin, Relaxed); }
+        }
+        for ri in 0..nr { if own_nfin[ri] != 0 { nfin[a + ri].fetch_add(own_nfin[ri], Relaxed); } }
+        if stage.is_some() && total_pairs > 0 {
+            let mine: u64 = (a..b).map(|g| (n - 1 - g) as u64).sum();
+            let d = done_pairs.fetch_add(mine, Relaxed) + mine;
+            let want = (n as u128 * d as u128 / total_pairs as u128) as u64; let had = ticked.fetch_max(want, Relaxed);
+            if want > had { prog.tick_k((want - had) as usize, None); }
+        }
+        (ident, counters)
+    }).collect();
+    if stage.is_some() { prog.finish(); }
+    let mut out = SweepOut { rows: vec![], cl_win: vec![], cl_dmin: vec![], ident: vec![], counters: (0, 0, 0), full: None, overflow: 0 };
+    for (id, cn) in parts { out.ident.extend(id); out.counters.0 += cn.0; out.counters.1 += cn.1; out.counters.2 += cn.2; }
+    out.ident.sort_unstable();
+    // each row's list in order, and the closest match at every locus from its bands
+    let count_all = !(lazy && key == Key::M0);            // a lazy M0 sweep does not count every finite key: its nfin is the list's length
+    let rows: Vec<(RowList, Vec<i64>, Vec<f64>, i64)> = states.into_par_iter().enumerate().map(|(g, st)| {
+        let st = st.into_inner().unwrap();
+        let (cl_win, cl_dmin, overflow) = if want_closest {
+            let (mut win, mut dmin, mut over) = (vec![-1i64; nloc], vec![f64::INFINITY; nloc], 0i64);
+            for li in 0..nloc {
+                let b = st.band(li); let kept = (b.n as usize).min(BAND_SLOTS);
+                if b.n as usize > BAND_SLOTS { over += 1; }
+                if kept == 0 { continue; }
+                // closest_winners: the (vals, column)-smallest of the kept entries
+                let mut best = 0usize;
+                for j in 1..kept { if b.e[j].1 < b.e[best].1 || (b.e[j].1 == b.e[best].1 && b.e[j].2 < b.e[best].2) { best = j; } }
+                win[li] = b.e[best].2; dmin[li] = b.e[0].0;
+            }
+            (win, dmin, over)
+        } else { (vec![], vec![], 0) };
+        let e = st.heap.into_sorted_vec();
+        let list = RowList { cand: e.iter().map(|x| x.c as i64).collect(), key: e.iter().map(|x| x.key).collect(), m: e.iter().map(|x| x.m).collect(), mfl: e.iter().map(|x| x.mfl).collect(),
+                             nfin: if count_all { nfin[g].load(Relaxed) } else { e.len() as i64 } };
+        (list, cl_win, cl_dmin, overflow)
+    }).collect();
+    out.rows.reserve(n); if want_closest { out.cl_win.reserve(n * nloc); out.cl_dmin.reserve(n * nloc); }
+    for (list, w, d, o) in rows { out.rows.push(list); out.cl_win.extend(w); out.cl_dmin.extend(d); out.overflow += o; }
+    out.full = full.map(|(m, f)| (m.0.into_inner(), f.0.into_inner()));
+    out
 }
 
 /// each taxon's class of identical genomes: the lowest index among the genomes it is linked to
@@ -663,4 +1029,131 @@ pub fn bs_prepare(p: &Prep, k_eff: usize) -> Option<BsPools> {
     let mut pool = Vec::with_capacity(n * pn); let mut mstar = Vec::with_capacity(n * pn);
     for (a, b) in rows { pool.extend(a); mstar.extend(b); }
     Some(BsPools { k, pn, pool, mstar })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// a small random alignment with relatives, gaps, identical genomes and a taxon with almost nothing
+    fn random_core(seed: u64, n: usize, nloc: usize, a_: usize) -> Core {
+        let mut x = seed; let mut rnd = move || { x = sm64(x.wrapping_add(0x9E3779B97F4A7C15)); x };
+        let lens: Vec<usize> = (0..nloc).map(|_| 20 + (rnd() % 150) as usize).collect();
+        let mut off = vec![0usize]; for l in &lens { off.push(off.last().unwrap() + l); }
+        let lt = *off.last().unwrap(); let mut xl = vec![-1i8; n * lt];
+        for g in 0..n {
+            let parent = if g > 0 && rnd() % 4 != 0 { Some((rnd() % g as u64) as usize) } else { None };
+            let rate = [0u64, 1, 3, 10, 40][(rnd() % 5) as usize];           // percent of sites that differ from the parent
+            for k in 0..lt {
+                let v = match parent { Some(p) if rnd() % 100 >= rate => xl[p * lt + k], _ => (rnd() % a_ as u64) as i8 };
+                xl[g * lt + k] = if rnd() % 12 == 0 { -1 } else { v };
+            }
+            if g % 17 == 5 { for li in 0..nloc { if rnd() % 3 != 0 { for k in off[li]..off[li + 1] { xl[g * lt + k] = -1; } } } }
+        }
+        for k in 0..lt { let v = xl[k]; xl[(n - 1) * lt + k] = v; }      // the last genome is a copy of the first
+        let bits = Bits::build(n, &xl, lt, &off, a_);
+        Core { n, nloc, lt, xl, off, keep: (0..n).map(|g| g % 23 != 7).collect(), a_, slab: None, bits }
+    }
+
+    fn same(a: &SweepOut, b: &SweepOut, nfin: bool) {
+        assert_eq!(a.rows.len(), b.rows.len());
+        for (g, (x, y)) in a.rows.iter().zip(&b.rows).enumerate() {
+            assert_eq!(x.cand, y.cand, "row {g}: candidates");
+            let bits = |v: &[f64]| v.iter().map(|f| f.to_bits()).collect::<Vec<u64>>();
+            assert_eq!(bits(&x.key), bits(&y.key), "row {g}: keys"); assert_eq!(bits(&x.m), bits(&y.m), "row {g}: m"); assert_eq!(bits(&x.mfl), bits(&y.mfl), "row {g}: floors");
+            if nfin { assert_eq!(x.nfin, y.nfin, "row {g}: nfin"); }
+        }
+        assert_eq!(a.cl_win, b.cl_win); assert_eq!(a.cl_dmin.iter().map(|f| f.to_bits()).collect::<Vec<_>>(), b.cl_dmin.iter().map(|f| f.to_bits()).collect::<Vec<_>>());
+        assert_eq!(a.ident, b.ident); assert_eq!(a.counters, b.counters); assert_eq!(a.overflow, b.overflow);
+        match (&a.full, &b.full) {
+            (Some((m1, f1)), Some((m2, f2))) => { assert!(m1.iter().zip(m2).all(|(p, q)| p.to_bits() == q.to_bits())); assert!(f1.iter().zip(f2).all(|(p, q)| p.to_bits() == q.to_bits())); }
+            (None, None) => {} _ => panic!("one sweep kept the full matrix"),
+        }
+    }
+
+    /// the sweep that computes each pair once gives what the row-by-row sweep gives: lists, closest matches, identical
+    /// pairs, counters and the full matrix, in each of its modes
+    #[test]
+    fn pairs_once_is_the_row_sweep() {
+        for (seed, n, nloc, a_, cmax) in [(1u64, 90usize, 14usize, 20usize, 7usize), (2, 61, 9, 4, 200), (3, 140, 23, 20, 12), (4, 33, 12, 4, 3)] {
+            let core = random_core(seed, n, nloc, a_);
+            let mut x = seed ^ 99; let rr: Vec<f64> = (0..nloc).map(|_| { x = sm64(x); 0.3 + (x % 1000) as f64 / 400.0 }).collect();
+            let ok: Vec<bool> = (0..nloc).map(|l| l % 5 != 3).collect();
+            // sweep 1 (the lazy M0 sweep's nfin is not compared: neither sweep counts every key there)
+            same(&sweep_rows(&core, None, None, Key::M0, cmax, 20, false, false, None, None), &sweep_pairs_once(&core, None, None, Key::M0, cmax, 20, false, false, None), false);
+            // sweep 2, the medians where they are used
+            same(&sweep_rows(&core, Some(&rr), Some(&ok), Key::Mj, cmax, 20, true, false, None, None), &sweep_pairs_once(&core, Some(&rr), Some(&ok), Key::Mj, cmax, 20, true, false, None), true);
+            // sweep 2 with the full matrix
+            same(&sweep_rows(&core, Some(&rr), Some(&ok), Key::Mj, cmax, 20, true, true, None, None), &sweep_pairs_once(&core, Some(&rr), Some(&ok), Key::Mj, cmax, 20, true, true, None), true);
+        }
+    }
+
+    /// the shared per-pair values eight loci at a time are those of the scalar code, bit for bit
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn derive_avx2_is_derive_scalar() {
+        if !std::is_x86_feature_detected!("avx2") { return; }
+        let mut x = 7u64;
+        for nloc in [1usize, 7, 8, 9, 53, 120] {
+            for _ in 0..200 {
+                let w: Vec<u32> = (0..nloc).map(|_| { x = sm64(x); if x % 7 == 0 { 0 } else { (x >> 8) as u32 % 900 } }).collect();
+                let s: Vec<u32> = w.iter().map(|&wv| { x = sm64(x); if wv == 0 { 0 } else { (x >> 8) as u32 % (wv + 1) } }).collect();
+                let q: Vec<f64> = (0..nloc).map(|_| { x = sm64(x); 0.2 + (x % 1000) as f64 / 300.0 }).collect();
+                let okm: Vec<i32> = (0..nloc).map(|_| { x = sm64(x); if x % 6 == 0 { 0 } else { -1 } }).collect();
+                let mk = || (vec![0.0f64; nloc], vec![0u64; nloc], vec![0.0f64; nloc], vec![0.0f64; nloc]);
+                let (mut z1, mut t1, mut a1, mut o1) = mk(); let (mut z2, mut t2, mut a2, mut o2) = mk();
+                let r1 = derive_scalar(&w, &s, &q, &okm, 20.0, true, &mut z1, &mut t1, &mut a1, &mut o1, 0);
+                let r2 = unsafe { derive_avx2(&w, &s, &q, &okm, 20.0, true, &mut z2, &mut t2, &mut a2, &mut o2) };
+                let b = |v: &[f64]| v.iter().map(|f| if f.is_nan() { u64::MAX } else { f.to_bits() }).collect::<Vec<u64>>();
+                assert_eq!(r1, r2); assert_eq!(b(&z1), b(&z2)); assert_eq!(t1, t2); assert_eq!(b(&a1), b(&a2)); assert_eq!(b(&o1), b(&o2));
+                for thr in [0.0, 3.0, 40.0, f64::INFINITY, z1.iter().copied().find(|v| v.is_finite()).unwrap_or(1.0)] {
+                    let (lo, hi) = (thr * (1.0 - 1e-12), thr * (1.0 + 1e-12));
+                    assert_eq!(below_scalar(&z1, &t1, lo, hi), unsafe { below_avx2(&z1, &t1, lo, hi) });
+                }
+                let lim: Vec<f64> = (0..nloc).map(|_| { x = sm64(x); if x % 3 == 0 { f64::INFINITY } else { (x % 100) as f64 / 400.0 } }).collect();
+                assert_eq!(band_hit_scalar(&a1, &o1, &lim), unsafe { band_hit_avx2(&a1, &o1, &lim) });
+            }
+        }
+    }
+
+    /// m_at_most says whether the weighted median is at most the threshold, also when the threshold is a locus's value
+    #[test]
+    fn m_at_most_is_the_median_test() {
+        let core = random_core(5, 40, 16, 20); let nloc = core.nloc; let mut sc = Scratch::new(&core);
+        let rr: Vec<f64> = (0..nloc).map(|l| 0.4 + l as f64 / 7.0).collect(); let ok: Vec<bool> = (0..nloc).map(|l| l != 2).collect();
+        let okm: Vec<i32> = ok.iter().map(|o| if *o { -1 } else { 0 }).collect(); let q: Vec<f64> = (0..nloc).map(|l| 1.0 / rr[l]).collect();
+        for g in 0..core.n { for c in g + 1..core.n {
+            core.pair_counts(g, c, &mut sc.w, &mut sc.s, &mut sc.pa, &mut sc.eq);
+            let (w, s) = (sc.w.clone(), sc.s.clone());
+            let (m, cnt) = median_m(&w, &s, Some(&rr), Some(&ok), &mut sc.v, &mut sc.wv);
+            let (tot, cnt2) = derive(&w, &s, &q, &okm, 20.0, false, &mut sc.z, &mut sc.wt, &mut sc.a, &mut sc.om, core.bits.has_avx2());
+            assert_eq!(cnt, cnt2);
+            if cnt < MIN_LOCI_FOR_M { continue; }
+            for thr in [m, m * (1.0 - 1e-15), m * (1.0 + 1e-15), m / 2.0, m * 2.0, 0.0, f64::INFINITY] {
+                assert_eq!(m_at_most(&sc, tot, thr, Some(&rr), &okm, core.bits.has_avx2()), m <= thr, "pair ({g}, {c}), m {m}, threshold {thr}");
+            }
+        } }
+    }
+
+    /// a row's bands held one entry in line and the rest aside are the bands of band_insert, whatever the order
+    #[test]
+    fn row_state_bands_are_band_insert() {
+        let mut x = 11u64;
+        for _ in 0..300 {
+            let k = 1 + (sm64(x) % 12) as usize; x = sm64(x);
+            // rates that tie, nearly tie (within 1e-9) and differ
+            let ev: Vec<(f64, f64, usize)> = (0..k).map(|i| { x = sm64(x); let d = [0.01, 0.01 + 2e-10, 0.01 + 4e-10, 0.01 + 6e-10, 0.01 + 8e-10, 0.01 + 9.5e-10, 0.02, 0.005][(x % 8) as usize]; x = sm64(x); (d, (x % 50) as f64, i) }).collect();
+            let mut plain = BAND_EMPTY; let mut lim = f64::INFINITY;
+            for &(d, mj, c) in &ev { if d <= lim { band_insert(&mut plain, &mut lim, d, mj, c as i64); } }
+            let mut st = RowState { heap: std::collections::BinaryHeap::new(), bd: vec![0.0; 2], bv: vec![0.0; 2], bc: vec![B_NONE; 2], multi: vec![] };
+            let mut order = ev.clone(); order.reverse();
+            for &(d, mj, c) in &order { st.band_event(1, d, mj, c); }
+            let b = st.band(1);
+            assert_eq!(b.n.min(BAND_SLOTS as u8), plain.n.min(BAND_SLOTS as u8));
+            let kept = (b.n as usize).min(BAND_SLOTS);
+            let win = |b: &Band| (0..kept).map(|j| (b.e[j].1, b.e[j].2)).fold((f64::INFINITY, i64::MAX), |a, v| if v.0 < a.0 || (v.0 == a.0 && v.1 < a.1) { v } else { a });
+            assert_eq!(b.e[0].0.to_bits(), plain.e[0].0.to_bits()); assert_eq!(win(&b), win(&plain));
+            assert_eq!(st.bc[0], B_NONE);
+        }
+    }
 }
