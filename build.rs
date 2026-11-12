@@ -11,5 +11,5 @@ fn main() {
     println!("cargo:rustc-env=LM_GIT_COMMIT={commit}");
     println!("cargo:rustc-env=LM_RUSTC={rustc}");
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=../.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/HEAD");
 }

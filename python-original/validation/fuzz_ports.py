@@ -70,7 +70,7 @@ def make_case(rng, d):
 
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--cases", type=int, default=40); ap.add_argument("--seed", type=int, default=1); ap.add_argument("--keep")
-    ap.add_argument("--rust", default=os.path.join(ROOT, "rust", "target", "release", "locusmasker")); ap.add_argument("--python", default=sys.executable)
+    ap.add_argument("--rust", default=os.path.join(os.path.dirname(ROOT), "target", "release", "locusmasker")); ap.add_argument("--python", default=sys.executable)
     a = ap.parse_args(); work = a.keep or tempfile.mkdtemp(prefix="lm_fuzz_"); bad = 0; ran = 0; stopped = 0; why = {}
     for c in range(a.cases):
         rng = np.random.default_rng([a.seed, c]); d = os.path.join(work, f"case{c}"); shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
