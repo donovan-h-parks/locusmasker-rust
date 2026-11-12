@@ -1,6 +1,6 @@
 usage: locusmasker --aln FILE --datatype dna|aa --out DIR [options]
 
-LocusMasker 0.14.0: find and mask the per-locus outliers of a multi-locus alignment.
+LocusMasker 0.15.0: find and mask the per-locus outliers of a multi-locus alignment.
 
   locusmasker --aln alignment.nex --datatype dna --out scan
   locusmasker --aln alignment.fasta --partitions partitions.txt --datatype dna --out scan

@@ -8,13 +8,15 @@
 What is compared: the masked alignment and masked.csv as files; tests.tsv.gz decompressed; every member of report.npz
 but manifest.json; every member of the report's core (inline in report.html) and of every report_files chunk, decoded;
 and the manifests without the fields that differ between any two runs (date, timings, command, versions, system);
-the page around the bundle, less the bundle's compressed size.
+the page around the bundle, less the bundle's compressed size. The tool's version (the port is 0.15.0, the script
+0.14.0) is left out wherever it is written: the manifest, report_files/index.js and the page's loading line.
 The compressed containers themselves are not compared: their bytes hold timestamps and depend on the zlib build."""
 import argparse, base64, glob, gzip, hashlib, io, json, os, re, shutil, subprocess, sys, tempfile, zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, "tests", "data")
-VOLATILE = ("date", "timings", "command", "python", "numpy", "system", "commit")
+VOLATILE = ("date", "timings", "command", "python", "numpy", "system", "commit", "version")   # version: the port is 0.15.0, the script 0.14.0
+VERSION_RE = re.compile(r'"version": ?"[^"]*"')
 CASES = {  # name -> (alignment, partitions, datatype, extra options)
     **{k: (f"synth/{k}/alignment.fasta", f"synth/{k}/partitions.txt", None, []) for k in ("dna_small", "aa_small", "dna_clean", "aa_clean", "dna_dense", "dna_rc", "dna_blocks")},
     "aa_random_trees": ("sim/aa_random_trees/alignment.fasta", "sim/aa_random_trees/partitions.txt", None, []),
@@ -75,11 +77,12 @@ def collect(out):
             else:
                 for k, v in zip_members(base64.b64decode(m.group(1))).items(): got[f"core:{k}"] = stable_manifest(v) if k == "manifest.json" else v
                 page = html[:m.start(1)] + html[m.end(1):]                              # the page around the bundle, less the bundle's
-                got["html:page"] = re.sub(r'"bundle_bytes": \d+', '"bundle_bytes": 0', page, count=1).encode()   # compressed size (it depends on the zlib build)
+                page = re.sub(r'"bundle_bytes": \d+', '"bundle_bytes": 0', page, count=1)
+                got["html:page"] = VERSION_RE.sub('"version": ""', page, count=1).encode()        # and the version in the loading screen's line   # compressed size (it depends on the zlib build)
         elif f == "report_files":
             for c in sorted(os.listdir(p)):
                 txt = open(os.path.join(p, c), encoding="utf-8").read(); m = re.match(r'LM_CHUNK\("(\w+)",(\d+),"([^"]*)"\);\n$', txt)
-                if m is None: got[f"chunk:{c}"] = txt.encode()
+                if m is None: got[f"chunk:{c}"] = VERSION_RE.sub('"version":""', txt).encode()   # index.js: the layout, the version, the dataset
                 else:
                     for k, v in zip_members(base64.b64decode(m.group(3))).items(): got[f"chunk:{c}:{k}"] = v
     return got
