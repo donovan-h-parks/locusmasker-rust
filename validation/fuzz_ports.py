@@ -7,7 +7,8 @@
 Each case: a random tree's sequences per locus (its own rate), missing stretches and missing loci, a few sequences
 replaced by a copy of another taxon's or by an unrelated one, sometimes identical genomes and taxa with almost nothing;
 DNA or amino acids; FASTA plus partitions (sometimes with gaps between loci, sometimes NEXUS with charsets); random
---n-comp, --fit-overlap, --alpha, --donor-threshold, --candidates, the mask-only switches, --all-tests, the report policies."""
+--n-comp, --fit-overlap, --alpha, --donor-threshold, --candidates, the mask-only switches, --all-tests, the report policies; and, in some cases, the size thresholds forced
+low in both tools (no full m matrix, the sparse report), the modes of very large alignments."""
 import argparse, os, random, shutil, subprocess, sys, tempfile
 import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -61,7 +62,10 @@ def make_case(rng, d):
     if rng.uniform() < 0.25: args += ["--all-tests"]
     if rng.uniform() < 0.15: args += [rng.choice(["--mask-similar-only", "--mask-different-only", "--no-broad-sample"])]
     if rng.uniform() < 0.3: args += ["--report-codes", rng.choice(["fails", "masked", "none"]), "--report-sequences", rng.choice(["all", "fails", "masked", "none"])]
-    return [str(x) for x in args]
+    consts = {}
+    if rng.uniform() < 0.4: consts["FULL_M_MAX_TAXA"] = 4                           # no full m matrix: the mode of more than 20,000 taxa
+    if rng.uniform() < 0.2: consts["DENSE_CELLS_MAX"] = 10                          # the sparse report
+    return [str(x) for x in args], consts
 
 
 def main():
@@ -70,15 +74,17 @@ def main():
     a = ap.parse_args(); work = a.keep or tempfile.mkdtemp(prefix="lm_fuzz_"); bad = 0; ran = 0; stopped = 0; why = {}
     for c in range(a.cases):
         rng = np.random.default_rng([a.seed, c]); d = os.path.join(work, f"case{c}"); shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
-        args = make_case(rng, d); res = []
-        for tool, cmd in (("py", [a.python, os.path.join(ROOT, "locusmasker.py")]), ("rs", [a.rust])):
-            res.append(subprocess.run(cmd + args + ["--out", os.path.join(d, tool)], capture_output=True, text=True))
+        args, consts = make_case(rng, d); res = []
+        patch = "import sys; sys.path.insert(0, %r); import locusmasker as lo; sys.argv[0] = lo.__file__; %s lo.main()" % (ROOT, "".join(f"lo.{k} = {v}; " for k, v in consts.items()))
+        env = dict(os.environ, **{f"LOCUSMASKER_{k}": str(v) for k, v in consts.items()})
+        for tool, cmd in (("py", [a.python, "-c", patch] if consts else [a.python, os.path.join(ROOT, "locusmasker.py")]), ("rs", [a.rust])):
+            res.append(subprocess.run(cmd + args + ["--out", os.path.join(d, tool)], capture_output=True, text=True, env=env if tool == "rs" else None))
         py, rs = res; last = lambda r: (r.stderr.strip().splitlines() or [""])[-1]
         if py.returncode != rs.returncode or (py.returncode != 0 and last(py) != last(rs)):
             bad += 1; print(f"case {c}: exit {py.returncode} / {rs.returncode}\n   python: {last(py)[:300]}\n   rust:   {last(rs)[:300]}\n   {' '.join(args)}"); continue
         if py.returncode != 0: stopped += 1; why[last(py)[:60]] = why.get(last(py)[:60], 0) + 1; continue      # both stopped with the same message
         ran += 1; n, diff = compare(os.path.join(d, "py"), os.path.join(d, "rs"), verbose=False)
-        if diff: bad += 1; print(f"case {c}: {len(diff)} of {n} members differ\n   {' '.join(args)}"); compare(os.path.join(d, "py"), os.path.join(d, "rs"))
+        if diff: bad += 1; print(f"case {c}: {len(diff)} of {n} members differ\n   {' '.join(args)} {consts}"); compare(os.path.join(d, "py"), os.path.join(d, "rs"))
     if not a.keep: shutil.rmtree(work, ignore_errors=True)
     for k, v in sorted(why.items(), key=lambda x: -x[1]): print(f"   {v} stopped: {k}...")
     print(f"{a.cases} cases: {ran} ran to the end and {stopped} stopped with the same message in both tools; " + ("all identical" if not bad else f"{bad} differ")); sys.exit(1 if bad else 0)
