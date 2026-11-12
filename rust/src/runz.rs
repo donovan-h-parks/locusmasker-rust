@@ -146,16 +146,17 @@ fn locus_phi(a: &Args, p: &Prep, sel: &Sel, k: usize, li: usize) -> (f64, f64, i
     (pymax(pow2(s_) - median(&inv), 0.0), used.len() as f64, ndist, npt)
 }
 
-/// the locus's own distance curve for the broad-sample test: knots (m*), curve values (percent) and dispersions
-fn bs_curve(m: &[f64], o: &[f64], w: &[f64], phi_l: f64) -> Option<(Vec<f64>, Vec<f64>, Vec<f64>)> {
+/// the locus's own distance curve for the broad-sample test: knots (m*), curve values (percent) and dispersions.
+/// t: every valid broad comparison of the locus as (m*, mismatches, shared sites), in row order (the sort is stable)
+fn bs_curve(mut t: Vec<(f64, u32, u32)>, phi_l: f64) -> Option<(Vec<f64>, Vec<f64>, Vec<f64>)> {
     let (min_points, min_window) = (60usize, 30usize);
-    let k = m.len();
+    let k = t.len();
     if k < min_points { return None; }
     const GRID: [f64; 30] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0, 15.0, 18.0, 22.0, 26.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 60.0, 70.0, 85.0, 100.0, 1e9];
-    let mut order: Vec<usize> = (0..k).collect(); order.sort_by(|&a, &b| cmp_nan_last(&m[a], &m[b]));
-    let ms: Vec<f64> = order.iter().map(|&i| m[i]).collect(); let os_: Vec<f64> = order.iter().map(|&i| o[i]).collect(); let ws: Vec<f64> = order.iter().map(|&i| w[i]).collect();
+    t.sort_by(|a, b| cmp_nan_last(&a.0, &b.0));
+    let ms = |i: usize| t[i].0; let os_ = |i: usize| t[i].1 as f64; let ws = |i: usize| t[i].2 as f64;
     let mut starts: Vec<usize> = vec![0]; let mut last = 0usize;
-    for g in GRID { let c = ms.partition_point(|x| *x <= g); if c - last >= min_window { starts.push(c); last = c; } }
+    for g in GRID { let c = t.partition_point(|x| x.0 <= g); if c - last >= min_window { starts.push(c); last = c; } }
     if *starts.last().unwrap() < k {
         if k - starts.last().unwrap() >= min_window { starts.push(k); } else { *starts.last_mut().unwrap() = k; }
     }
@@ -164,17 +165,17 @@ fn bs_curve(m: &[f64], o: &[f64], w: &[f64], phi_l: f64) -> Option<(Vec<f64>, Ve
     let mut xm = vec![0.0; nb]; let mut yd = vec![0.0; nb]; let mut cnt = vec![0.0; nb]; let mut yphi = vec![phi_l; nb];
     for b in 0..nb {
         let (s0, s1) = (starts[b], starts[b + 1]);
-        xm[b] = median(&ms[s0..s1]); cnt[b] = (s1 - s0) as f64;
-        let q: Vec<f64> = (s0..s1).map(|i| (os_[i] + HALF) / npmax(ws[i], 1.0)).collect();
+        xm[b] = median(&(s0..s1).map(ms).collect::<Vec<f64>>()); cnt[b] = (s1 - s0) as f64;
+        let q: Vec<f64> = (s0..s1).map(|i| (os_(i) + HALF) / npmax(ws(i), 1.0)).collect();
         yd[b] = 100.0 * median(&q);
     }
     let yd2 = pav(&yd, &cnt);
     for b in 0..nb {
         let (s0, s1) = (starts[b], starts[b + 1]);
-        let e: Vec<f64> = (s0..s1).map(|i| ws[i] * yd2[b] / 100.0).collect();
+        let e: Vec<f64> = (s0..s1).map(|i| ws(i) * yd2[b] / 100.0).collect();
         let used: Vec<usize> = (0..e.len()).filter(|&i| e[i] >= PHI_MIN_E).collect();
         if used.len() >= 10 {
-            let r: Vec<f64> = used.iter().map(|&i| ((os_[s0 + i] + HALF) / e[i]).ln()).collect();
+            let r: Vec<f64> = used.iter().map(|&i| ((os_(s0 + i) + HALF) / e[i]).ln()).collect();
             let s_ = (percentile(&r, 90.0) - percentile(&r, 10.0)) / 2.5631;
             let inv: Vec<f64> = used.iter().map(|&i| 1.0 / e[i]).collect();
             let ph = pymax(s_ * s_ - median(&inv), 0.0); let nu = used.len() as f64;
@@ -519,116 +520,136 @@ pub fn process_locus(cx: &Ctx, li: usize) -> LocusOut {
         let nloc = core.nloc;
         let rows_bs: Vec<usize> = (0..n).filter(|&g| core.keep[g] && p.focal_sites[g * nloc + li] > 0).collect();
         if !rows_bs.is_empty() {
-            let nr = rows_bs.len(); let bk = bs.k; let pn = bs.pn;
-            let mut comp = vec![0usize; nr * bk]; let mut mv0 = vec![0.0f64; nr * bk]; let mut o_ = vec![0.0f64; nr * bk]; let mut w_ = vec![0.0f64; nr * bk];
+            // Row by row, in three passes, so that nothing of size rows x members is held but each member's taxon, its
+            // pool slot and whether it is judged: (0) the draws and the valid comparisons' counts, for the locus's curve;
+            // (A) each row's expectations, tails and too-close side; (B) the too-divergent side, once the rows that fail
+            // it themselves are known; (C) the direction, once every row's score is known. The numbers are those of the
+            // whole-matrix expressions of the Python
+            let nr = rows_bs.len(); let bk = bs.k; let pn = bs.pn; let nn = nr * bk;
+            let cnt = |g: usize, c: usize| -> (f64, f64) { let (sh, sm) = core.bits.count(g, c, li); (sh as f64, (sh - sm) as f64) };      // shared sites, mismatches
+            let ok0_of = |c: usize, w: f64, mv0: f64| w >= fit_f && mv0.is_finite() && core.keep[c] && !dmask[c] && !cpmask[c];
+            let mut comp = vec![0u32; nn]; let mut pos = vec![0u32; nn]; let mut curve: Vec<(f64, u32, u32)> = Vec::new();
             for (r, &g) in rows_bs.iter().enumerate() {
-                let pos = hash_draw(bs_keys_cell(g, li), pn, bk);
-                let xg = xs(p, g, li);
-                for (j, &ps) in pos.iter().enumerate() {
-                    let c = bs.pool[g * pn + ps as usize] as usize; comp[r * bk + j] = c; mv0[r * bk + j] = bs.mstar[g * pn + ps as usize];
-                    let xa = xs(p, c, li); let (mut sh, mut df) = (0u32, 0u32);
-                    for s in 0..xg.len() { let both = xg[s] >= 0 && xa[s] >= 0; sh += both as u32; df += (both && xg[s] != xa[s]) as u32; }
-                    w_[r * bk + j] = sh as f64; o_[r * bk + j] = df as f64;
+                for (j, &ps) in hash_draw(bs_keys_cell(g, li), pn, bk).iter().enumerate() {
+                    let c = bs.pool[g * pn + ps as usize] as usize; let mv0 = bs.mstar[g * pn + ps as usize];
+                    comp[r * bk + j] = c as u32; pos[r * bk + j] = ps as u32;
+                    let (w, o) = cnt(g, c);
+                    if ok0_of(c, w, mv0) { curve.push((npmax(mv0, 1e-4), o as u32, w as u32)); }
                 }
             }
-            let nn = nr * bk;
-            let mv: Vec<f64> = mv0.iter().map(|x| npmax(*x, 1e-4)).collect();
-            let ok0: Vec<bool> = (0..nn).map(|i| w_[i] >= fit_f && mv0[i].is_finite() && core.keep[comp[i]] && !dmask[comp[i]] && !cpmask[comp[i]]).collect();
-            let nmed = |v: &[f64], ok: &[bool]| -> Vec<f64> { (0..nr).map(|r| {
-                let vals: Vec<f64> = (0..bk).filter(|&j| ok[r * bk + j]).map(|j| v[r * bk + j]).collect();
-                if vals.is_empty() { f64::NAN } else { nanmedian(&vals) } }).collect() };
-            let sel_ok = |v: &[f64]| -> Vec<f64> { (0..nn).filter(|&i| ok0[i]).map(|i| v[i]).collect() };
-            let bcv = bs_curve(&sel_ok(&mv), &sel_ok(&o_), &sel_ok(&w_), phi);
-            let (mut d_exp, phi_m): (Vec<f64>, Vec<f64>) = match &bcv {
-                None => (mv.iter().map(|&m| npmax(p_ * (1.0 - (-rate_c * corr(p_, m) / p_).exp()), 1e-4)).collect(), vec![phi; nn]),
-                Some((bx, by, bp)) => (mv.iter().map(|&m| npmax(interp(m, bx, by), 1e-4)).collect(), mv.iter().map(|&m| interp(m, bx, bp)).collect()),
-            };
+            let bcv = bs_curve(curve, phi);
             let clip = |x: f64, lo: f64, hi: f64| npmin(npmax(x, lo), hi);
-            let e_: Vec<f64> = (0..nn).map(|i| clip(npmax(w_[i] * d_exp[i] / 100.0, HALF), 1e-9, w_[i] * (1.0 - 1e-9))).collect();
-            for i in 0..nn { d_exp[i] = 100.0 * e_[i] / npmax(w_[i], 1.0); }
+            // a member's expected mismatches, expected divergence (%) and dispersion from its m* and shared sites
+            let vals = |mv: f64, w: f64| -> (f64, f64, f64) {
+                let (d0, ph) = match &bcv {
+                    None => (npmax(p_ * (1.0 - (-rate_c * corr(p_, mv) / p_).exp()), 1e-4), phi),
+                    Some((bx, by, bp)) => (npmax(interp(mv, bx, by), 1e-4), interp(mv, bx, bp)),
+                };
+                let e_ = clip(npmax(w * d0 / 100.0, HALF), 1e-9, w * (1.0 - 1e-9));
+                (e_, 100.0 * e_ / npmax(w, 1.0), ph)
+            };
             let mut m5 = vec![f64::NAN; n];
             for (q, &g) in idx.iter().enumerate() { let mut mx = f64::NAN; for j in starts[q]..starts[q] + kc[q] { if !mph[j].is_nan() && (mx.is_nan() || mph[j] > mx) { mx = mph[j]; } } m5[g] = mx; }
-            let medm = nmed(&mv, &ok0);
-            let thr: Vec<f64> = (0..nr).map(|r| { let t = m5[rows_bs[r]]; if t.is_finite() { t } else { medm[r] } }).collect();
-            let btested: Vec<bool> = (0..nn).map(|i| ok0[i] && mv[i] > (if thr[i / bk].is_finite() { thr[i / bk] } else { f64::INFINITY })).collect();
-            let bnt: Vec<i64> = (0..nr).map(|r| (0..bk).filter(|&j| btested[r * bk + j]).count() as i64).collect();
-            let ratio: Vec<f64> = (0..nn).map(|i| (o_[i] + HALF) / (e_[i] + HALF)).collect();
             let mut r_full = vec![1.0f64; n];
             for (q, &g) in idx.iter().enumerate() {
                 let r_cell = (100.0 - med_i[q] + 0.5) / (100.0 - med_e[q] + 0.5);
                 r_full[g] = npmin(if r_cell.is_finite() && r_cell > 0.0 { r_cell } else { 1.0 }, 1.0);
             }
-            let bf_loo: Vec<f64> = (0..nn).map(|i| npmin((r_full[rows_bs[i / bk]] * r_full[comp[i]]).sqrt(), 1.0)).collect();
-            let ef: Vec<f64> = (0..nn).map(|i| clip(e_[i] * bf_loo[i], 1e-9, w_[i] * (1.0 - 1e-9))).collect();
-            let df: Vec<f64> = (0..nn).map(|i| d_exp[i] * bf_loo[i]).collect();
-            let mut blp_lo = vec![0.0f64; nn]; let mut blp_hi = vec![0.0f64; nn]; let mut z_hi = vec![f64::NAN; nn];
-            for i in 0..nn {
-                if !btested[i] { continue; }
-                let z_lo = (o_[i] - ef[i]) / npmax(ef[i] * (1.0 - df[i] / 100.0) + phi_m[i] * ef[i] * ef[i], 1e-12).sqrt();
-                z_hi[i] = (o_[i] - e_[i]) / npmax(e_[i] * (1.0 - d_exp[i] / 100.0) + phi_m[i] * e_[i] * e_[i], 1e-12).sqrt();
-                if z_lo < -2.0 { blp_lo[i] = bb_tail(o_[i], w_[i], ef[i], phi_m[i], false, lf); }
-                if z_hi[i] > 2.0 { blp_hi[i] = bb_tail(o_[i], w_[i], e_[i], phi_m[i], true, lf); }
-            }
-            let lpl: Vec<f64> = (0..nn).map(|i| if btested[i] { blp_lo[i] } else { f64::INFINITY }).collect();
-            let jlo: Vec<usize> = (0..nr).map(|r| first_argmin(lpl[r * bk..(r + 1) * bk].iter().copied())).collect();
-            let lnb = |c: i64| ((c.max(1)) as f64).ln();
-            let lo_stat: Vec<f64> = (0..nr).map(|r| if bnt[r] > 0 { npmin(lpl[r * bk + jlo[r]] + lnb(bnt[r]), 0.0) } else { 0.0 }).collect();
-            let lo_j: Vec<i64> = (0..nr).map(|r| if bnt[r] > 0 { comp[r * bk + jlo[r]] as i64 } else { -1 }).collect();
-            let dm_r: Vec<bool> = rows_bs.iter().map(|&g| dmask[g]).collect();
+            let mut exm_full = vec![f64::NAN; n]; for (q, &g) in idx.iter().enumerate() { exm_full[g] = exm[q]; }
+            let lnb = |c: i64| ((c.max(1)) as f64).ln(); let lean_ = (0.01f64).ln(); let thr_d = a.donor_threshold;
+            let nmed = |v: &[f64], ok: &[bool]| -> f64 { let x: Vec<f64> = (0..bk).filter(|&j| ok[j]).map(|j| v[j]).collect(); if x.is_empty() { f64::NAN } else { nanmedian(&x) } };
+            // ---- pass A
+            let mut btested = vec![false; nn]; let mut hi_off: Vec<usize> = Vec::with_capacity(nr + 1); let mut hi_val: Vec<(u32, f64)> = Vec::new();
+            let mut bnt = vec![0i64; nr]; let mut lo_stat = vec![0.0f64; nr]; let mut lo_j = vec![-1i64; nr];
+            let (mut lo_o, mut lo_w, mut lo_e, mut lo_f, mut lo_p) = (vec![0.0f64; nr], vec![0.0f64; nr], vec![0.0f64; nr], vec![0.0f64; nr], vec![0.0f64; nr]);
+            let mut dm_r = vec![false; nr]; let mut cfail = vec![0i64; nr]; let mut score = vec![0i64; nr]; let mut a_e = vec![0.0f64; nr]; let mut b_e = vec![0.0f64; nr];
+            let mut rep_ = vec![-1i64; nr]; let (mut medoe, mut obs_pct, mut exp_pct) = (vec![0.0f64; nr], vec![0.0f64; nr], vec![0.0f64; nr]);
             let mut bad_r = vec![false; n];
-            for r in 0..nr {
-                let fh = (0..bk).filter(|&j| btested[r * bk + j] && blp_hi[r * bk + j] < logbar).count() as f64;
-                if fh > bnt[r] as f64 / 2.0 && bnt[r] >= BS_MIN && !dm_r[r] { bad_r[rows_bs[r]] = true; }
+            let (mut w_, mut o_, mut mv, mut ok0, mut e_, mut dexp, mut ratio, mut bf, mut blo, mut bhi, mut zhi, mut obs_v) =
+                (vec![0.0f64; bk], vec![0.0f64; bk], vec![0.0f64; bk], vec![false; bk], vec![0.0f64; bk], vec![0.0f64; bk], vec![0.0f64; bk], vec![0.0f64; bk], vec![0.0f64; bk], vec![0.0f64; bk], vec![0.0f64; bk], vec![0.0f64; bk]);
+            for (r, &g) in rows_bs.iter().enumerate() {
+                let cm = &comp[r * bk..(r + 1) * bk]; let bt = &mut btested[r * bk..(r + 1) * bk];
+                for j in 0..bk {
+                    let c = cm[j] as usize; let mv0 = bs.mstar[g * pn + pos[r * bk + j] as usize]; let (w, o) = cnt(g, c);
+                    w_[j] = w; o_[j] = o; mv[j] = npmax(mv0, 1e-4); ok0[j] = ok0_of(c, w, mv0);
+                    let (e, d, _) = vals(mv[j], w); e_[j] = e; dexp[j] = d;
+                }
+                let medm = nmed(&mv, &ok0); let thr = if m5[g].is_finite() { m5[g] } else { medm }; let thr = if thr.is_finite() { thr } else { f64::INFINITY };
+                let mut nt = 0i64;
+                for j in 0..bk {
+                    bt[j] = ok0[j] && mv[j] > thr; nt += bt[j] as i64;
+                    ratio[j] = (o_[j] + HALF) / (e_[j] + HALF); obs_v[j] = 100.0 * o_[j] / npmax(w_[j], 1.0);
+                    bf[j] = npmin((r_full[g] * r_full[cm[j] as usize]).sqrt(), 1.0);
+                    blo[j] = 0.0; bhi[j] = 0.0; zhi[j] = f64::NAN;
+                    if !bt[j] { continue; }
+                    let phi_m = vals(mv[j], w_[j]).2;
+                    let ef = clip(e_[j] * bf[j], 1e-9, w_[j] * (1.0 - 1e-9)); let df = dexp[j] * bf[j];
+                    let z_lo = (o_[j] - ef) / npmax(ef * (1.0 - df / 100.0) + phi_m * ef * ef, 1e-12).sqrt();
+                    zhi[j] = (o_[j] - e_[j]) / npmax(e_[j] * (1.0 - dexp[j] / 100.0) + phi_m * e_[j] * e_[j], 1e-12).sqrt();
+                    if z_lo < -2.0 { blo[j] = bb_tail(o_[j], w_[j], ef, phi_m, false, lf); }
+                    if zhi[j] > 2.0 { bhi[j] = bb_tail(o_[j], w_[j], e_[j], phi_m, true, lf); }
+                }
+                bnt[r] = nt;
+                let lpl = |j: usize| if bt[j] { blo[j] } else { f64::INFINITY };
+                let jlo = first_argmin((0..bk).map(lpl));
+                lo_stat[r] = if nt > 0 { npmin(lpl(jlo) + lnb(nt), 0.0) } else { 0.0 };
+                lo_j[r] = if nt > 0 { cm[jlo] as i64 } else { -1 };
+                lo_o[r] = o_[jlo]; lo_w[r] = w_[jlo]; lo_e[r] = e_[jlo]; lo_f[r] = bf[jlo]; lo_p[r] = lpl(jlo);
+                dm_r[r] = dmask[g];
+                let fh = (0..bk).filter(|&j| bt[j] && bhi[j] < logbar).count() as f64;
+                if fh > nt as f64 / 2.0 && nt >= BS_MIN && !dm_r[r] { bad_r[g] = true; }
+                let tb = logbar - lnb(nt);
+                cfail[r] = (0..bk).filter(|&j| bt[j] && blo[j] < tb).count() as i64;
+                score[r] = (0..bk).filter(|&j| bt[j] && blo[j] < lean_).count() as i64;        // the too-divergent half is added in pass B
+                a_e[r] = (if exm_full[g].is_finite() { exm_full[g] } else { 0.0 }).abs();
+                b_e[r] = { let jx = lo_j[r].max(0) as usize; (if lo_j[r] >= 0 && exm_full[jx].is_finite() { exm_full[jx] } else { 0.0 }).abs() };
+                let az = |j: usize| if bt[j] && zhi[j].is_finite() { zhi[j].abs() } else { f64::NEG_INFINITY };
+                let jr = first_argmax((0..bk).map(az));
+                rep_[r] = if az(jr).is_finite() { cm[jr] as i64 } else { -1 };                 // the called side's partner replaces it in pass B
+                medoe[r] = nmed(&ratio, bt); obs_pct[r] = nmed(&obs_v, bt); exp_pct[r] = nmed(&dexp, bt);
+                hi_off.push(hi_val.len());
+                for j in 0..bk { if bhi[j] != 0.0 { hi_val.push((j as u32, bhi[j])); } }
             }
-            let tested_r: Vec<bool> = (0..nn).map(|i| btested[i] && !bad_r[comp[i]]).collect();
-            let ntr: Vec<i64> = (0..nr).map(|r| (0..bk).filter(|&j| tested_r[r * bk + j]).count() as i64).collect();
-            let nfail: Vec<i64> = (0..nr).map(|r| (0..bk).filter(|&j| tested_r[r * bk + j] && blp_hi[r * bk + j] < logbar).count() as i64).collect();
-            let red: Vec<bool> = (0..nr).map(|r| nfail[r] as f64 > ntr[r] as f64 / 2.0 && ntr[r] >= BS_MIN && !dm_r[r]).collect();
-            let lph: Vec<f64> = (0..nn).map(|i| if tested_r[i] { blp_hi[i] } else { f64::INFINITY }).collect();
-            let jhi: Vec<usize> = (0..nr).map(|r| first_argmin(lph[r * bk..(r + 1) * bk].iter().copied())).collect();
-            let hi_j: Vec<i64> = (0..nr).map(|r| if ntr[r] > 0 { comp[r * bk + jhi[r]] as i64 } else { -1 }).collect();
-            let p_red: Vec<f64> = (0..nr).map(|r| {
-                if ntr[r] <= 0 { return 0.0; }
-                let mut s = lph[r * bk..(r + 1) * bk].to_vec(); sort_f64(&mut s);
-                npmin(s[((ntr[r] / 2) as usize).min(bk - 1)], 0.0)
-            }).collect();
-            let hi_min: Vec<f64> = (0..nr).map(|r| if ntr[r] > 0 { npmin(lph[r * bk + jhi[r]] + lnb(ntr[r]), 0.0) } else { 0.0 }).collect();
-            let _ = hi_min;
-            let mut bcall = vec![0i8; nr];
-            for r in 0..nr {
+            hi_off.push(hi_val.len());
+            // ---- pass B
+            let mut ntr = vec![0i64; nr]; let mut nfail = vec![0i64; nr]; let mut hi_j = vec![-1i64; nr]; let mut p_red = vec![0.0f64; nr]; let mut bcall = vec![0i8; nr];
+            let (mut hi_o, mut hi_w, mut hi_e, mut hi_p) = (vec![0.0f64; nr], vec![0.0f64; nr], vec![0.0f64; nr], vec![0.0f64; nr]);
+            let mut lph = vec![0.0f64; bk];
+            for (r, &g) in rows_bs.iter().enumerate() {
+                let cm = &comp[r * bk..(r + 1) * bk]; let bt = &btested[r * bk..(r + 1) * bk];
+                bhi.fill(0.0); for &(j, v) in &hi_val[hi_off[r]..hi_off[r + 1]] { bhi[j as usize] = v; }
+                let (mut nt, mut nf_, mut sc2) = (0i64, 0i64, 0i64);
+                for j in 0..bk {
+                    let tr = bt[j] && !bad_r[cm[j] as usize];
+                    lph[j] = if tr { bhi[j] } else { f64::INFINITY };
+                    if tr { nt += 1; if bhi[j] < logbar { nf_ += 1; } if bhi[j] < lean_ { sc2 += 1; } }
+                }
+                ntr[r] = nt; nfail[r] = nf_; score[r] += sc2;
+                let red = nf_ as f64 > nt as f64 / 2.0 && nt >= BS_MIN && !dm_r[r];
+                let jhi = first_argmin(lph.iter().copied());
+                hi_j[r] = if nt > 0 { cm[jhi] as i64 } else { -1 };
+                p_red[r] = if nt > 0 { let mut srt = lph.clone(); sort_f64(&mut srt); npmin(srt[((nt / 2) as usize).min(bk - 1)], 0.0) } else { 0.0 };
                 let bclose = lo_stat[r] < logbar && bnt[r] >= BS_MIN;
                 if bclose { bcall[r] = 1; }
-                if red[r] && !bclose { bcall[r] = -1; }
-                if bclose && red[r] { bcall[r] = if lo_stat[r] <= p_red[r] { 1 } else { -1 }; }
+                if red && !bclose { bcall[r] = -1; }
+                if bclose && red { bcall[r] = if lo_stat[r] <= p_red[r] { 1 } else { -1 }; }
+                if bcall[r] == 1 { rep_[r] = lo_j[r]; } else if bcall[r] == -1 { rep_[r] = hi_j[r]; }
+                // the member behind the too-divergent side: its counts and expectation again
+                let c = cm[jhi] as usize; let mv0 = bs.mstar[g * pn + pos[r * bk + jhi] as usize]; let (w, o) = cnt(g, c);
+                hi_o[r] = o; hi_w[r] = w; hi_e[r] = vals(npmax(mv0, 1e-4), w).0; hi_p[r] = lph[jhi];
+                bsrep_full[g] = rep_[r];
             }
-            let mut exm_full = vec![f64::NAN; n]; for (q, &g) in idx.iter().enumerate() { exm_full[g] = exm[q]; }
-            let a_e: Vec<f64> = rows_bs.iter().map(|&g| (if exm_full[g].is_finite() { exm_full[g] } else { 0.0 }).abs()).collect();
-            let b_e: Vec<f64> = (0..nr).map(|r| { let j = lo_j[r].max(0) as usize; (if lo_j[r] >= 0 && exm_full[j].is_finite() { exm_full[j] } else { 0.0 }).abs() }).collect();
-            let cfail: Vec<i64> = (0..nr).map(|r| { let t = logbar - lnb(bnt[r]); (0..bk).filter(|&j| btested[r * bk + j] && blp_lo[r * bk + j] < t).count() as i64 }).collect();
-            let lean_ = (0.01f64).ln();
-            let score: Vec<i64> = (0..nr).map(|r| ((0..bk).filter(|&j| btested[r * bk + j] && blp_lo[r * bk + j] < lean_).count() + (0..bk).filter(|&j| tested_r[r * bk + j] && blp_hi[r * bk + j] < lean_).count()) as i64).collect();
+            // ---- pass C: the direction of a too-close pair
             let mut score_full = vec![0i64; n]; for r in 0..nr { score_full[rows_bs[r]] = score[r]; }
             let sp_: Vec<i64> = (0..nr).map(|r| score_full[lo_j[r].max(0) as usize]).collect();
-            let thr_d = a.donor_threshold;
             let dirc: Vec<i8> = (0..nr).map(|r| {
                 if score[r] >= sp_[r] + 2 { 1 } else if sp_[r] >= score[r] + 2 { -1 }
                 else if a_e[r] >= thr_d * b_e[r] && a_e[r] > 0.0 { 1 } else if b_e[r] >= thr_d * a_e[r] && b_e[r] > 0.0 { -1 } else { 0 }
             }).collect();
-            let rep_: Vec<i64> = (0..nr).map(|r| {
-                let az = |j: usize| { let i = r * bk + j; if btested[i] && z_hi[i].is_finite() { z_hi[i].abs() } else { f64::NEG_INFINITY } };
-                let jr = first_argmax((0..bk).map(az));
-                let base = if az(jr).is_finite() { comp[r * bk + jr] as i64 } else { -1 };
-                if bcall[r] == 1 { lo_j[r] } else if bcall[r] == -1 { hi_j[r] } else { base }
-            }).collect();
-            let medoe = nmed(&ratio, &btested);
-            let obs_v: Vec<f64> = (0..nn).map(|i| 100.0 * o_[i] / npmax(w_[i], 1.0)).collect();
-            let obs_pct = nmed(&obs_v, &btested); let exp_pct = nmed(&d_exp, &btested);
-            for r in 0..nr { bsrep_full[rows_bs[r]] = rep_[r]; }
-            let gat = |m: &[f64], jj: &[usize]| -> Vec<f64> { (0..nr).map(|r| m[r * bk + jj[r]]).collect() };
             bs_blk = Some(BsBlk {
                 rows: rows_bs.clone(), nt: bnt.iter().map(|x| *x as i16).collect(), ntr: ntr.iter().map(|x| *x as i16).collect(), nfail: nfail.iter().map(|x| *x as i16).collect(),
-                lo: lo_stat, lo_j: lo_j.iter().map(|x| *x as i32).collect(), lo_o: gat(&o_, &jlo), lo_w: gat(&w_, &jlo), lo_e: gat(&e_, &jlo), lo_f: gat(&bf_loo, &jlo), lo_p: gat(&lpl, &jlo),
-                hi: p_red, hi_j: hi_j.iter().map(|x| *x as i32).collect(), hi_o: gat(&o_, &jhi), hi_w: gat(&w_, &jhi), hi_e: gat(&e_, &jhi), hi_p: gat(&lph, &jhi),
+                lo: lo_stat, lo_j: lo_j.iter().map(|x| *x as i32).collect(), lo_o, lo_w, lo_e, lo_f, lo_p,
+                hi: p_red, hi_j: hi_j.iter().map(|x| *x as i32).collect(), hi_o, hi_w, hi_e, hi_p,
                 call: bcall, dirc, medoe: medoe.iter().map(|x| (if x.is_finite() { *x } else { 1.0 }) as f32).collect(), rep: rep_.iter().map(|x| *x as i32).collect(), dm: dm_r,
                 obs_pct: obs_pct.iter().map(|x| *x as f32).collect(), exp_pct: exp_pct.iter().map(|x| *x as f32).collect(),
                 cfail: cfail.iter().map(|x| *x as i16).collect(), score: score.iter().map(|x| *x as i16).collect(), score_p: sp_.iter().map(|x| *x as i16).collect(),

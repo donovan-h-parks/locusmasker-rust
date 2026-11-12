@@ -55,9 +55,15 @@ trees hash differently on a machine other than the one that pinned them.
 ## Differences in behaviour
 
 - **The pair sweep.** The Python walks pairs of taxon blocks with matrix products and merges block results (its
-  reductions are order-independent); the port walks the rows of the pair matrix, one taxon against every other, with
-  the arithmetic of the Python's compiled kernel, counting shared and identical residues on bit planes with popcounts.
+  reductions are order-independent); the port walks the rows of the pair matrix against every column, with the
+  arithmetic of the Python's compiled kernel, counting shared and identical residues on bit planes with popcounts
+  (AVX2 where the machine has it). The rows go in chunks of about half a megabyte of planes, the columns in the outer
+  loop, so a column is read from memory once per chunk: the sweep is bound by memory traffic otherwise. Per row it
+  keeps only the candidate list so far and the closest match at each locus so far, never a row of counts.
   `--block-taxa` and `--no-numba` are accepted and do nothing. Threads replace the worker processes.
+- **The broad-sample test** is computed row by row in three passes over a locus (the draws and the curve; the
+  too-close side; the too-divergent side and the direction) instead of on rows x members matrices: the same numbers
+  from a fraction of the memory.
 - **NEXUS files with comments or quoted names.** The Python hands these to Biopython; the port has its own reader for
   them (comments, quoted names, interleaved matrices, TAXA / DATA / CHARACTERS blocks, a SETS block of charset, taxset
   and charpartition statements; other blocks are ignored) and writes such a file back the way Biopython does. Its error
@@ -69,6 +75,7 @@ trees hash differently on a machine other than the one that pinned them.
 - **Test hooks.** The constants the test suite changes in the Python module are read from the environment:
   `LOCUSMASKER_DENSE_CELLS_MAX`, `LOCUSMASKER_BEST_MATCH_ALL_MAX_TAXA`, `LOCUSMASKER_FULL_M_MAX_TAXA`,
   `LOCUSMASKER_SWEEP_BLOCK_MIN`, `LOCUSMASKER_REPORT_SAMPLE_CELLS`, `LOCUSMASKER_REPORT_SEQ_ALL_MAX`.
+  `LOCUSMASKER_NO_AVX2` turns the AVX2 counting kernel off (the same counts from the scalar one).
 
 ## Layout
 

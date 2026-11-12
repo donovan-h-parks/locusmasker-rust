@@ -23,6 +23,7 @@ pub const SWEEP_BLOCK_MIN: usize = 1024;
 pub const CANDIDATES: usize = 200;
 pub const FULL_M_MAX_TAXA: usize = 20000;
 pub const BAND_SLOTS: usize = 4;
+const SWEEP_CHUNK_BYTES: usize = 512 << 10;       // the planes of a chunk of rows: about a core's share of the cache
 
 /// the residues by locus (each taxon's row holds the loci one after another) and, up to SWEEP_BLOCK_MIN taxa, the
 /// counts of every pair at every locus
@@ -35,7 +36,7 @@ pub struct Core {
 /// the residues as bit planes, for counting: per taxon a presence plane and the planes of the residue code's bits, each
 /// locus starting at a word. Two sequences share a site where both presence bits are set, and agree there where every
 /// code plane agrees: two popcounts per 64 sites, the same integers as counting site by site
-pub struct Bits { pub planes: usize, pub wpr: usize, pub woff: Vec<usize>, pub data: Vec<u64> }
+pub struct Bits { pub planes: usize, pub wpr: usize, pub woff: Vec<usize>, pub data: Vec<u64>, popcnt: bool, avx2: bool }
 impl Bits {
     fn build(n: usize, xl: &[i8], lt: usize, off: &[usize], a_: usize) -> Bits {
         let planes = if a_ <= 4 { 2 } else { 5 }; let nloc = off.len() - 1;
@@ -54,7 +55,11 @@ impl Bits {
                 }
             });
         }
-        Bits { planes, wpr, woff, data }
+        #[cfg(target_arch = "x86_64")]
+        let (popcnt, avx2) = (std::is_x86_feature_detected!("popcnt"), std::is_x86_feature_detected!("popcnt") && std::is_x86_feature_detected!("avx2") && std::env::var_os("LOCUSMASKER_NO_AVX2").is_none());
+        #[cfg(not(target_arch = "x86_64"))]
+        let (popcnt, avx2) = (false, false);
+        Bits { planes, wpr, woff, data, popcnt, avx2 }
     }
     #[inline(always)]
     fn count_impl(&self, g: usize, c: usize, li: usize) -> (u32, u32) {
@@ -76,18 +81,45 @@ impl Bits {
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "popcnt")]
     unsafe fn all_popcnt(&self, g: usize, c: usize, w: &mut [u32], s: &mut [u32]) { self.all_impl(g, c, w, s) }
+    /// every locus at once: the two masks of the whole row four words at a time, then the popcounts per locus
+    /// (pa, eq: scratch of wpr words). The same integers as count_impl
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "popcnt,avx2")]
+    unsafe fn all_avx2(&self, g: usize, c: usize, w: &mut [u32], s: &mut [u32], pa: &mut [u64], eq: &mut [u64]) {
+        use std::arch::x86_64::*;
+        let wpr = self.wpr; let stride = (self.planes + 1) * wpr; debug_assert!(pa.len() >= wpr && eq.len() >= wpr);
+        let (rg, rc) = (self.data.as_ptr().add(g * stride), self.data.as_ptr().add(c * stride)); let mut x = 0;
+        while x + 4 <= wpr {
+            let p = _mm256_and_si256(_mm256_loadu_si256(rg.add(x) as *const __m256i), _mm256_loadu_si256(rc.add(x) as *const __m256i));
+            let mut d = _mm256_setzero_si256();
+            for pl in 1..=self.planes { d = _mm256_or_si256(d, _mm256_xor_si256(_mm256_loadu_si256(rg.add(pl * wpr + x) as *const __m256i), _mm256_loadu_si256(rc.add(pl * wpr + x) as *const __m256i))); }
+            _mm256_storeu_si256(pa.as_mut_ptr().add(x) as *mut __m256i, p); _mm256_storeu_si256(eq.as_mut_ptr().add(x) as *mut __m256i, _mm256_andnot_si256(d, p)); x += 4;
+        }
+        while x < wpr { let p = *rg.add(x) & *rc.add(x); let mut d = 0u64; for pl in 1..=self.planes { d |= *rg.add(pl * wpr + x) ^ *rc.add(pl * wpr + x); } pa[x] = p; eq[x] = p & !d; x += 1; }
+        for li in 0..w.len() {
+            let (mut sh, mut sm) = (0u32, 0u32);
+            for x in self.woff[li]..self.woff[li + 1] { sh += pa[x].count_ones(); sm += eq[x].count_ones(); }
+            w[li] = sh; s[li] = sm;
+        }
+    }
     /// shared sites and same residues of two taxa at a locus
     #[inline] pub fn count(&self, g: usize, c: usize, li: usize) -> (u32, u32) {
         #[cfg(target_arch = "x86_64")]
-        if std::is_x86_feature_detected!("popcnt") { return unsafe { self.count_popcnt(g, c, li) }; }
+        if self.popcnt { return unsafe { self.count_popcnt(g, c, li) }; }
         self.count_impl(g, c, li)
     }
-    /// the same at every locus
-    #[inline] pub fn all(&self, g: usize, c: usize, w: &mut [u32], s: &mut [u32]) {
+    /// the same at every locus (pa, eq: scratch of wpr words each)
+    #[inline] pub fn all(&self, g: usize, c: usize, w: &mut [u32], s: &mut [u32], pa: &mut [u64], eq: &mut [u64]) {
         #[cfg(target_arch = "x86_64")]
-        if std::is_x86_feature_detected!("popcnt") { return unsafe { self.all_popcnt(g, c, w, s) }; }
+        {
+            if self.avx2 { return unsafe { self.all_avx2(g, c, w, s, pa, eq) }; }
+            if self.popcnt { return unsafe { self.all_popcnt(g, c, w, s) }; }
+        }
+        let _ = (pa, eq);
         self.all_impl(g, c, w, s)
     }
+    /// bytes of one taxon's planes
+    pub fn row_bytes(&self) -> usize { (self.planes + 1) * self.wpr * 8 }
 }
 pub struct Slab { pub w: Vec<u32>, pub s: Vec<u32> }                // [tri(g, c) * nloc + li], g <= c
 
@@ -101,10 +133,10 @@ impl Core {
         self.bits.count(g, c, li)
     }
     /// the counts of a pair at every locus
-    fn pair_counts(&self, g: usize, c: usize, w: &mut [u32], s: &mut [u32]) {
+    fn pair_counts(&self, g: usize, c: usize, w: &mut [u32], s: &mut [u32], pa: &mut [u64], eq: &mut [u64]) {
         if let Some(sl) = &self.slab { let k = self.tri(g, c) * self.nloc; w.copy_from_slice(&sl.w[k..k + self.nloc]); s.copy_from_slice(&sl.s[k..k + self.nloc]); return; }
         if !(self.keep[g] && self.keep[c]) { w.fill(0); s.fill(0); return; }
-        self.bits.all(g, c, w, s);
+        self.bits.all(g, c, w, s, pa, eq);
     }
     fn build_slab(&mut self) {
         let n = self.n; let nloc = self.nloc; let npair = n * (n + 1) / 2;
@@ -113,11 +145,12 @@ impl Core {
         let this: &Core = self;
         let mut wrest: &mut [u32] = &mut w; let mut srest: &mut [u32] = &mut s; let mut parts = Vec::with_capacity(n);
         for g in 0..n { let len = (n - g) * nloc; let (a, b) = wrest.split_at_mut(len); let (c, d) = srest.split_at_mut(len); parts.push((g, a, c)); wrest = b; srest = d; }
-        parts.into_par_iter().for_each(|(g, wg, sg)| {
+        let wpr = this.bits.wpr;
+        parts.into_par_iter().for_each_init(|| (vec![0u64; wpr], vec![0u64; wpr]), |(pa, eq), (g, wg, sg)| {
             for c in g..n {
                 let k = (c - g) * nloc;
                 if !(this.keep[g] && this.keep[c]) { continue; }
-                this.bits.all(g, c, &mut wg[k..k + nloc], &mut sg[k..k + nloc]);
+                this.bits.all(g, c, &mut wg[k..k + nloc], &mut sg[k..k + nloc], pa, eq);
             }
         });
         self.slab = Some(Slab { w, s });
@@ -171,78 +204,114 @@ fn pair_medians(w: &[u32], s: &[u32], rr: Option<&[f64]>, ok_r: Option<&[bool]>,
     (m, mfl, cnt)
 }
 
-struct Scratch { w: Vec<u32>, s: Vec<u32>, v: Vec<f64>, wv: Vec<f64>, f: Vec<f64>, wf: Vec<f64>, dbuf: Vec<f64>, mj: Vec<f64> }
+/// per-thread scratch of a pair: its counts at every locus, the medians' buffers, the kernel's masks
+struct Scratch { w: Vec<u32>, s: Vec<u32>, v: Vec<f64>, wv: Vec<f64>, f: Vec<f64>, wf: Vec<f64>, pa: Vec<u64>, eq: Vec<u64> }
+impl Scratch {
+    fn new(core: &Core) -> Scratch {
+        let (nloc, wpr) = (core.nloc, core.bits.wpr);
+        Scratch { w: vec![0; nloc], s: vec![0; nloc], v: vec![0.0; nloc], wv: vec![0.0; nloc], f: vec![0.0; nloc], wf: vec![0.0; nloc], pa: vec![0; wpr], eq: vec![0; wpr] }
+    }
+}
 
-#[allow(clippy::too_many_arguments)]
-fn sweep_row(core: &Core, g: usize, rr: Option<&[f64]>, ok_r: Option<&[bool]>, key: Key, cmax: usize, fit: f64, want_closest: bool, want_m: bool, sc: &mut Scratch) -> RowRes {
-    let (n, nloc) = (core.n, core.nloc);
-    let mut m = vec![f64::NAN; n]; let mut mfl = vec![f64::NAN; n];
-    let mut entries: Vec<(f64, usize)> = Vec::new(); let mut ident = vec![]; let mut counters = (0i64, 0i64, 0i64);
-    for c in 0..n {
-        let (w, s) = (&mut sc.w[c * nloc..(c + 1) * nloc], &mut sc.s[c * nloc..(c + 1) * nloc]);
-        core.pair_counts(g, c, w, s);
-        let diag = c == g;
-        let (mm, mf, nl) = if diag { (f64::NAN, f64::NAN, 0) } else { pair_medians(w, s, rr, ok_r, &mut sc.v, &mut sc.wv, &mut sc.f, &mut sc.wf) };
-        m[c] = mm; mfl[c] = mf;
-        let tot_same: f64 = s.iter().map(|x| *x as u64).sum::<u64>() as f64; let tot_shared: f64 = w.iter().map(|x| *x as u64).sum::<u64>() as f64;
-        let ani = if tot_shared > 0.0 && !diag { 100.0 * tot_same / tot_shared } else { f64::NAN };
-        let is_ident = tot_shared > 0.0 && tot_same == tot_shared && !diag;
-        let base = (if ani.is_nan() { 100.0 } else { 100.0 - ani }) * 1e-9;
-        let fin = if mm.is_finite() && !is_ident { mm } else { f64::INFINITY };
-        let mj = fin + (base + c as f64 * 1e-12);
-        sc.mj[c] = mj;
-        let k = match key {
-            Key::M0 => if mm.is_finite() && mm > mf && !is_ident && !diag { mm } else { f64::INFINITY },
-            Key::Mj => mj,
-        };
-        if k.is_finite() { entries.push((k, c)); }
-        if is_ident && g < c { ident.push(c); }
-        if g < c && core.keep[g] && core.keep[c] {
-            counters.1 += 1; if nl < MIN_LOCI_FOR_M { counters.0 += 1; } if mm.is_finite() { counters.2 += 1; }
+/// the closest-match band of one (taxon, locus) as the columns go by: the entries (rate d, vals, column) of the
+/// distinct rates within 1e-9 of the lowest so far, ascending, each the (vals, column)-smallest of its rate. One more
+/// than BAND_SLOTS is kept, so a band with more distinct rates than slots is known (the overflow the log counts);
+/// the result is that of the Python's rule over all columns at once, whatever the order the columns come in
+#[derive(Clone, Copy)]
+struct Band { n: u8, e: [(f64, f64, i64); BAND_SLOTS + 1] }
+const BAND_EMPTY: Band = Band { n: 0, e: [(f64::INFINITY, f64::INFINITY, -1); BAND_SLOTS + 1] };
+
+/// a column whose rate d is within the band (d <= *limit): into the band; the limit follows the minimum
+#[inline(never)]
+fn band_insert(b: &mut Band, limit: &mut f64, d: f64, mj: f64, c: i64) {
+    let v = d + 1e-9 * mj / 100.0; let n = b.n as usize; const CAP: usize = BAND_SLOTS + 1;
+    if n == 0 || d < b.e[0].0 {                              // a new minimum: the entries still within 1e-9 of it stay
+        let band = d + 1e-9; let old = b.e; let mut k = 1; b.e[0] = (d, v, c);
+        for e in old.iter().take(n) { if e.0 <= band && k < CAP { b.e[k] = *e; k += 1; } }
+        b.n = k as u8; *limit = band; return;
+    }
+    for i in 0..n {
+        if b.e[i].0 == d { if v < b.e[i].1 || (v == b.e[i].1 && c < b.e[i].2) { b.e[i] = (d, v, c); } return; }
+        if b.e[i].0 > d {                                    // a new distinct rate before entry i
+            let last = if n < CAP { n } else { CAP - 1 };
+            for j in (i + 1..=last).rev() { b.e[j] = b.e[j - 1]; }
+            b.e[i] = (d, v, c); b.n = (last + 1) as u8; return;
         }
     }
-    let nfin = entries.len() as i64;
-    entries.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1)));
-    entries.truncate(cmax);
-    let list = RowList { cand: entries.iter().map(|e| e.1 as i64).collect(), key: entries.iter().map(|e| e.0).collect(),
-                         m: entries.iter().map(|e| m[e.1]).collect(), mfl: entries.iter().map(|e| mfl[e.1]).collect(), nfin };
-    let mut cl_win = vec![]; let mut cl_dmin = vec![]; let mut overflow = 0i64;
-    if want_closest {
-        cl_win = vec![-1i64; nloc]; cl_dmin = vec![f64::INFINITY; nloc];
-        const R: usize = BAND_SLOTS;
-        for li in 0..nloc {
-            let mut dmin = f64::INFINITY;
-            for c in 0..n {
-                let o = sc.w[c * nloc + li] as f64;
-                let dj = if o >= fit && sc.mj[c].is_finite() { (o - sc.s[c * nloc + li] as f64 + HALF) / o.max(1.0) } else { f64::INFINITY };
-                sc.dbuf[c] = dj; if dj < dmin { dmin = dj; }
+    if n < CAP { b.e[n] = (d, v, c); b.n += 1; }
+}
+
+/// the rows of a chunk against every column. The columns are the outer loop: a column's planes are read from memory
+/// once for the whole chunk, whose own rows stay in the cache (the sweep is bound by memory traffic otherwise).
+/// Nothing is kept per pair but what the results need: the cmax smallest keys so far and, in sweep 2, the band of
+/// the closest match at every locus
+#[allow(clippy::too_many_arguments)]
+fn sweep_chunk(core: &Core, rows: &[usize], rr: Option<&[f64]>, ok_r: Option<&[bool]>, key: Key, cmax: usize, fit: f64, want_closest: bool, want_m: bool, sc: &mut Scratch) -> Vec<RowRes> {
+    let (n, nloc) = (core.n, core.nloc); let nr = rows.len();
+    struct St { m: Vec<f64>, mfl: Vec<f64>, entries: Vec<(f64, usize, f64, f64)>, nfin: i64, ident: Vec<usize>, counters: (i64, i64, i64) }
+    let mut st: Vec<St> = (0..nr).map(|_| St { m: if want_m { vec![f64::NAN; n] } else { vec![] }, mfl: if want_m { vec![f64::NAN; n] } else { vec![] }, entries: Vec::new(), nfin: 0, ident: vec![], counters: (0, 0, 0) }).collect();
+    let by_key = |a: &(f64, usize, f64, f64), b: &(f64, usize, f64, f64)| a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1));
+    let cap = if cmax >= n { usize::MAX } else { 4 * cmax.max(16) };       // the list is cut back to its cmax smallest whenever it reaches this
+    let mut bands = if want_closest { vec![BAND_EMPTY; nr * nloc] } else { vec![] };
+    let mut limits = if want_closest { vec![f64::INFINITY; nr * nloc] } else { vec![] };
+    for c in 0..n {
+        for (ri, &g) in rows.iter().enumerate() {
+            core.pair_counts(g, c, &mut sc.w, &mut sc.s, &mut sc.pa, &mut sc.eq);
+            let (w, s) = (&sc.w, &sc.s); let t = &mut st[ri];
+            let diag = c == g;
+            let (mm, mf, nl) = if diag { (f64::NAN, f64::NAN, 0) } else { pair_medians(w, s, rr, ok_r, &mut sc.v, &mut sc.wv, &mut sc.f, &mut sc.wf) };
+            if want_m { t.m[c] = mm; t.mfl[c] = mf; }
+            let tot_same: f64 = s.iter().map(|x| *x as u64).sum::<u64>() as f64; let tot_shared: f64 = w.iter().map(|x| *x as u64).sum::<u64>() as f64;
+            let ani = if tot_shared > 0.0 && !diag { 100.0 * tot_same / tot_shared } else { f64::NAN };
+            let is_ident = tot_shared > 0.0 && tot_same == tot_shared && !diag;
+            let base = (if ani.is_nan() { 100.0 } else { 100.0 - ani }) * 1e-9;
+            let fin = if mm.is_finite() && !is_ident { mm } else { f64::INFINITY };
+            let mj = fin + (base + c as f64 * 1e-12);
+            let k = match key {
+                Key::M0 => if mm.is_finite() && mm > mf && !is_ident && !diag { mm } else { f64::INFINITY },
+                Key::Mj => mj,
+            };
+            if k.is_finite() {
+                t.nfin += 1; t.entries.push((k, c, mm, mf));
+                if t.entries.len() >= cap { t.entries.select_nth_unstable_by(cmax - 1, by_key); t.entries.truncate(cmax); }
             }
-            let mut cur = dmin; let band = dmin + 1e-9; let mut k = 0;
-            let (mut ed, mut ev, mut ec) = ([f64::INFINITY; R], [f64::INFINITY; R], [-1i64; R]);
-            while k < R && cur < f64::INFINITY {
-                let mut vmin = f64::INFINITY; let mut cmin = i64::MAX;
-                for c in 0..n {
-                    if sc.dbuf[c] == cur {
-                        let v = sc.dbuf[c] + 1e-9 * sc.mj[c] / 100.0;
-                        if v < vmin { vmin = v; cmin = c as i64; } else if v == vmin && (c as i64) < cmin { cmin = c as i64; }
+            if is_ident && g < c { t.ident.push(c); }
+            if g < c && core.keep[g] && core.keep[c] {
+                t.counters.1 += 1; if nl < MIN_LOCI_FOR_M { t.counters.0 += 1; } if mm.is_finite() { t.counters.2 += 1; }
+            }
+            if want_closest && mj.is_finite() {
+                let (bd, lm) = (&mut bands[ri * nloc..(ri + 1) * nloc], &mut limits[ri * nloc..(ri + 1) * nloc]);
+                for li in 0..nloc {
+                    let o = w[li] as f64;
+                    if o >= fit {
+                        let d = (o - s[li] as f64 + HALF) / o.max(1.0);
+                        if d <= lm[li] { band_insert(&mut bd[li], &mut lm[li], d, mj, c as i64); }
                     }
                 }
-                ed[k] = cur; ev[k] = vmin; ec[k] = cmin;
-                let mut nxt = f64::INFINITY;
-                for c in 0..n { let dj = sc.dbuf[c]; if dj > cur && dj <= band && dj < nxt { nxt = dj; } }
-                cur = nxt; k += 1;
             }
-            if cur < f64::INFINITY { overflow += 1; }
-            // closest_winners: the (vals, column)-smallest entry
-            let mut best = 0usize;
-            for j in 1..R {
-                let (cj, cb) = (if ec[j] >= 0 { ec[j] } else { i64::MAX }, if ec[best] >= 0 { ec[best] } else { i64::MAX });
-                if ev[j] < ev[best] || (ev[j] == ev[best] && cj < cb) { best = j; }
-            }
-            cl_win[li] = ec[best]; cl_dmin[li] = ed[0];
         }
     }
-    RowRes { list, cl_win, cl_dmin, ident, counters, m: if want_m { m } else { vec![] }, mfl: if want_m { mfl } else { vec![] }, overflow }
+    let mut out = Vec::with_capacity(nr);
+    for (ri, mut t) in st.into_iter().enumerate() {
+        t.entries.sort_by(by_key); t.entries.truncate(cmax);
+        let list = RowList { cand: t.entries.iter().map(|e| e.1 as i64).collect(), key: t.entries.iter().map(|e| e.0).collect(),
+                             m: t.entries.iter().map(|e| e.2).collect(), mfl: t.entries.iter().map(|e| e.3).collect(), nfin: t.nfin };
+        let mut cl_win = vec![]; let mut cl_dmin = vec![]; let mut overflow = 0i64;
+        if want_closest {
+            cl_win = vec![-1i64; nloc]; cl_dmin = vec![f64::INFINITY; nloc];
+            for li in 0..nloc {
+                let b = &bands[ri * nloc + li]; let kept = (b.n as usize).min(BAND_SLOTS);
+                if b.n as usize > BAND_SLOTS { overflow += 1; }
+                if kept == 0 { continue; }
+                // closest_winners: the (vals, column)-smallest of the kept entries
+                let mut best = 0usize;
+                for j in 1..kept { if b.e[j].1 < b.e[best].1 || (b.e[j].1 == b.e[best].1 && b.e[j].2 < b.e[best].2) { best = j; } }
+                cl_win[li] = b.e[best].2; cl_dmin[li] = b.e[0].0;
+            }
+        }
+        out.push(RowRes { list, cl_win, cl_dmin, ident: t.ident, counters: t.counters, m: t.m, mfl: t.mfl, overflow });
+    }
+    out
 }
 
 /// the sweep over the rows of the pair matrix (rows: the given taxa against everyone, for the second passes)
@@ -251,20 +320,23 @@ pub fn sweep(core: &Core, rr: Option<&[f64]>, ok_r: Option<&[bool]>, key: Key, c
     let (n, nloc) = (core.n, core.nloc);
     let all: Vec<usize> = (0..n).collect(); let rows_v: &[usize] = rows.unwrap_or(&all);
     let prog = crate::log::prog();
+    // rows per chunk: about half a megabyte of planes (they stay in the cache while the columns stream by), few enough
+    // that every thread has several chunks
+    let threads = rayon::current_num_threads().max(1);
+    let chunk = (SWEEP_CHUNK_BYTES / core.bits.row_bytes().max(1)).clamp(4, 64).min(rows_v.len().div_ceil(4 * threads)).max(1);
     if let Some(st) = stage {
-        log!("pair sweep {}: {} rows of the pair matrix against {} taxa, {} thread{}, the pair counts {}", st, commas(rows_v.len() as i64), commas(n as i64), rayon::current_num_threads(),
-             if rayon::current_num_threads() > 1 { "s" } else { "" }, if core.slab.is_some() { "kept for the run" } else { "from the residues" });
+        log!("pair sweep {}: {} rows of the pair matrix against {} taxa in chunks of {}, {} thread{}, the pair counts {}", st, commas(rows_v.len() as i64), commas(n as i64), chunk, threads,
+             if threads > 1 { "s" } else { "" }, if core.slab.is_some() { "kept for the run" } else { "from the residues" });
         prog.start(st, rows_v.len());
     }
     let cmax = cmax.min(n);
-    let res: Vec<RowRes> = rows_v.par_iter().map_init(
-        || Scratch { w: vec![0; n * nloc], s: vec![0; n * nloc], v: vec![0.0; nloc], wv: vec![0.0; nloc], f: vec![0.0; nloc], wf: vec![0.0; nloc], dbuf: vec![0.0; n], mj: vec![0.0; n] },
-        |sc, &g| { let r = sweep_row(core, g, rr, ok_r, key, cmax, fit as f64, want_closest, want_full, sc); if stage.is_some() { prog.tick(); } r }).collect();
+    let res: Vec<Vec<RowRes>> = rows_v.par_chunks(chunk).map_init(|| Scratch::new(core),
+        |sc, ch| { let r = sweep_chunk(core, ch, rr, ok_r, key, cmax, fit as f64, want_closest, want_full, sc); if stage.is_some() { prog.tick_k(ch.len(), None); } r }).collect();
     if stage.is_some() { prog.finish(); }
-    let mut out = SweepOut { rows: Vec::with_capacity(res.len()), cl_win: vec![], cl_dmin: vec![], ident: vec![], counters: (0, 0, 0), full: None, overflow: 0 };
-    if want_closest { out.cl_win.reserve(res.len() * nloc); out.cl_dmin.reserve(res.len() * nloc); }
+    let mut out = SweepOut { rows: Vec::with_capacity(rows_v.len()), cl_win: vec![], cl_dmin: vec![], ident: vec![], counters: (0, 0, 0), full: None, overflow: 0 };
+    if want_closest { out.cl_win.reserve(rows_v.len() * nloc); out.cl_dmin.reserve(rows_v.len() * nloc); }
     let mut full = if want_full && rows.is_none() { Some((Vec::with_capacity(n * n), Vec::with_capacity(n * n))) } else { None };
-    for (k, r) in res.into_iter().enumerate() {
+    for (k, r) in res.into_iter().flatten().enumerate() {
         let g = rows_v[k];
         for c in r.ident { out.ident.push((g, c)); }
         out.counters.0 += r.counters.0; out.counters.1 += r.counters.1; out.counters.2 += r.counters.2; out.overflow += r.overflow;
@@ -326,11 +398,15 @@ impl Prep {
     pub fn pair_m(&self, g: usize, c: usize) -> (f64, f64) {
         if let (Some(m), Some(f)) = (&self.m_full, &self.mfl_full) { return (m[g * self.core.n + c], f[g * self.core.n + c]); }
         if g == c { return (f64::NAN, f64::NAN); }
-        let nloc = self.core.nloc; let mut w = vec![0u32; nloc]; let mut s = vec![0u32; nloc];
-        self.core.pair_counts(g, c, &mut w, &mut s);
-        let (mut v, mut wv, mut f, mut wf) = (vec![0.0; nloc], vec![0.0; nloc], vec![0.0; nloc], vec![0.0; nloc]);
-        let (m, mf, _) = pair_medians(&w, &s, Some(&self.rr), Some(&self.ok_r), &mut v, &mut wv, &mut f, &mut wf);
-        (m, mf)
+        thread_local! { static SC: std::cell::RefCell<Option<Scratch>> = const { std::cell::RefCell::new(None) }; }
+        SC.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            if slot.as_ref().map_or(true, |sc| sc.w.len() != self.core.nloc || sc.pa.len() != self.core.bits.wpr) { *slot = Some(Scratch::new(&self.core)); }
+            let sc = slot.as_mut().unwrap();
+            self.core.pair_counts(g, c, &mut sc.w, &mut sc.s, &mut sc.pa, &mut sc.eq);
+            let (m, mf, _) = pair_medians(&sc.w, &sc.s, Some(&self.rr), Some(&self.ok_r), &mut sc.v, &mut sc.wv, &mut sc.f, &mut sc.wf);
+            (m, mf)
+        })
     }
     /// m and its floor for a comparator pair, from the focal taxon's list (or its extended row, or the full matrix)
     pub fn pair_m_lists(&self, g: usize, c: usize) -> (f64, f64) {
