@@ -73,14 +73,17 @@ hash differently on a machine other than the one that pinned them.
 ## Where the Rust program behaves differently
 
 - **The pair sweep.** The script walks pairs of taxon blocks with matrix products and merges block results (its
-  reductions are order-independent); the Rust program walks the rows of the pair matrix against every column, with the
-  arithmetic of the script's compiled kernel, counting shared and identical residues on bit planes with popcounts
-  (AVX2 where the machine has it). The rows go in chunks of about half a megabyte of planes, the columns in the outer
-  loop, so a column is read from memory once per chunk: the sweep is bound by memory traffic otherwise. Per row it
-  keeps only the candidate list so far and the closest match at each locus so far, never a row of counts. A pair's
-  medians are computed only where their values are used (a pair that can enter a list or a closest-match band):
-  whether m is below the list's current cut is decided exactly from the weight of the loci below it, without the
-  median. Not when the full m matrix is kept (up to 20,000 taxa, sweep 2), where every m is wanted.
+  reductions are order-independent); the Rust program counts shared and identical residues on bit planes with
+  popcounts (AVX2 where the machine has it), with the arithmetic of the script's compiled kernel. Each pair of taxa
+  is counted once and serves both of its rows: the rows of the pair matrix are swept above the diagonal, in chunks
+  of about half a megabyte of planes with the columns in the outer loop (a column is read from memory once per
+  chunk), and a pair (g, c) is offered to row g and to row c. A row's results (the candidate list so far, the closest
+  match at each locus so far) are held behind a lock, and the cuts that decide whether a pair can matter to a row
+  are read without it: a cut only tightens, so an old value lets through a pair that no longer matters, never the
+  reverse. A pair's medians are computed only where their values are used (a pair that can enter a list or a
+  closest-match band): whether m is at most the list's current cut is decided exactly from the weight of the loci
+  at or below it, without the median. When the full m matrix is kept (up to 20,000 taxa, sweep 2) every m is
+  computed, once per pair. The sweeps of a few given rows (the taxa whose candidate lists ran out) go row by row.
   `--block-taxa` and `--no-numba` are accepted and do nothing. Threads replace the worker processes.
 - **The broad-sample test** is computed row by row in three passes over a locus (the draws and the curve; the
   too-close side; the too-divergent side and the direction) instead of on rows x members matrices: the same numbers
@@ -104,8 +107,9 @@ hash differently on a machine other than the one that pinned them.
 - **Test hooks.** The constants the test suite changes in the Python module are read from the environment:
   `LOCUSMASKER_DENSE_CELLS_MAX`, `LOCUSMASKER_BEST_MATCH_ALL_MAX_TAXA`, `LOCUSMASKER_FULL_M_MAX_TAXA`,
   `LOCUSMASKER_SWEEP_BLOCK_MIN`, `LOCUSMASKER_REPORT_SAMPLE_CELLS`, `LOCUSMASKER_REPORT_SEQ_ALL_MAX`.
-  `LOCUSMASKER_NO_AVX2` turns the AVX2 counting kernel off (the same counts from the scalar one) and
-  `LOCUSMASKER_NO_LAZY` computes every pair's medians (the same results, slower).
+  `LOCUSMASKER_NO_AVX2` turns the AVX2 code off (the same numbers from the scalar code),
+  `LOCUSMASKER_NO_LAZY` computes every pair's medians, and `LOCUSMASKER_NO_PAIRS_ONCE` sweeps every row against
+  every column (each pair twice): the same results, slower.
 
 ## Where the script's parts are in the Rust source
 
