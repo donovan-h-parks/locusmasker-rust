@@ -1,5 +1,5 @@
 //! Unit tests: the Python- and numpy-compatible pieces against values taken from Python 3.15 / numpy 2.5
-//! (the whole tool is held to locusmasker.py by validation/compare_ports.py and validation/fuzz_ports.py).
+//! (the whole tool is held to locusmasker.py by python-original/validation/compare_ports.py and fuzz_ports.py).
 use crate::npmath::*;
 use crate::pyfmt::*;
 

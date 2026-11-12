@@ -13,16 +13,16 @@ const REPORT_CHUNK_BYTES: usize = 8 << 20;
 const REPORT_SAMPLE_CELLS: usize = 30_000;
 
 static VIEWER: &[(&str, &[u8])] = &[
-    ("viewer.html", include_bytes!("../../viewer/viewer.html")), ("viewer.js", include_bytes!("../../viewer/viewer.js")),
-    ("strings.js", include_bytes!("../../viewer/strings.js")), ("viewer.css", include_bytes!("../../viewer/viewer.css")),
-    ("fonts.css", include_bytes!("../../viewer/fonts.css")),
-    ("vendor/d3.v7.min.js", include_bytes!("../../viewer/vendor/d3.v7.min.js")), ("vendor/d3-sankey.min.js", include_bytes!("../../viewer/vendor/d3-sankey.min.js")),
-    ("vendor/fuse.min.js", include_bytes!("../../viewer/vendor/fuse.min.js")),
-    ("icons/favicon-16.png", include_bytes!("../../viewer/icons/favicon-16.png")), ("icons/favicon-32.png", include_bytes!("../../viewer/icons/favicon-32.png")),
-    ("icons/favicon-16.svg", include_bytes!("../../viewer/icons/favicon-16.svg")), ("icons/logo.svg", include_bytes!("../../viewer/icons/logo.svg")),
-    ("vendor/D3_LICENSE", include_bytes!("../../viewer/vendor/D3_LICENSE")), ("vendor/D3_SANKEY_LICENSE", include_bytes!("../../viewer/vendor/D3_SANKEY_LICENSE")),
-    ("vendor/FUSE_LICENSE", include_bytes!("../../viewer/vendor/FUSE_LICENSE")), ("vendor/INTER_LICENSE", include_bytes!("../../viewer/vendor/INTER_LICENSE")),
-    ("LICENSE", include_bytes!("../../LICENSE")),
+    ("viewer.html", include_bytes!("../viewer/viewer.html")), ("viewer.js", include_bytes!("../viewer/viewer.js")),
+    ("strings.js", include_bytes!("../viewer/strings.js")), ("viewer.css", include_bytes!("../viewer/viewer.css")),
+    ("fonts.css", include_bytes!("../viewer/fonts.css")),
+    ("vendor/d3.v7.min.js", include_bytes!("../viewer/vendor/d3.v7.min.js")), ("vendor/d3-sankey.min.js", include_bytes!("../viewer/vendor/d3-sankey.min.js")),
+    ("vendor/fuse.min.js", include_bytes!("../viewer/vendor/fuse.min.js")),
+    ("icons/favicon-16.png", include_bytes!("../viewer/icons/favicon-16.png")), ("icons/favicon-32.png", include_bytes!("../viewer/icons/favicon-32.png")),
+    ("icons/favicon-16.svg", include_bytes!("../viewer/icons/favicon-16.svg")), ("icons/logo.svg", include_bytes!("../viewer/icons/logo.svg")),
+    ("vendor/D3_LICENSE", include_bytes!("../viewer/vendor/D3_LICENSE")), ("vendor/D3_SANKEY_LICENSE", include_bytes!("../viewer/vendor/D3_SANKEY_LICENSE")),
+    ("vendor/FUSE_LICENSE", include_bytes!("../viewer/vendor/FUSE_LICENSE")), ("vendor/INTER_LICENSE", include_bytes!("../viewer/vendor/INTER_LICENSE")),
+    ("LICENSE", include_bytes!("../LICENSE")),
 ];
 fn asset(name: &str) -> &'static [u8] { VIEWER.iter().find(|x| x.0 == name).unwrap_or_else(|| die!("the viewer file {name} is not embedded in this build")).1 }
 fn text(name: &str) -> String { String::from_utf8_lossy(asset(name)).replace("\r\n", "\n").replace('\r', "\n") }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the outputs of locusmasker.py and of the Rust port (rust/, binary `locusmasker`) byte for byte.
+"""Compare the outputs of locusmasker.py and of the Rust tool (the crate at the repository root, binary `locusmasker`) byte for byte.
 
     python validation/compare_ports.py                    every fixture dataset, the standard run
     python validation/compare_ports.py dna_small aa_small  these datasets
@@ -114,7 +114,7 @@ def compare(py_out, rs_out, verbose=True):
 
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("cases", nargs="*"); ap.add_argument("--dirs", nargs=2); ap.add_argument("--keep"); ap.add_argument("--threads", default="4")
-    ap.add_argument("--rust", default=os.path.join(ROOT, "rust", "target", "release", "locusmasker")); ap.add_argument("--python", default=sys.executable)
+    ap.add_argument("--rust", default=os.path.join(os.path.dirname(ROOT), "target", "release", "locusmasker")); ap.add_argument("--python", default=sys.executable)
     ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for the Rust run (the test hooks, e.g. LOCUSMASKER_DENSE_CELLS_MAX=10)")
     a = ap.parse_args()
     if a.dirs: n, bad = compare(*a.dirs); print("identical" if not bad else f"{len(bad)} of {n} differ"); sys.exit(1 if bad else 0)
