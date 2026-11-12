@@ -40,6 +40,13 @@ pub fn fmem(b: u64) -> String {
     if b >= (1 << 30) { format!("{:.1} GB", b as f64 / (1u64 << 30) as f64) } else { format!("{:.0} MB", b as f64 / (1u64 << 20) as f64) }
 }
 
+/// a duration for a person: 34.2 s, 2 min 36 s (156 s), 3 h 12 min 5 s (11,525 s)
+pub fn elapsed_string(sec: f64) -> String {
+    if sec < 59.95 { return format!("{:.1} s", sec); }
+    let t = sec.round() as u64; let (h, m, s) = (t / 3600, t % 3600 / 60, t % 60);
+    if h > 0 { format!("{} h {} min {} s ({} s)", h, m, s, pyfmt::commas(t as i64)) } else { format!("{} min {} s ({} s)", m, s, t) }
+}
+
 pub fn now_string() -> String {
     unsafe {
         let t = libc::time(std::ptr::null_mut()); let mut tm: libc::tm = std::mem::zeroed(); libc::localtime_r(&t, &mut tm);
@@ -186,7 +193,7 @@ fn main() {
     let mut k_eff = (k_in as usize).min(n - 1); k_eff -= 1 - k_eff % 2;
     let m_eff = (k_eff + 1) / 2;
     if (k_eff as i64) < k_in { log!("n-comp shrunk to {} ({} taxa)", k_eff, n); }
-    log!("{} taxa, {} sites, {} loci, {}, {}", n, l, nloc, dtype, inp.fmt);
+    log!("{} taxa, {} sites, {} loci, {}, {}{}", n, l, nloc, dtype, inp.fmt, if inp.gz { ", gzip-compressed" } else { "" });
     let me = memory_estimate(&a, n, l, &inp.loci, a.candidates, k_eff, !a.no_broad_sample);
     let parts = format!("{} of alignment (the rows and the residue codes), {} of candidate lists for {} taxa, {} of closest matches for {} taxa x {} loci{}{}{}",
                         fmem(me[1]), fmem(me[2]), commas(n as i64), fmem(me[3]), commas(n as i64), commas(nloc as i64),
@@ -212,10 +219,11 @@ fn main() {
     prog.start("write", 2);
     let out = input::write_masked(&a.aln, &a.out, &inp, &masked);
     prog.tick();
-    if !a.no_report { report::write_report(&a, &inp.names, &inp.loci, &rep, &dtype, inp.fmt, k_in as usize, k_eff, m_eff, t0, &argv); }
+    if !a.no_report { report::write_report(&a, &inp.names, &inp.loci, &rep, &dtype, inp.fmt, inp.gz, k_in as usize, k_eff, m_eff, t0, &argv); }
     prog.finish();
     let _ = std::fs::remove_dir_all(format!("{}/restart", a.out));
-    log!("outputs: {}, {}/masked.csv{}{}, {}/run.log\ndone {:.0}s", out, a.out, if a.all_tests { format!(", {}/tests.tsv.gz", a.out) } else { String::new() },
-         if a.no_report { String::new() } else { format!(", {0}/report.html (+ report_files/), {0}/report.npz", a.out) }, a.out, t0.elapsed().as_secs_f64());
+    log!("outputs: {}, {}/masked.csv{}{}, {}/run.log", out, a.out, if a.all_tests { format!(", {}/tests.tsv.gz", a.out) } else { String::new() },
+         if a.no_report { String::new() } else { format!(", {0}/report.html (+ report_files/), {0}/report.npz", a.out) }, a.out);
+    log!("done: total execution time {}", elapsed_string(t0.elapsed().as_secs_f64()));
     log::close();
 }

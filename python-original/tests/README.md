@@ -32,6 +32,6 @@ test changes in the module reaches the binary through its test hooks (`tests/con
     LOCUSMASKER_BIN=$PWD/../target/release/locusmasker pytest tests/e2e tests/viewer -n auto
 
 The `unit` and `property` tests call the Python functions and say nothing about the Rust tool. A few `e2e` tests assert log
-lines of the Python's own machinery (the taxon blocks of its sweep, its compiled kernel, Biopython's messages) or start with
-the Python script, and fail against the binary. `validation/compare_ports.py` and `validation/fuzz_ports.py` hold the Rust
+lines of the Python's own machinery (the taxon blocks of its sweep, its compiled kernel, Biopython's messages), start with
+the Python script, or expect a gzip-compressed alignment to be refused (the binary reads it), and fail against the binary. `validation/compare_ports.py` and `validation/fuzz_ports.py` hold the Rust
 tool's outputs to the script's byte for byte; `cargo test --release` at the repository root runs the Rust unit tests.

@@ -46,6 +46,8 @@ Input either of the following:
 1. A single NEXUS format alignment file with a SETS block defining the loci
 2. A FASTA, PHYLIP, or NEXUS format alignment with a RAxML-style partitions.txt file defining the loci.
 
+The alignment file may be gzip-compressed (e.g. `alignment.fasta.gz`). It is recognised by its content, not its name, and the masked alignment is then written gzip-compressed too.
+
 NB: your alignment must have at least 10 loci for this method to work.
 
 More details on formats can be found here: https://iqtree.github.io/doc/Advanced-Tutorial
@@ -55,8 +57,9 @@ More details on formats can be found here: https://iqtree.github.io/doc/Advanced
 The output consists of the following:
 
 1. `report.html`, an interactive HTML report showing all results. Note that the data for this are in the `report_files` folder, so if you want to share your report, share this folder alongside it!
-2. The alignment in its input format with every outlier sequence (individual locus in a single taxon) masked as gaps, e.g. `alignment.masked.nex`
+2. The alignment in its input format with every outlier sequence (individual locus in a single taxon) masked as gaps, e.g. `alignment.masked.nex` (or `alignment.masked.nex.gz` if the input was gzip-compressed)
 3. `masked.csv`, one row per masked cell with the evidence for masking it (see tests below)
+4. `run.log`, the log of the run as it was printed: every line starts with the time it was written, and the last line gives the total execution time
 
 # Method overview
 
@@ -136,7 +139,7 @@ All of the options are listed below. The defaults are sensible, and most people 
 
 Input and output:
 
-- `--aln`: the alignment (required).
+- `--aln`: the alignment (required), plain or gzip-compressed.
 - `--datatype dna|aa`: DNA or amino acids (required). DNA is analysed on A, C, G, T (U is read as T); amino acids on the 20 standard residues. Everything else counts as missing.
 - `--out`: the output folder (required).
 - `--partitions`: a RAxML-style partitions file defining the loci. Required unless the alignment is a nexus file with a SETS block.

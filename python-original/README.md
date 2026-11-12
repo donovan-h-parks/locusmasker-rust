@@ -89,6 +89,13 @@ hash differently on a machine other than the one that pinned them.
   reader for them (comments, quoted names, interleaved matrices, TAXA / DATA / CHARACTERS blocks, a SETS block of
   charset, taxset and charpartition statements; other blocks are ignored) and writes such a file back the way Biopython
   does. Its error messages are its own.
+- **Gzip-compressed alignments.** The script refuses them; the Rust program reads a file that starts with the gzip
+  magic bytes (whatever its name) and writes the masked alignment gzip-compressed (`x.fasta.gz` gives
+  `x.masked.fasta.gz`). Every other output is that of the same alignment uncompressed, apart from the manifest's
+  `input` entry (the file's name, size and sha256 are those of the compressed file).
+- **The log.** Every line of `run.log` and of the log on stderr, the progress lines included, starts with the local
+  time (`[2026-11-13 07:30:01] `), and the last line is `done: total execution time ...` where the script writes
+  `done 156s`. The message of a run that stops on an error is as the script writes it, without a time.
 - **Restart points** are written and used as in the script (`restart/rates`, `restart/pairs`, `--restart`,
   `LOCUSMASKER_STOP_AFTER`), but hold the Rust program's own structures: a point written by one tool is not used by
   the other.

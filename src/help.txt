@@ -7,7 +7,8 @@ LocusMasker 0.15.0: find and mask the per-locus outliers of a multi-locus alignm
   locusmasker --aln alignment.nex --datatype dna --out scan --threads 0
 
 input and output:
-  --aln FILE                the alignment (required)
+  --aln FILE                the alignment (required). A gzip-compressed file is read as it is, and
+                            the masked alignment is then written gzip-compressed too
   --datatype dna|aa         DNA or amino acids (required). DNA is analysed on A, C, G, T (U is read
                             as T); amino acids on the 20 standard residues. Everything else counts
                             as missing

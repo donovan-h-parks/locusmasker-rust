@@ -64,7 +64,7 @@ pub fn sha256_file(path: &str) -> String {
 fn opt_round(v: f64, nd: usize) -> J { if v.is_finite() { J::Float(round(v, nd)) } else { J::Null } }
 
 #[allow(clippy::too_many_arguments)]
-pub fn write_report(a: &Args, names: &[String], loci: &Loci, rep: &Rep, dtype: &str, fmt: &str, k_in: usize, k_eff: usize, m_eff: usize, t0: std::time::Instant, argv: &[String]) -> bool {
+pub fn write_report(a: &Args, names: &[String], loci: &Loci, rep: &Rep, dtype: &str, fmt: &str, gz: bool, k_in: usize, k_eff: usize, m_eff: usize, t0: std::time::Instant, argv: &[String]) -> bool {
     let (n, nloc) = (names.len(), loci.len()); let dense = rep.dense; let k = k_eff;
     let npz = format!("{}/report.npz", a.out);
     let io = |r: std::io::Result<()>, what: &str| { if let Err(e) = r { die!("cannot write {}: {}", what, crate::input::os_err(&e)); } };
@@ -100,7 +100,8 @@ pub fn write_report(a: &Args, names: &[String], loci: &Loci, rep: &Rep, dtype: &
         "test_rate" => J::List(rep.test_rate.iter().map(|v| opt_round(*v, 5)).collect()), "similar_tests" => J::List(rep.pair_tests.iter().map(|v| J::Int(*v)).collect()) };
     let aln_path = std::path::Path::new(&a.aln);
     let base = aln_path.file_name().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
-    let stem = aln_path.file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
+    // the dataset is named after the alignment file, a gzip-compressed one without its .gz
+    let stem = std::path::Path::new(&crate::input::plain_name(&a.aln, gz)).file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
     let parent = std::fs::canonicalize(aln_path).ok().or_else(|| std::env::current_dir().ok().map(|d| d.join(aln_path)))
         .and_then(|p| p.parent().and_then(|d| d.file_name().map(|x| x.to_string_lossy().into_owned()))).unwrap_or_default();
     let dataset = match &a.name { Some(nm) if !nm.is_empty() => nm.clone(), _ => if stem.to_lowercase() == "alignment" && !matches!(parent.as_str(), "" | "." | "work") { parent } else { stem } };
