@@ -1,4 +1,4 @@
-//! stderr prose (and run.log), stage progress, and the fatal exit of sys.exit(message)
+//! stderr prose (and run.log) with every line behind its time, stage progress, and the fatal exit of sys.exit(message)
 use std::fs::File;
 use std::io::{IsTerminal, Write};
 use std::sync::Mutex;
@@ -11,13 +11,18 @@ pub fn open(path: &str) -> std::io::Result<()> { LOG.lock().unwrap().fh = Some(F
 pub fn close() { LOG.lock().unwrap().fh = None; }
 pub fn set_bar(b: bool) { LOG.lock().unwrap().bar = b; }
 
+/// every line of a message behind the local time: [2026-11-13 07:30:01] line
+fn stamped(msg: &str) -> String { let t = crate::now_string(); msg.split('\n').map(|l| format!("[{t}] {l}")).collect::<Vec<_>>().join("\n") }
+
 pub fn log(msg: &str) {
+    let msg = &stamped(msg);
     let mut l = LOG.lock().unwrap(); let mut e = std::io::stderr().lock();
     if l.bar { let _ = e.write_all(b"\r\x1b[K"); }
     let _ = writeln!(e, "{msg}"); let _ = e.flush();
     if let Some(f) = l.fh.as_mut() { let _ = writeln!(f, "{msg}"); let _ = f.flush(); }
 }
 pub fn detail(msg: &str) {
+    let msg = &stamped(msg);
     let mut l = LOG.lock().unwrap();
     if let Some(f) = l.fh.as_mut() { let _ = writeln!(f, "{msg}"); }
     if !l.bar { let _ = writeln!(std::io::stderr().lock(), "{msg}"); }
@@ -84,7 +89,7 @@ impl Progress {
         let el = now.duration_since(p.t0).as_secs_f64(); let st = now.duration_since(p.ts).as_secs_f64();
         let stage = p.stage.clone().unwrap_or_default(); let mut e = std::io::stderr().lock();
         if p.mode == Mode::Sparse {
-            let _ = writeln!(e, "progress\t{}\t{}\t{}\t{:.1}\t{}", stage, p.done, p.total, el, p.extra); let _ = e.flush(); p.last = el; return;
+            let _ = writeln!(e, "[{}] progress\t{}\t{}\t{}\t{:.1}\t{}", crate::now_string(), stage, p.done, p.total, el, p.extra); let _ = e.flush(); p.last = el; return;
         }
         let frac = p.done as f64 / p.total as f64; let w = 28usize; let filled = ((frac * w as f64).round_ties_even() as usize).min(w);
         let eta = if frac > 0.0 && frac < 1.0 { st / frac - st } else { 0.0 };

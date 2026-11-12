@@ -20,6 +20,7 @@ pub struct NexusInfo {
 pub struct Input {
     pub names: Vec<String>, pub n: usize, pub l: usize, pub rows: Vec<u8>,     // rows: n x l bytes
     pub loci: Loci, pub fmt: &'static str, pub declared: Option<&'static str>, pub nexus: Option<NexusInfo>,
+    pub gz: bool,                                                               // the file is gzip-compressed: the masked alignment is written so too
 }
 
 pub fn os_err(e: &std::io::Error) -> String {
@@ -669,13 +670,27 @@ fn check_rows(path: &str, names: &[String], rows: &[Vec<u8>]) {
     }
 }
 
+/// a file that starts with the gzip magic bytes, whatever its name
+pub fn is_gzip(data: &[u8]) -> bool { data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b }
+
+/// the alignment's file name as the outputs are named after it: without the .gz of a gzip-compressed file
+pub fn plain_name(path: &str, gz: bool) -> String {
+    let f = basename(path);
+    if gz && f.len() > 3 && f.to_ascii_lowercase().ends_with(".gz") { f[..f.len() - 3].to_string() } else { f }
+}
+
 pub fn read_input(path: &str, partitions: Option<&str>) -> Input {
-    let raw: Vec<u8> = match std::fs::File::open(path) {
-        Ok(mut f) => { use std::io::Read; let mut buf = vec![0u8; 64]; let mut got = 0;
-            loop { match f.read(&mut buf[got..]) { Ok(0) => break, Ok(k) => { got += k; if got == 64 { break; } } Err(e) => die!("cannot read the alignment {path}: {}", os_err(&e)) } }
-            buf.truncate(got); buf }
-        Err(e) => die!("cannot read the alignment {path}: {}", os_err(&e)),
-    };
+    let mut data: Vec<u8> = match std::fs::read(path) { Ok(b) => b, Err(e) => die!("cannot read the alignment {path}: {}", os_err(&e)) };
+    let gz = is_gzip(&data);
+    if gz {
+        use std::io::Read;
+        let mut plain = Vec::new();
+        if let Err(e) = flate2::read::MultiGzDecoder::new(&data[..]).read_to_end(&mut plain) {
+            die!("cannot read the alignment {path}: it starts as a gzip file but does not decompress ({e})");
+        }
+        data = plain;
+    }
+    let raw: Vec<u8> = data[..data.len().min(64)].to_vec();
     if strip(&raw).is_empty() { die!("the alignment {path} is empty"); }
     let head: String = match std::str::from_utf8(&raw) {
         Ok(s) => s.trim_start_matches(py_space).chars().take(7).collect::<String>().to_uppercase(),
@@ -683,9 +698,7 @@ pub fn read_input(path: &str, partitions: Option<&str>) -> Input {
     };
     let mut nexus: Option<NexusInfo> = None; let mut declared: Option<&'static str> = None;
     let names: Vec<String>; let rows: Vec<Vec<u8>>; let loci: Loci; let fmt: &'static str;
-    let read_all = |p: &str| -> Vec<u8> { match std::fs::read(p) { Ok(b) => b, Err(e) => die!("cannot read the alignment {p}: {}", os_err(&e)) } };
     if head.starts_with("#NEXUS") {
-        let data = read_all(path);
         let nr = match read_nexus_fast(path, &data) { Ok(r) => r, Err(NexErr::Unsupported) => read_nexus_general(path, &data) };
         drop(data);
         names = nr.names; rows = nr.rows; let info = nr.info; let dt = info.datatype.clone(); fmt = "nexus";
@@ -712,7 +725,6 @@ pub fn read_input(path: &str, partitions: Option<&str>) -> Input {
     } else {
         let Some(parts) = partitions else { die!("a FASTA or PHYLIP alignment needs --partitions") };
         if head.starts_with('>') {
-            let data = read_all(path);
             let (nm, seqs) = read_fasta(&data); fmt = "fasta"; drop(data);
             let empty: Vec<&String> = nm.iter().zip(&seqs).filter(|(_, s)| s.is_empty()).map(|(t, _)| t).collect();
             if !empty.is_empty() {
@@ -724,7 +736,7 @@ pub fn read_input(path: &str, partitions: Option<&str>) -> Input {
             if !head.chars().next().map_or(false, |c| c.is_ascii_digit()) {
                 die!("cannot tell the format of {path}: a NEXUS file starts with #NEXUS, a FASTA file with '>', a PHYLIP file with its counts");
             }
-            let txt = match read_text_universal(path) { Ok(t) => t, Err(e) if e.kind() == std::io::ErrorKind::InvalidData => die!("the alignment {path} is not a UTF-8 text file (compressed? binary?)"), Err(e) => die!("cannot read the alignment {path}: {}", os_err(&e)) };
+            let txt = match String::from_utf8(data) { Ok(t) => t.replace("\r\n", "\n").replace('\r', "\n"), Err(_) => die!("the alignment {path} is not a UTF-8 text file (compressed? binary?)") };
             let (nm, seqs) = read_phylip(&txt); fmt = "phylip";
             names = nm; rows = seqs.into_iter().map(|s| s.into_bytes()).collect();
         }
@@ -741,53 +753,102 @@ pub fn read_input(path: &str, partitions: Option<&str>) -> Input {
     let n = names.len(); let l = rows[0].len();
     let mut flat = Vec::with_capacity(n * l);
     for r in rows { flat.extend_from_slice(&r); }
-    Input { names, n, l, rows: flat, loci, fmt, declared, nexus }
+    Input { names, n, l, rows: flat, loci, fmt, declared, nexus, gz }
 }
 
 // ------------------------------------------------------------------ output
 pub fn write_masked(path: &str, out_dir: &str, inp: &Input, rows: &[u8]) -> String {
-    use std::io::Write;
-    let p = std::path::Path::new(path);
+    let name = plain_name(path, inp.gz); let p = std::path::Path::new(&name);
     let stem = p.file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
     let ext = p.extension().map(|x| format!(".{}", x.to_string_lossy())).unwrap_or_else(|| format!(".{}", inp.fmt));
-    let out = format!("{}/{}.masked{}", out_dir, stem, ext);
+    let out = format!("{}/{}.masked{}{}", out_dir, stem, ext, if inp.gz { ".gz" } else { "" });
     let fh = std::fs::File::create(&out).unwrap_or_else(|e| die!("cannot write {}: {}", out, os_err(&e)));
     let mut fh = std::io::BufWriter::with_capacity(1 << 20, fh);
-    let (n, l) = (inp.n, inp.l); let row = |i: usize| &rows[i * l..(i + 1) * l];
-    let r = (|| -> std::io::Result<()> {
-        match (inp.fmt, &inp.nexus) {
-            ("nexus", Some(nx)) => {
-                write!(fh, "#NEXUS\nbegin data;\ndimensions ntax={} nchar={};\n", n, l)?;
-                write!(fh, "format datatype={}{}{};\nmatrix\n", nx.datatype,
-                       nx.missing.as_ref().filter(|m| !m.is_empty()).map(|m| format!(" missing={m}")).unwrap_or_default(),
-                       nx.gap.as_ref().filter(|g| !g.is_empty()).map(|g| format!(" gap={g}")).unwrap_or_default())?;
-                let safe: Vec<String> = inp.names.iter().map(|t| safename(t)).collect();
-                let pad = safe.iter().map(|s| s.chars().count()).max().unwrap_or(0);
-                for (i, s) in safe.iter().enumerate() {
-                    fh.write_all(s.as_bytes())?; for _ in s.chars().count()..pad + 1 { fh.write_all(b" ")?; }
-                    fh.write_all(row(i))?; fh.write_all(b"\n")?;
-                }
-                fh.write_all(b";\nend;\n")?;
-                if !nx.charsets.is_empty() || !nx.taxsets.is_empty() || !nx.charpartitions.is_empty() {
-                    let mut lines = vec!["\nbegin sets".to_string()];
-                    for (k, v) in &nx.charsets { if !v.is_empty() { lines.push(format!("charset {} = {}", safename(k), compact4nexus(v))); } }
-                    for (k, v) in &nx.taxsets { if !v.is_empty() { lines.push(format!("taxset {} = {}", safename(k), v.iter().map(|t| safename(t)).collect::<Vec<_>>().join(" "))); } }
-                    for (k, parts) in &nx.charpartitions {
-                        let mut ps: Vec<&(String, Vec<usize>)> = parts.iter().collect(); ps.sort_by(|a, b| a.1.cmp(&b.1));
-                        lines.push(format!("charpartition {} = {}", safename(k), ps.iter().map(|(sn, sv)| format!("{}: {}", safename(sn), compact4nexus(sv))).collect::<Vec<_>>().join(", ")));
-                    }
-                    lines.push("end;\n".to_string());
-                    if lines.len() > 2 { fh.write_all(lines.join(";\n").as_bytes())?; }
-                }
-            }
-            ("fasta", _) => { for (i, t) in inp.names.iter().enumerate() { write!(fh, ">{}\n", t)?; fh.write_all(row(i))?; fh.write_all(b"\n")?; } }
-            _ => {
-                write!(fh, "{} {}\n", n, l)?;
-                for (i, t) in inp.names.iter().enumerate() { write!(fh, "{} ", t)?; fh.write_all(row(i))?; fh.write_all(b"\n")?; }
-            }
-        }
-        fh.flush()
-    })();
-    if let Err(e) = r { die!("cannot write {}: {}", out, os_err(&e)); }
+    if let Err(e) = write_masked_to(&mut fh, inp, rows, inp.gz, MASKED_CHUNK_BYTES) { die!("cannot write {}: {}", out, os_err(&e)); }
     out
+}
+
+/// the masked alignment goes out in chunks of about this much text: each a block of a gzip-compressed file
+const MASKED_CHUNK_BYTES: usize = 4 << 20;
+
+/// The masked alignment in the input's format, plain or gzip-compressed. A gzip-compressed one is one gzip member
+/// (as gzip itself writes: any reader reads it), its chunks of rows deflated in parallel and joined the way pigz
+/// joins them: each chunk ends on a byte boundary (a sync flush), the last one ends the stream, and the checksums of
+/// the chunks are combined. The chunks depend on the alignment alone, so the bytes are the same at any thread count,
+/// and the header holds no name or time, so they are the same each run.
+pub fn write_masked_to<W: std::io::Write>(fh: &mut W, inp: &Input, rows: &[u8], gz: bool, chunk_bytes: usize) -> std::io::Result<()> {
+    use rayon::prelude::*;
+    let (n, l) = (inp.n, inp.l);
+    // the text before the rows, each row's label, and the text after the rows
+    let (head, labels, tail): (Vec<u8>, Vec<Vec<u8>>, Vec<u8>) = match (inp.fmt, &inp.nexus) {
+        ("nexus", Some(nx)) => {
+            let mut head = format!("#NEXUS\nbegin data;\ndimensions ntax={} nchar={};\n", n, l);
+            head += &format!("format datatype={}{}{};\nmatrix\n", nx.datatype,
+                             nx.missing.as_ref().filter(|m| !m.is_empty()).map(|m| format!(" missing={m}")).unwrap_or_default(),
+                             nx.gap.as_ref().filter(|g| !g.is_empty()).map(|g| format!(" gap={g}")).unwrap_or_default());
+            let safe: Vec<String> = inp.names.iter().map(|t| safename(t)).collect();
+            let pad = safe.iter().map(|s| s.chars().count()).max().unwrap_or(0);
+            let labels = safe.iter().map(|s| { let mut b = s.as_bytes().to_vec(); for _ in s.chars().count()..pad + 1 { b.push(b' '); } b }).collect();
+            let mut tail = b";\nend;\n".to_vec();
+            if !nx.charsets.is_empty() || !nx.taxsets.is_empty() || !nx.charpartitions.is_empty() {
+                let mut lines = vec!["\nbegin sets".to_string()];
+                for (k, v) in &nx.charsets { if !v.is_empty() { lines.push(format!("charset {} = {}", safename(k), compact4nexus(v))); } }
+                for (k, v) in &nx.taxsets { if !v.is_empty() { lines.push(format!("taxset {} = {}", safename(k), v.iter().map(|t| safename(t)).collect::<Vec<_>>().join(" "))); } }
+                for (k, parts) in &nx.charpartitions {
+                    let mut ps: Vec<&(String, Vec<usize>)> = parts.iter().collect(); ps.sort_by(|a, b| a.1.cmp(&b.1));
+                    lines.push(format!("charpartition {} = {}", safename(k), ps.iter().map(|(sn, sv)| format!("{}: {}", safename(sn), compact4nexus(sv))).collect::<Vec<_>>().join(", ")));
+                }
+                lines.push("end;\n".to_string());
+                if lines.len() > 2 { tail.extend_from_slice(lines.join(";\n").as_bytes()); }
+            }
+            (head.into_bytes(), labels, tail)
+        }
+        ("fasta", _) => (vec![], inp.names.iter().map(|t| format!(">{}\n", t).into_bytes()).collect(), vec![]),
+        _ => (format!("{} {}\n", n, l).into_bytes(), inp.names.iter().map(|t| format!("{} ", t).into_bytes()).collect(), vec![]),
+    };
+    // chunk c holds rows c*per .. (c+1)*per, the first one behind the head, the last one before the tail
+    let per = (chunk_bytes / (l + 1 + labels.iter().map(|b| b.len()).max().unwrap_or(0)).max(1)).max(1);
+    let nchunk = n.div_ceil(per).max(1);
+    let text = |c: usize| -> Vec<u8> {
+        let (lo, hi) = ((c * per).min(n), ((c + 1) * per).min(n));
+        let mut t = Vec::with_capacity((hi - lo) * (l + 1) + labels[lo..hi].iter().map(|b| b.len()).sum::<usize>() + if c == 0 { head.len() } else { 0 } + if c + 1 == nchunk { tail.len() } else { 0 });
+        if c == 0 { t.extend_from_slice(&head); }
+        for i in lo..hi { t.extend_from_slice(&labels[i]); t.extend_from_slice(&rows[i * l..(i + 1) * l]); t.push(b'\n'); }
+        if c + 1 == nchunk { t.extend_from_slice(&tail); }
+        t
+    };
+    if !gz {
+        for c in 0..nchunk { fh.write_all(&text(c))?; }
+        return fh.flush();
+    }
+    fh.write_all(&[0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff])?;       // gzip, deflate, no name, no time, no extra flags, unknown system
+    let mut crc = crc32fast::Hasher::new(); let mut size: u64 = 0;
+    let group = 4 * rayon::current_num_threads().max(1);
+    for g0 in (0..nchunk).step_by(group) {
+        let blocks: Vec<std::io::Result<(Vec<u8>, crc32fast::Hasher, usize)>> = (g0..(g0 + group).min(nchunk)).into_par_iter().map(|c| {
+            let t = text(c); let mut h = crc32fast::Hasher::new(); h.update(&t);
+            Ok((deflate_block(&t, c + 1 == nchunk)?, h, t.len()))
+        }).collect();
+        for b in blocks { let (z, h, k) = b?; fh.write_all(&z)?; crc.combine(&h); size += k as u64; }
+    }
+    fh.write_all(&crc.finalize().to_le_bytes())?; fh.write_all(&(size as u32).to_le_bytes())?;
+    fh.flush()
+}
+
+/// one chunk of a deflate stream: its bytes end the stream when it is the last, and otherwise end on a byte boundary
+/// (a sync flush) so that the next chunk's bytes follow
+fn deflate_block(data: &[u8], last: bool) -> std::io::Result<Vec<u8>> {
+    use flate2::{Compress, Compression, FlushCompress, Status};
+    let mut z = Compress::new(Compression::default(), false);
+    let mut out: Vec<u8> = Vec::with_capacity(data.len() / 2 + 4096);
+    let flush = if last { FlushCompress::Finish } else { FlushCompress::Sync };
+    loop {
+        let at = z.total_in() as usize;
+        let st = z.compress_vec(&data[at..], &mut out, flush).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        if st == Status::StreamEnd { break; }
+        // a sync flush is complete when the input is used up and the output had room to spare
+        if !last && z.total_in() as usize == data.len() && out.len() < out.capacity() { break; }
+        out.reserve((out.capacity() / 2).max(1 << 16));
+    }
+    Ok(out)
 }

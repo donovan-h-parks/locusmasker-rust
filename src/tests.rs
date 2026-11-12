@@ -97,3 +97,40 @@ fn readers() {
     let (names, seqs) = crate::input::read_phylip("2 4\na ACGT\nb AC\nGT\n"); assert_eq!(names, ["a", "b"]); assert_eq!(seqs, ["ACGT", "ACGT"]);
     let (names, seqs) = crate::input::read_phylip("2 8\na ACGT\nb ACGA\n\nTTTT\nCCCC\n"); assert_eq!(names, ["a", "b"]); assert_eq!(seqs, ["ACGTTTTT", "ACGACCCC"]);
 }
+
+#[test]
+fn gzip_alignments() {
+    use crate::input::{is_gzip, plain_name};
+    assert!(is_gzip(&[0x1f, 0x8b, 8, 0]) && !is_gzip(b">a\nACGT\n") && !is_gzip(&[0x1f]) && !is_gzip(b""));
+    // the outputs are named after the file without its .gz, when the file is gzip-compressed
+    assert_eq!(plain_name("/d/x.fasta.gz", true), "x.fasta"); assert_eq!(plain_name("x.FAA.GZ", true), "x.FAA"); assert_eq!(plain_name("x.fasta", true), "x.fasta");
+    assert_eq!(plain_name("x.fasta.gz", false), "x.fasta.gz"); assert_eq!(plain_name(".gz", true), ".gz");
+    // an alignment read from a gzip file is the alignment, and its masked copy is written gzip-compressed and reads back the same
+    let dir = std::env::temp_dir().join(format!("locusmasker_gz_test_{}", std::process::id())); std::fs::create_dir_all(&dir).unwrap();
+    let text = ">a\nACGTACGTAC\n>b\nACGTAC--AC\n"; let parts = dir.join("p.txt"); std::fs::write(&parts, "DNA, l1 = 1-5\nDNA, l2 = 6-10\n").unwrap();
+    let plain = dir.join("x.fasta"); std::fs::write(&plain, text).unwrap();
+    let gz = dir.join("x.fasta.gz");
+    { use std::io::Write; let mut e = flate2::write::GzEncoder::new(std::fs::File::create(&gz).unwrap(), flate2::Compression::default()); e.write_all(text.as_bytes()).unwrap(); e.finish().unwrap(); }
+    let a = crate::input::read_input(plain.to_str().unwrap(), parts.to_str()); let b = crate::input::read_input(gz.to_str().unwrap(), parts.to_str());
+    assert!(!a.gz && b.gz && a.names == b.names && a.rows == b.rows && a.fmt == "fasta" && b.fmt == "fasta" && a.loci == b.loci);
+    let out = dir.to_str().unwrap();
+    let pa = crate::input::write_masked(plain.to_str().unwrap(), out, &a, &a.rows); let pb = crate::input::write_masked(gz.to_str().unwrap(), out, &b, &b.rows);
+    assert!(pa.ends_with("/x.masked.fasta") && pb.ends_with("/x.masked.fasta.gz"));
+    let back = { use std::io::Read; let mut s = Vec::new(); flate2::read::MultiGzDecoder::new(std::fs::File::open(&pb).unwrap()).read_to_end(&mut s).unwrap(); s };
+    assert_eq!(back, std::fs::read(&pa).unwrap()); assert_eq!(back, text.as_bytes());
+    // gzip output in many chunks (13 bytes of text each) is still one gzip member that holds the plain text
+    for chunk in [1usize, 13, 20, 1 << 20] {
+        let mut z = Vec::new(); crate::input::write_masked_to(&mut z, &b, &b.rows, true, chunk).unwrap();
+        let mut plain = Vec::new(); crate::input::write_masked_to(&mut plain, &b, &b.rows, false, chunk).unwrap();
+        let mut one = Vec::new(); { use std::io::Read; let mut d = flate2::read::GzDecoder::new(&z[..]); d.read_to_end(&mut one).unwrap(); }
+        assert_eq!(one, text.as_bytes()); assert_eq!(plain, text.as_bytes());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn elapsed_times() {
+    let e = crate::elapsed_string;
+    assert_eq!(e(0.04), "0.0 s"); assert_eq!(e(34.21), "34.2 s"); assert_eq!(e(59.96), "1 min 0 s (60 s)"); assert_eq!(e(156.3), "2 min 36 s (156 s)");
+    assert_eq!(e(3600.0), "1 h 0 min 0 s (3,600 s)"); assert_eq!(e(11525.4), "3 h 12 min 5 s (11,525 s)");
+}
