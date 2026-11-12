@@ -20,3 +20,15 @@ which needs IQ-TREE 3), and the golden outputs (`golden/*`). The rest are writte
 
 A test marked `xfail(strict=True)` states behaviour the code does not have yet; its reason starts with BUG, LIMIT or PRECISION.
 When the code is fixed the test starts passing and pytest reports the stale marker, so remove it then.
+
+## The Rust port
+
+With `LOCUSMASKER_BIN` set to the port's binary (`rust/target/release/locusmasker`), `run_tool` and `run_cli` run it instead of
+the Python tool, and a constant a test changes in the module reaches the binary through its test hooks (`tests/conftest.py`):
+
+    LOCUSMASKER_BIN=$PWD/rust/target/release/locusmasker pytest tests/e2e tests/viewer -n auto
+
+The `unit` and `property` tests call the Python functions and say nothing about the port. A few `e2e` tests assert log lines
+of the Python's own machinery (the taxon blocks of its sweep, its compiled kernel, Biopython's messages) or start with the
+Python tool, and fail against the binary. `validation/compare_ports.py` and `validation/fuzz_ports.py` hold the port's outputs
+to the Python's byte for byte; `cargo test --release` in `rust/` runs the port's own unit tests.
