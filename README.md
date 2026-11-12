@@ -163,6 +163,18 @@ Help
 - `-h` or `--help`: print these options
 
 
+## Rust port
+
+The `rust` folder holds a port of the script to Rust. It takes the same options and writes the same results, byte for byte (the report viewer is the same one, embedded in the binary), and is faster and lighter on memory. To build and run it you need [Rust](https://rustup.rs):
+
+```
+cd rust && cargo build --release
+./target/release/locusmasker --aln alignment.nex --datatype dna --out scan --threads 0
+```
+
+See `rust/README.md` for what is compared and how, and for the few places where the two differ (the log, restart points, NEXUS files that the script hands to Biopython).
+
+
 # License
 
 LocusMasker is released under the MIT License (see `LICENSE`), copyright Robert Lanfear.
