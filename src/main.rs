@@ -20,7 +20,7 @@ use pyfmt::commas;
 
 const REPORT_SEQ_ALL_MAX_DEFAULT: usize = 32 << 20;
 
-pub const VERSION: &str = "0.15.0";
+pub const VERSION: &str = "0.16.0";
 const USAGE: &str = "usage: locusmasker --aln FILE --datatype dna|aa --out DIR [options]";
 
 pub struct Args {

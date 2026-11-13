@@ -8,14 +8,14 @@
 What is compared: the masked alignment and masked.csv as files; tests.tsv.gz decompressed; every member of report.npz
 but manifest.json; every member of the report's core (inline in report.html) and of every report_files chunk, decoded;
 and the manifests without the fields that differ between any two runs (date, timings, command, versions, system);
-the page around the bundle, less the bundle's compressed size. The tool's version (the port is 0.15.0, the script
+the page around the bundle, less the bundle's compressed size. The tool's version (the Rust program has its own, the script
 0.14.0) is left out wherever it is written: the manifest, report_files/index.js and the page's loading line.
 The compressed containers themselves are not compared: their bytes hold timestamps and depend on the zlib build."""
 import argparse, base64, glob, gzip, hashlib, io, json, os, re, shutil, subprocess, sys, tempfile, zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, "tests", "data")
-VOLATILE = ("date", "timings", "command", "python", "numpy", "system", "commit", "version")   # version: the port is 0.15.0, the script 0.14.0
+VOLATILE = ("date", "timings", "command", "python", "numpy", "system", "commit", "version")   # version: the Rust program has its own, the script 0.14.0
 VERSION_RE = re.compile(r'"version": ?"[^"]*"')
 CASES = {  # name -> (alignment, partitions, datatype, extra options)
     **{k: (f"synth/{k}/alignment.fasta", f"synth/{k}/partitions.txt", None, []) for k in ("dna_small", "aa_small", "dna_clean", "aa_clean", "dna_dense", "dna_rc", "dna_blocks")},
