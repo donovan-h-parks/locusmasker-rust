@@ -38,7 +38,7 @@ Not the same, by nature: the compressed containers themselves (`report.npz`, the
 bytes hold timestamps and depend on the zlib build, as they do between two runs of the script), `run.log` and the
 progress lines (timings, and each tool describes its own machinery), and these manifest fields: `date`, `timings`,
 `command`, `system`, `commit`, `python` and `numpy` (the Rust program writes its compiler there, so the viewer's run line
-stays as it is). And the version: the Rust program is 0.15.0 and writes that where the script writes its 0.14.0 (the
+stays as it is). And the version: the Rust program is 0.16.0 and writes that where the script writes its 0.14.0 (the
 manifest's `version`, `report_files/index.js` and the report's loading line); the method and every result are those of
 `locusmasker.py` 0.14.0.
 

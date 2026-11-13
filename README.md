@@ -181,7 +181,7 @@ Nearly all of the time on a big alignment goes into comparing every pair of taxa
 - **Threads**: doubling them cuts the running time by 40 to 45% up to the number of physical cores (the table below); hyperthreads beyond that add less.
 - **Peak memory** grows in proportion to the size of the alignment (taxa x sites: its letters, and its residues again as bit planes at a little under a byte per site for amino acids) and to the number of sequences. Up to 20,000 taxa a matrix of every pair's divergence is kept as well (16 bytes per pair, so 6 GiB at 20,000 taxa), and filling it costs time too. Above 20,000 taxa the matrix is not kept, and memory no longer grows with the square of anything. More threads cost a little more memory; at most eight loci are tested at a time, whatever the thread count.
 
-Measured on amino-acid alignments of 120 loci and 41,084 sites, on a machine with 48 cores (96 hardware threads):
+Measured with version 0.16.0 on amino-acid alignments of 120 loci and 41,084 sites, on a machine with 48 cores (96 hardware threads):
 
 | Taxa | Threads | Running time | Peak memory |
 | ---: | ---: | ---: | ---: |
