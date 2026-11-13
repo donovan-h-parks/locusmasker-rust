@@ -87,7 +87,28 @@ hash differently on a machine other than the one that pinned them.
   `--block-taxa` and `--no-numba` are accepted and do nothing. Threads replace the worker processes.
 - **The broad-sample test** is computed row by row in three passes over a locus (the draws and the curve; the
   too-close side; the too-divergent side and the direction) instead of on rows x members matrices: the same numbers
-  from a fraction of the memory.
+  from a fraction of the memory. The pools' pair divergences are computed in sweep 2 as the pairs go by, when the
+  full matrix is not kept (a run that starts after the sweeps computes them pair by pair, as the script does).
+- **The tests of a locus** spread over the threads themselves (the pairs' exact tails, the rows of the broad sample
+  and the bins of its curve, the cells of the best match), and a few loci are in flight at a time, where the script
+  tests one locus per worker: the stage's memory does not grow with the thread count. While a locus is tested its
+  bit planes of every taxon are held side by side, and its counts and single-site comparisons are made there.
+  The broad sample's curve bins its points on its grid as they are produced and takes each bin's medians and
+  percentiles by selection: the curve of the points sorted, without the sort.
+- **The best match.** The script compares the residues of a challenger, the champion and the focal sequence site by
+  site, for every remaining challenger in every round, and computes the pair divergence m of every challenger that
+  ties with another to order them. The Rust program counts on the planes (one three-way count per challenger),
+  takes the challengers a group of equals at a time and computes the m that orders a group only when a member of it
+  wins (a group in which nobody wins is passed whatever its order), reads an m that a candidate list already holds
+  from the list, and counts a block of failing cells against every taxon in one pass over the taxa. The best
+  matches are the script's.
+- **A taxon whose candidate list ran out** gets its full row, of which only the comparators then chosen and the
+  first five entries are kept.
+- **Reading.** A FASTA file's records are parsed in parallel straight into the matrix of residues (a file with
+  anything out of the ordinary is read record by record, with the script's messages), a gzip-compressed file is
+  decompressed as it is read, and the input's sha256 is computed on a thread of its own meanwhile. The residues are
+  held once as letters and once as bit planes; a sequence's residue codes are read back from the planes where the
+  tests look at single sites. `report.npz` is deflated member by member in parallel.
 - **NEXUS files with comments or quoted names.** The script hands these to Biopython; the Rust program has its own
   reader for them (comments, quoted names, interleaved matrices, TAXA / DATA / CHARACTERS blocks, a SETS block of
   charset, taxset and charpartition statements; other blocks are ignored) and writes such a file back the way Biopython

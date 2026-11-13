@@ -134,3 +134,53 @@ fn elapsed_times() {
     assert_eq!(e(0.04), "0.0 s"); assert_eq!(e(34.21), "34.2 s"); assert_eq!(e(59.96), "1 min 0 s (60 s)"); assert_eq!(e(156.3), "2 min 36 s (156 s)");
     assert_eq!(e(3600.0), "1 h 0 min 0 s (3,600 s)"); assert_eq!(e(11525.4), "3 h 12 min 5 s (11,525 s)");
 }
+
+/// a FASTA file in order read straight into the matrix is the file read record by record; anything out of the
+/// ordinary is left to the record-by-record reader
+#[test]
+fn fasta_straight_into_the_matrix() {
+    use crate::input::{read_fasta, read_fasta_flat};
+    for txt in [&b">a desc\nACGT\nACGT\n>b\nAC--ACGT\n>c x y\nACGTACGT"[..], b"\n\n>a\r\nACGT\r\nAC\r\n>b\r\nACGTAC\r\n", b">a\nAC\rGT\n>b\nACGT\n", b">a\nA\n\n\nC\n>b\n\nAC\n\n"] {
+        let (names, seqs) = read_fasta(txt); let (n2, flat, l) = read_fasta_flat(txt).expect("a file in order");
+        assert_eq!(names, n2); assert!(seqs.iter().all(|s| s.len() == l)); assert_eq!(seqs.concat(), flat);
+    }
+    // text before the first header, no name, different lengths, no sequence, blanks or non-ASCII bytes in a sequence, a name that is not UTF-8
+    for txt in [&b"x\n>a\nACGT\n"[..], b">\nACGT\n>b\nACGT\n", b">a\nACGT\n>b\nACG\n", b">a\nACGT\n>b\nACGTA\n", b">a\n>b\nACGT\n", b">a\nAC GT\n>b\nAC GT\n", b">a\nAC\tGT\n>b\nACGTA\n",
+                b">a\nAC\xc3\xa9T\n>b\nACGT\n", b">\xff\nACGT\n>b\nACGT\n", b">a\nACGT\n>", b""] {
+        assert!(read_fasta_flat(txt).is_none(), "{:?}", String::from_utf8_lossy(txt));
+    }
+}
+
+/// the medians and percentiles by selection are those by sorting
+#[test]
+fn selection_statistics() {
+    let mut x = 3u64;
+    for n in [1usize, 2, 3, 4, 5, 10, 11, 100, 1001] {
+        for _ in 0..20 {
+            let v: Vec<f64> = (0..n).map(|_| { x = sm64(x); ((x % 50) as f64 / 7.0).ln_1p() + (x % 3) as f64 }).collect();
+            assert_eq!(median_of(v.clone()).to_bits(), median(&v).to_bits());
+            for q in [0.0, 10.0, 50.0, 90.0, 99.9, 100.0] { let mut w = v.clone(); assert_eq!(percentile_of(&mut w, q).to_bits(), percentile(&v, q).to_bits(), "n {n}, q {q}"); }
+        }
+    }
+}
+
+/// the draws from a small pool (seen values as bits) and from a large one (as a set) follow the same rule
+#[test]
+fn hash_draws_small_and_large() {
+    for (key, m, need) in [(1u64, 500usize, 50usize), (99, 4096, 300), (7, 130, 60), (12345, 64, 10)] {
+        let got = hash_draw(key, m, need);
+        // the rule, spelled out: slots in order, a value kept the first time it appears, the window doubled when it runs out
+        let want = {
+            let mut s = (need as f64 + 4.0 * (need as f64).sqrt() + (need * need) as f64 / (m as i64 - need as i64).max(1) as f64 + 16.0) as usize; let mut start = 0usize;
+            loop {
+                let mut out: Vec<i64> = vec![];
+                for slot in start..start + s { let v = (sm64(key ^ slot as u64) % m as u64) as i64; if !out.contains(&v) { out.push(v); if out.len() == need { break; } } }
+                if out.len() == need { break out; }
+                start += s; s *= 2;
+            }
+        };
+        if m >= 2 * need { assert_eq!(got, want, "m {m}, need {need}"); }
+        let mut d = got.clone(); d.sort_unstable(); d.dedup(); assert_eq!(d.len(), need); assert!(got.iter().all(|v| (*v as usize) < m));
+    }
+    assert_eq!(hash_draw(5, 5000, 40).len(), 40);
+}

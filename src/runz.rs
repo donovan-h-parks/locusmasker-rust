@@ -15,6 +15,8 @@ pub const PHI_N0: f64 = 30.0;
 pub const DENSE_CELLS_MAX: usize = 8_000_000;
 pub const BEST_MATCH_ALL_MAX_TAXA: usize = 2000;
 pub const BEST_MATCH_MIN_SITES: f64 = 30.0;
+/// the batches of loci tested at once (run_z)
+pub const TEST_LOCI_IN_FLIGHT: usize = 8;
 pub const CODE_SIMILAR: u8 = 128;
 pub const CODE_ABSENT: u8 = 255;
 pub const BS_BLANK: usize = 12;
@@ -90,20 +92,23 @@ impl Ctx<'_> {
     #[inline] fn adj10f(&self, v: f32) -> f32 { let x = v + self.ladj10 as f32; if x.is_nan() { x } else if x < 0.0 { x } else { 0.0 } }
 }
 
-fn locus_pairs(a: &Args, p: &Prep, sel: &Sel, k: usize, li: usize) -> LP {
+fn locus_pairs(a: &Args, p: &Prep, sel: &Sel, k: usize, li: usize, lb: Option<&LocusBits>) -> LP {
     let core = &p.core; let n = core.n;
     let idx: Vec<usize> = (0..n).filter(|&g| sel.cnt[g] > 0).collect();
     if idx.is_empty() { return LP::Skip("skipped-no-cells".into()); }
     let (mut gi, mut ci, mut rk) = (vec![], vec![], vec![]);
     for &g in &idx { for j in 0..k { let c = sel.top[g * k + j]; if c >= 0 { gi.push(g); ci.push(c as usize); rk.push(j); } } }
     let np = gi.len();
-    let (mut o, mut same, mut mis, mut ident, mut dob) = (Vec::with_capacity(np), Vec::with_capacity(np), Vec::with_capacity(np), Vec::with_capacity(np), Vec::with_capacity(np));
+    let (mut o, mut mis, mut ident, mut dob) = (Vec::with_capacity(np), Vec::with_capacity(np), Vec::with_capacity(np), Vec::with_capacity(np));
     let (mut mp, mut mph, mut fit) = (Vec::with_capacity(np), Vec::with_capacity(np), Vec::with_capacity(np));
-    for j in 0..np {
-        let (oi, si) = core.at(li, gi[j], ci[j]); let (of, sf) = (oi as f32, si as f32);
-        o.push(of); same.push(sf); mis.push(of - sf);
+    // each pair's counts (a read of the two taxa's planes) and its m from the lists: the pairs in parallel, kept in order
+    let per: Vec<(f32, f32, f64, f64)> = (0..np).into_par_iter().with_min_len(256).map(|j| {
+        let (oi, si) = match lb { Some(lb) => core.at_l(lb, li, gi[j], ci[j]), None => core.at(li, gi[j], ci[j]) }; let (m_, f_) = p.pair_m_lists(gi[j], ci[j]);
+        (oi as f32, si as f32, m_, f_)
+    }).collect();
+    for (of, sf, m_, f_) in per {
+        o.push(of); mis.push(of - sf);
         let id = 100.0f32 * sf / of; ident.push(id); dob.push(100.0f32 - id);
-        let (m_, f_) = p.pair_m_lists(gi[j], ci[j]);
         mp.push(m_); mph.push(npmax(m_, f_)); let mpx = npmax(m_ - f_, 0.0);
         fit.push(of >= a.fit_overlap as f32 && mpx > 0.0);
     }
@@ -114,13 +119,12 @@ fn locus_pairs(a: &Args, p: &Prep, sel: &Sel, k: usize, li: usize) -> LP {
         let v: Vec<f64> = (0..np).filter(|&j| fit[j]).map(|j| corr(p_, (dob[j] + 50.0f32 / o[j]) as f64) / corr(p_, mph[j])).collect();
         pymax(median(&v), 1e-3)
     } else { pymax(p.rate[li], 1e-3) };
-    let _ = same;
     LP::Ok(Pairs { idx, gi, ci, rk, o, mis, ident, mp, mph, fit, rate_c, p_ })
 }
 
 /// the dispersion of a locus and the tests it will run: (phi, pairs behind it, distinct comparisons, closest-match tests)
 fn locus_phi(a: &Args, p: &Prep, sel: &Sel, k: usize, li: usize) -> (f64, f64, i64, i64) {
-    let l = match locus_pairs(a, p, sel, k, li) { LP::Skip(_) => return (f64::NAN, 0.0, 0, 0), LP::Ok(l) => l };
+    let l = match locus_pairs(a, p, sel, k, li, None) { LP::Skip(_) => return (f64::NAN, 0.0, 0, 0), LP::Ok(l) => l };
     let n = p.n(); let core = &p.core;
     let mut keys: Vec<u64> = (0..l.gi.len()).map(|j| (l.gi[j].min(l.ci[j]) * n + l.gi[j].max(l.ci[j])) as u64).collect();
     keys.sort_unstable(); keys.dedup(); let ndist = keys.len() as i64;
@@ -148,40 +152,48 @@ fn locus_phi(a: &Args, p: &Prep, sel: &Sel, k: usize, li: usize) -> (f64, f64, i
 
 /// the locus's own distance curve for the broad-sample test: knots (m*), curve values (percent) and dispersions.
 /// t: every valid broad comparison of the locus as (m*, mismatches, shared sites), in row order (the sort is stable)
-fn bs_curve(mut t: Vec<(f64, u32, u32)>, phi_l: f64) -> Option<(Vec<f64>, Vec<f64>, Vec<f64>)> {
+/// the grid of pair divergences the broad sample's curve is binned on
+const BS_GRID: [f64; 30] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0, 15.0, 18.0, 22.0, 26.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 60.0, 70.0, 85.0, 100.0, 1e9];
+/// the grid cell of a pair divergence: the first grid value it does not exceed (one more cell beyond the grid)
+#[inline] fn bs_cell(m: f64) -> usize { BS_GRID.partition_point(|g| *g < m) }
+type BsCells = Vec<Vec<(f64, u32, u32)>>;
+fn bs_cells_new() -> BsCells { vec![Vec::new(); BS_GRID.len() + 1] }
+
+/// The locus's curve from its comparisons (m*, mismatches, shared sites), given by grid cell (bs_cell). The curve's
+/// bins are runs of whole cells and what a bin contributes are medians and percentiles of its points, so the points
+/// need no order: this is the curve of the points sorted by m* (the Python sorts them), without the sort
+fn bs_curve(cells: BsCells, phi_l: f64) -> Option<(Vec<f64>, Vec<f64>, Vec<f64>)> {
     let (min_points, min_window) = (60usize, 30usize);
-    let k = t.len();
+    let k: usize = cells.iter().map(|c| c.len()).sum();
     if k < min_points { return None; }
-    const GRID: [f64; 30] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0, 15.0, 18.0, 22.0, 26.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 60.0, 70.0, 85.0, 100.0, 1e9];
-    t.sort_by(|a, b| cmp_nan_last(&a.0, &b.0));
-    let ms = |i: usize| t[i].0; let os_ = |i: usize| t[i].1 as f64; let ws = |i: usize| t[i].2 as f64;
-    let mut starts: Vec<usize> = vec![0]; let mut last = 0usize;
-    for g in GRID { let c = t.partition_point(|x| x.0 <= g); if c - last >= min_window { starts.push(c); last = c; } }
+    // a bin ends at a grid value once it holds min_window points: starts in points, cuts in cells
+    let mut starts: Vec<usize> = vec![0]; let mut cuts: Vec<usize> = vec![0]; let (mut last, mut cum) = (0usize, 0usize);
+    for gi in 0..BS_GRID.len() { cum += cells[gi].len(); if cum - last >= min_window { starts.push(cum); cuts.push(gi + 1); last = cum; } }
     if *starts.last().unwrap() < k {
-        if k - starts.last().unwrap() >= min_window { starts.push(k); } else { *starts.last_mut().unwrap() = k; }
+        if k - starts.last().unwrap() >= min_window { starts.push(k); cuts.push(cells.len()); } else { *starts.last_mut().unwrap() = k; *cuts.last_mut().unwrap() = cells.len(); }
     }
     if starts.len() < 2 { return None; }
     let nb = starts.len() - 1;
-    let mut xm = vec![0.0; nb]; let mut yd = vec![0.0; nb]; let mut cnt = vec![0.0; nb]; let mut yphi = vec![phi_l; nb];
-    for b in 0..nb {
-        let (s0, s1) = (starts[b], starts[b + 1]);
-        xm[b] = median(&(s0..s1).map(ms).collect::<Vec<f64>>()); cnt[b] = (s1 - s0) as f64;
-        let q: Vec<f64> = (s0..s1).map(|i| (os_(i) + HALF) / npmax(ws(i), 1.0)).collect();
-        yd[b] = 100.0 * median(&q);
-    }
+    let bin = |b: usize| cells[cuts[b]..cuts[b + 1]].iter().flatten();
+    // each bin's medians and dispersion are its own: the bins in parallel, by selection (median_of, percentile_of:
+    // the values are positive ratios and their logarithms, without NaN or negative zeros, so these are the numbers
+    // the sorts gave)
+    let per_bin: Vec<(f64, f64, f64)> = (0..nb).into_par_iter().map(|b| {
+        let q: Vec<f64> = bin(b).map(|x| (x.1 as f64 + HALF) / npmax(x.2 as f64, 1.0)).collect();
+        (median_of(bin(b).map(|x| x.0).collect::<Vec<f64>>()), 100.0 * median_of(q), (starts[b + 1] - starts[b]) as f64)
+    }).collect();
+    let xm: Vec<f64> = per_bin.iter().map(|x| x.0).collect(); let yd: Vec<f64> = per_bin.iter().map(|x| x.1).collect(); let cnt: Vec<f64> = per_bin.iter().map(|x| x.2).collect();
     let yd2 = pav(&yd, &cnt);
-    for b in 0..nb {
-        let (s0, s1) = (starts[b], starts[b + 1]);
-        let e: Vec<f64> = (s0..s1).map(|i| ws(i) * yd2[b] / 100.0).collect();
-        let used: Vec<usize> = (0..e.len()).filter(|&i| e[i] >= PHI_MIN_E).collect();
-        if used.len() >= 10 {
-            let r: Vec<f64> = used.iter().map(|&i| ((os_(s0 + i) + HALF) / e[i]).ln()).collect();
-            let s_ = (percentile(&r, 90.0) - percentile(&r, 10.0)) / 2.5631;
-            let inv: Vec<f64> = used.iter().map(|&i| 1.0 / e[i]).collect();
-            let ph = pymax(s_ * s_ - median(&inv), 0.0); let nu = used.len() as f64;
-            yphi[b] = (nu * ph + PHI_N0 * phi_l) / (nu + PHI_N0);
-        }
-    }
+    let yphi: Vec<f64> = (0..nb).into_par_iter().map(|b| {
+        // the points with enough expected mismatches: their log ratio of observed to expected, and 1 / expected
+        let (mut r, mut inv): (Vec<f64>, Vec<f64>) = (vec![], vec![]);
+        for x in bin(b) { let e = x.2 as f64 * yd2[b] / 100.0; if e >= PHI_MIN_E { r.push(((x.1 as f64 + HALF) / e).ln()); inv.push(1.0 / e); } }
+        if r.len() < 10 { return phi_l; }
+        let nu = r.len() as f64;
+        let s_ = (percentile_of(&mut r, 90.0) - percentile_of(&mut r, 10.0)) / 2.5631;
+        let ph = pymax(s_ * s_ - median_of(inv), 0.0);
+        (nu * ph + PHI_N0 * phi_l) / (nu + PHI_N0)
+    }).collect();
     let mut x = vec![0.0]; x.extend(xm); let mut y = vec![0.0]; y.extend(yd2); let mut ph = vec![yphi[0]]; ph.extend(yphi);
     let mut acc = f64::NEG_INFINITY;
     for (i, v) in x.iter_mut().enumerate() { let t = *v + i as f64 * 1e-9; acc = if i == 0 { t } else { npmax(acc, t) }; *v = acc; }
@@ -219,24 +231,25 @@ impl SortedPad {
 }
 
 /// the residues of taxon g at locus li
-#[inline] fn xs<'a>(p: &'a Prep, g: usize, li: usize) -> &'a [i8] { p.core.seq(g, li) }
+/// a taxon's residue codes at a locus (read back from the locus's planes)
+#[inline] fn xs(p: &Prep, lb: &LocusBits, g: usize, li: usize) -> Vec<i8> { lb.seq(g, p.core.off[li + 1] - p.core.off[li]) }
 
 /// the site codes of cells (g, partner or -1): how many comparators differ from the focal at each site, the blue of a copy
-fn site_codes(cx: &Ctx, li: usize, cells: &[(usize, i64)]) -> Vec<u8> {
+fn site_codes(cx: &Ctx, lb: &LocusBits, li: usize, cells: &[(usize, i64)]) -> Vec<u8> {
     let p = cx.p; let k = cx.k; let top = &cx.sel[li].top; let ls = cx.loci[li].1.len();
     let mut out = vec![0u8; cells.len() * ls];
     out.par_chunks_mut(ls.max(1)).zip(cells.par_iter()).for_each(|(row, &(g, bq))| {
         if ls == 0 { return; }
-        let fx = xs(p, g, li); let mut kk = vec![0u16; ls];
+        let fx = xs(p, lb, g, li); let mut kk = vec![0u16; ls];
         for j in 0..k {
             let c = top[g * k + j];
             if c < 0 || c as i64 == bq { continue; }
-            let xc = xs(p, c as usize, li);
+            let xc = xs(p, lb, c as usize, li);
             for s in 0..ls { if xc[s] != fx[s] && xc[s] >= 0 { kk[s] += 1; } }
         }
         for s in 0..ls { row[s] = if fx[s] >= 0 { kk[s].min(127) as u8 } else { CODE_ABSENT }; }
         if bq >= 0 {
-            let xb = xs(p, bq as usize, li);
+            let xb = xs(p, lb, bq as usize, li);
             for s in 0..ls { if fx[s] >= 0 && xb[s] >= 0 && fx[s] == xb[s] && kk[s] >= 2 { row[s] = CODE_SIMILAR + kk[s].min(125) as u8; } }
         }
     });
@@ -244,7 +257,7 @@ fn site_codes(cx: &Ctx, li: usize, cells: &[(usize, i64)]) -> Vec<u8> {
 }
 
 /// the face-to-face trees of cells (focal, tips): the outgroup search, both distance matrices, neighbour joining
-fn build_trees(cx: &Ctx, li: usize, cells_t: Vec<(usize, Vec<usize>)>, p_: f64, rate_c: f64) -> Option<Trees> {
+fn build_trees(cx: &Ctx, lb: &LocusBits, li: usize, cells_t: Vec<(usize, Vec<usize>)>, p_: f64, rate_c: f64) -> Option<Trees> {
     let p = cx.p; let n = p.n(); let core = &p.core; let fit = cx.a.fit_overlap as f64;
     let mut t_out = Trees::default();
     for (g, mut tips) in cells_t {
@@ -257,7 +270,7 @@ fn build_trees(cx: &Ctx, li: usize, cells_t: Vec<(usize, Vec<usize>)>, p_: f64, 
                 let mut ok = true;
                 for (ti, &t) in tips.iter().enumerate() {
                     let m = mf[t * n + c]; vals[ti] = m;
-                    if !((core.at(li, t, c).0 as f64) >= fit) || !m.is_finite() { ok = false; break; }
+                    if !((core.at_l(lb, li, t, c).0 as f64) >= fit) || !m.is_finite() { ok = false; break; }
                 }
                 if !ok { continue; }
                 let mean = pairwise_sum(&vals) / nt as f64;
@@ -267,11 +280,12 @@ fn build_trees(cx: &Ctx, li: usize, cells_t: Vec<(usize, Vec<usize>)>, p_: f64, 
         }
         let nt = tips.len();
         let mut de = vec![f64::NAN; nt * nt]; let mut d_o = vec![f64::NAN; nt * nt];
+        let tip_x: Vec<Vec<i8>> = tips.iter().map(|&t| xs(p, lb, t, li)).collect();
         for i in 0..nt { for j in 0..nt {
-            let (a, b) = (xs(p, tips[i], li), xs(p, tips[j], li)); let (mut nb, mut df) = (0u64, 0u64);
+            let (a, b) = (&tip_x[i], &tip_x[j]); let (mut nb, mut df) = (0u64, 0u64);
             for s in 0..a.len() { let both = a[s] >= 0 && b[s] >= 0; nb += both as u64; df += (both && a[s] != b[s]) as u64; }
             d_o[i * nt + j] = if nb > 0 { 100.0 * df as f64 / (nb.max(1)) as f64 } else { f64::NAN };
-            let mv = p.pair_m(tips[i], tips[j]).0;
+            let mv = if i == j { f64::NAN } else { p.pair_m_any(tips[i], tips[j]) };
             de[i * nt + j] = if mv.is_finite() { expect(p_, rate_c, mv) } else { f64::NAN };
         } }
         for i in 0..nt { de[i * nt + i] = 0.0; d_o[i * nt + i] = 0.0; }
@@ -322,7 +336,9 @@ fn first_argmax(v: impl Iterator<Item = f64>) -> usize {
 /// everything the test decides and writes for one locus; touches no shared state
 pub fn process_locus(cx: &Ctx, li: usize) -> LocusOut {
     let (name, sites) = (&cx.loci[li].0, &cx.loci[li].1); let a = cx.a; let p = cx.p; let core = &p.core; let n = p.n(); let k = cx.k; let sel = &cx.sel[li];
-    let l = match locus_pairs(a, p, sel, k, li) {
+    // the locus's planes of every taxon, side by side: what the tests below count on
+    let lb_own = core.bits.locus(li, n); let lb = &lb_own;
+    let l = match locus_pairs(a, p, sel, k, li, Some(lb)) {
         LP::Skip(s) => return LocusOut { skipped: Some(s.clone()), log: format!("{}: {}", name, s), mrows: vec![], tests: String::new(), rep: None, phi: f64::NAN, rate_c: f64::NAN, rc: None },
         LP::Ok(l) => l,
     };
@@ -364,8 +380,8 @@ pub fn process_locus(cx: &Ctx, li: usize) -> LocusOut {
     let dn: Vec<bool> = (0..np).map(|j| mis64[j] < e_lo[j]).collect();
 
     // ---- test 1, too divergent
-    let mut lp_hi = vec![f64::NAN; np];
-    for j in 0..np { if up[j] { lp_hi[j] = bb_tail(mis64[j], o64[j], e[j], phi, true, lf); } }
+    // the exact tails are the work of the comparator tests: the pairs in parallel
+    let mut lp_hi: Vec<f64> = (0..np).into_par_iter().with_min_len(256).map(|j| if up[j] { bb_tail(mis64[j], o64[j], e[j], phi, true, lf) } else { f64::NAN }).collect();
     let fail_hi: Vec<bool> = (0..np).map(|j| up[j] && lp_hi[j] < logbar).collect();
     let nf: Vec<usize> = (0..ncell).map(|q| (starts[q]..starts[q] + kc[q]).filter(|&j| fail_hi[j]).count()).collect();
     let flag: Vec<bool> = (0..ncell).map(|q| kc[q] >= k && nf[q] >= cx.m_eff).collect();
@@ -381,13 +397,11 @@ pub fn process_locus(cx: &Ctx, li: usize) -> LocusOut {
             (s.at((kk - 1) / 2) + s.at(kk.max(1) / 2)) / 2.0
         } else { med_dcmp[q] }
     }).collect();
-    let mut lp_in = vec![0.0f64; np];
-    for j in 0..np {
-        if dn[j] {
-            lp_in[j] = bb_tail(mis64[j], o64[j], e_lo[j], phi, false, lf);
-            if ff[j] < 1.0 { lp_in[j] = npmax(lp_in[j], bb_tail(mis64[j], o64[j], e_lo[j] * ff[j], phi, false, lf)); }
-        }
-    }
+    let lp_in: Vec<f64> = (0..np).into_par_iter().with_min_len(256).map(|j| {
+        if !dn[j] { return 0.0; }
+        let v = bb_tail(mis64[j], o64[j], e_lo[j], phi, false, lf);
+        if ff[j] < 1.0 { npmax(v, bb_tail(mis64[j], o64[j], e_lo[j] * ff[j], phi, false, lf)) } else { v }
+    }).collect();
     let fail_in: Vec<bool> = lp_in.iter().map(|x| *x < logbar).collect();
     let mut pairs: Vec<((usize, usize), Rec)> = vec![]; let mut pair_ix: HashMap<(usize, usize), usize> = HashMap::new();
     let mut record = |key: (usize, usize), rec: Rec| {
@@ -400,21 +414,22 @@ pub fn process_locus(cx: &Ctx, li: usize) -> LocusOut {
     let y_: Vec<i64> = idx.iter().map(|&g| if sel.fork[g] { sel.closest[g] as i64 } else { -1 }).collect();
     let mut tested2 = vec![false; ncell]; let mut o2 = vec![0.0f64; ncell]; let mut mis2 = vec![0.0f64; ncell]; let mut e2 = vec![f64::NAN; ncell];
     let mut lp_lo = vec![0.0f64; ncell]; let mut rel2: Vec<Vec<usize>> = vec![vec![]; ncell];
-    for q in 0..ncell {
-        let g = idx[q]; if !sel.fork[g] { continue; }
+    // a cell of the arm reads the planes of its relatives and of its closest match: the cells in parallel
+    let arm: Vec<Option<(f64, f64, f64, Vec<usize>, f64)>> = (0..ncell).into_par_iter().with_min_len(64).map(|q| {
+        let g = idx[q]; if !sel.fork[g] { return None; }
         let yv = y_[q] as usize; let mut rates = Vec::with_capacity(k); let mut rel = vec![];
         for j in 0..k {
             let c = top[g * k + j]; let c0 = c.max(0) as usize; let qc = qpos[c0];
             let mut valid = c >= 0 && c0 != yv && !(qc >= 0 && dflag[qc.max(0) as usize]);
-            let (wo, ws) = core.at(li, c0, yv); let (w, ws) = (wo as f64, ws as f64); valid &= w >= fit_f;
+            let (wo, ws) = core.at_l(lb, li, c0, yv); let (w, ws) = (wo as f64, ws as f64); valid &= w >= fit_f;
             if valid { rates.push((w - ws) / w.max(1.0)); rel.push(c0); }
         }
-        if rates.len() >= 3 {
-            let (go, gs) = core.at(li, g, yv);
-            o2[q] = go as f64; mis2[q] = o2[q] - gs as f64; e2[q] = o2[q] * nanmedian(&rates); tested2[q] = true; rel2[q] = rel;
-        }
-    }
-    for q in 0..ncell { if tested2[q] && mis2[q] < e2[q] { lp_lo[q] = bb_tail(mis2[q], o2[q], e2[q], phi, false, lf); } }
+        if rates.len() < 3 { return None; }
+        let (go, gs) = core.at_l(lb, li, g, yv);
+        let o = go as f64; let mis = o - gs as f64; let e = o * nanmedian(&rates);
+        Some((o, mis, e, rel, if mis < e { bb_tail(mis, o, e, phi, false, lf) } else { 0.0 }))
+    }).collect();
+    for (q, x) in arm.into_iter().enumerate() { if let Some((o, mis, e, rel, lp)) = x { o2[q] = o; mis2[q] = mis; e2[q] = e; tested2[q] = true; rel2[q] = rel; lp_lo[q] = lp; } }
     let fail2: Vec<bool> = (0..ncell).map(|q| tested2[q] && lp_lo[q] < logbar).collect();
     for q in 0..ncell {
         if fail2[q] { let (g, y) = (idx[q], y_[q] as usize); record((g.min(y), g.max(y)), Rec { cmp_arm: false, o: o2[q], mis: mis2[q], e: e2[q], f: 1.0, lnp: lp_lo[q], rel: rel2[q].clone(), uncertain: false }); }
@@ -446,7 +461,7 @@ pub fn process_locus(cx: &Ctx, li: usize) -> LocusOut {
     // ---- the decision
     let masked_q: Vec<bool> = (0..ncell).map(|q| (dflag[q] && cx.mask_hi) || (sflag[q] && cx.mask_lo)).collect();
     let fail_q: Vec<bool> = (0..ncell).map(|q| nf[q] >= 1 || fail2[q] || copy_q[q] || src_q[q] || masked_q[q]).collect();
-    for j in 0..np { if lp_hi[j].is_nan() && (fail_q[row[j]] || cx.every) { lp_hi[j] = bb_tail(mis64[j], o64[j], e[j], phi, true, lf); } }
+    lp_hi.par_iter_mut().enumerate().with_min_len(256).for_each(|(j, v)| { if v.is_nan() && (fail_q[row[j]] || cx.every) { *v = bb_tail(mis64[j], o64[j], e[j], phi, true, lf); } });
     let div_lp: Vec<f64> = (0..ncell).map(|q| {
         if !fail_q[q] { return f64::NAN; }
         let need = if kc[q] >= k { cx.m_eff } else { kc[q] / 2 + 1 };
@@ -526,17 +541,20 @@ pub fn process_locus(cx: &Ctx, li: usize) -> LocusOut {
             // it themselves are known; (C) the direction, once every row's score is known. The numbers are those of the
             // whole-matrix expressions of the Python
             let nr = rows_bs.len(); let bk = bs.k; let pn = bs.pn; let nn = nr * bk;
-            let cnt = |g: usize, c: usize| -> (f64, f64) { let (sh, sm) = core.bits.count(g, c, li); (sh as f64, (sh - sm) as f64) };      // shared sites, mismatches
+            let cnt = |g: usize, c: usize| -> (f64, f64) { let (sh, sm) = lb.count(g, c); (sh as f64, (sh - sm) as f64) };      // shared sites, mismatches
             let ok0_of = |c: usize, w: f64, mv0: f64| w >= fit_f && mv0.is_finite() && core.keep[c] && !dmask[c] && !cpmask[c];
-            let mut comp = vec![0u32; nn]; let mut pos = vec![0u32; nn]; let mut curve: Vec<(f64, u32, u32)> = Vec::new();
-            for (r, &g) in rows_bs.iter().enumerate() {
+            // (0) the rows in parallel, each writing its own members; the curve's comparisons go into the cells of its
+            // grid as they are counted (the curve needs them by cell, in no order)
+            let mut comp = vec![0u32; nn]; let mut pos = vec![0u32; nn];
+            let curve: BsCells = comp.par_chunks_mut(bk).zip(pos.par_chunks_mut(bk)).zip(rows_bs.par_iter()).with_min_len(64).fold(bs_cells_new, |mut cells, ((cm, ps_), &g)| {
                 for (j, &ps) in hash_draw(bs_keys_cell(g, li), pn, bk).iter().enumerate() {
                     let c = bs.pool[g * pn + ps as usize] as usize; let mv0 = bs.mstar[g * pn + ps as usize];
-                    comp[r * bk + j] = c as u32; pos[r * bk + j] = ps as u32;
+                    cm[j] = c as u32; ps_[j] = ps as u32;
                     let (w, o) = cnt(g, c);
-                    if ok0_of(c, w, mv0) { curve.push((npmax(mv0, 1e-4), o as u32, w as u32)); }
+                    if ok0_of(c, w, mv0) { let m = npmax(mv0, 1e-4); cells[bs_cell(m)].push((m, o as u32, w as u32)); }
                 }
-            }
+                cells
+            }).reduce(bs_cells_new, |mut x, mut y| { for (p, q) in x.iter_mut().zip(y.iter_mut()) { if p.len() < q.len() { std::mem::swap(p, q); } p.append(q); } x });
             let bcv = bs_curve(curve, phi);
             let clip = |x: f64, lo: f64, hi: f64| npmin(npmax(x, lo), hi);
             // a member's expected mismatches, expected divergence (%) and dispersion from its m* and shared sites
@@ -558,23 +576,19 @@ pub fn process_locus(cx: &Ctx, li: usize) -> LocusOut {
             let mut exm_full = vec![f64::NAN; n]; for (q, &g) in idx.iter().enumerate() { exm_full[g] = exm[q]; }
             let lnb = |c: i64| ((c.max(1)) as f64).ln(); let lean_ = (0.01f64).ln(); let thr_d = a.donor_threshold;
             let nmed = |v: &[f64], ok: &[bool]| -> f64 { let x: Vec<f64> = (0..bk).filter(|&j| ok[j]).map(|j| v[j]).collect(); if x.is_empty() { f64::NAN } else { nanmedian(&x) } };
-            // ---- pass A
-            let mut btested = vec![false; nn]; let mut hi_off: Vec<usize> = Vec::with_capacity(nr + 1); let mut hi_val: Vec<(u32, f64)> = Vec::new();
-            let mut bnt = vec![0i64; nr]; let mut lo_stat = vec![0.0f64; nr]; let mut lo_j = vec![-1i64; nr];
-            let (mut lo_o, mut lo_w, mut lo_e, mut lo_f, mut lo_p) = (vec![0.0f64; nr], vec![0.0f64; nr], vec![0.0f64; nr], vec![0.0f64; nr], vec![0.0f64; nr]);
-            let mut dm_r = vec![false; nr]; let mut cfail = vec![0i64; nr]; let mut score = vec![0i64; nr]; let mut a_e = vec![0.0f64; nr]; let mut b_e = vec![0.0f64; nr];
-            let mut rep_ = vec![-1i64; nr]; let (mut medoe, mut obs_pct, mut exp_pct) = (vec![0.0f64; nr], vec![0.0f64; nr], vec![0.0f64; nr]);
-            let mut bad_r = vec![false; n];
-            let (mut w_, mut o_, mut mv, mut ok0, mut e_, mut dexp, mut ratio, mut bf, mut blo, mut bhi, mut zhi, mut obs_v) =
-                (vec![0.0f64; bk], vec![0.0f64; bk], vec![0.0f64; bk], vec![false; bk], vec![0.0f64; bk], vec![0.0f64; bk], vec![0.0f64; bk], vec![0.0f64; bk], vec![0.0f64; bk], vec![0.0f64; bk], vec![0.0f64; bk], vec![0.0f64; bk]);
-            for (r, &g) in rows_bs.iter().enumerate() {
-                let cm = &comp[r * bk..(r + 1) * bk]; let bt = &mut btested[r * bk..(r + 1) * bk];
+            // ---- pass A: a row's results depend on the locus's curve and on the row alone, so the rows go in parallel
+            struct RowA { nt: i64, lo_stat: f64, lo_j: i64, lo_o: f64, lo_w: f64, lo_e: f64, lo_f: f64, lo_p: f64, dm: bool, bad: bool, cfail: i64, score: i64, a_e: f64, b_e: f64,
+                          rep: i64, medoe: f64, obs_pct: f64, exp_pct: f64, hi: Vec<(u32, f64)> }
+            let mut btested = vec![false; nn];
+            let scratch = || (vec![0.0f64; bk], vec![0.0f64; bk], vec![0.0f64; bk], vec![false; bk], vec![0.0f64; bk], vec![0.0f64; bk], vec![0.0f64; bk], vec![0.0f64; bk], vec![0.0f64; bk], vec![0.0f64; bk], vec![0.0f64; bk], vec![0.0f64; bk]);
+            let rows_a: Vec<RowA> = btested.par_chunks_mut(bk).zip(rows_bs.par_iter()).enumerate().with_min_len(64).map_init(scratch, |(w_, o_, mv, ok0, e_, dexp, ratio, bf, blo, bhi, zhi, obs_v), (r, (bt, &g))| {
+                let cm = &comp[r * bk..(r + 1) * bk];
                 for j in 0..bk {
                     let c = cm[j] as usize; let mv0 = bs.mstar[g * pn + pos[r * bk + j] as usize]; let (w, o) = cnt(g, c);
                     w_[j] = w; o_[j] = o; mv[j] = npmax(mv0, 1e-4); ok0[j] = ok0_of(c, w, mv0);
                     let (e, d, _) = vals(mv[j], w); e_[j] = e; dexp[j] = d;
                 }
-                let medm = nmed(&mv, &ok0); let thr = if m5[g].is_finite() { m5[g] } else { medm }; let thr = if thr.is_finite() { thr } else { f64::INFINITY };
+                let medm = nmed(mv, ok0); let thr = if m5[g].is_finite() { m5[g] } else { medm }; let thr = if thr.is_finite() { thr } else { f64::INFINITY };
                 let mut nt = 0i64;
                 for j in 0..bk {
                     bt[j] = ok0[j] && mv[j] > thr; nt += bt[j] as i64;
@@ -589,33 +603,40 @@ pub fn process_locus(cx: &Ctx, li: usize) -> LocusOut {
                     if z_lo < -2.0 { blo[j] = bb_tail(o_[j], w_[j], ef, phi_m, false, lf); }
                     if zhi[j] > 2.0 { bhi[j] = bb_tail(o_[j], w_[j], e_[j], phi_m, true, lf); }
                 }
-                bnt[r] = nt;
                 let lpl = |j: usize| if bt[j] { blo[j] } else { f64::INFINITY };
                 let jlo = first_argmin((0..bk).map(lpl));
-                lo_stat[r] = if nt > 0 { npmin(lpl(jlo) + lnb(nt), 0.0) } else { 0.0 };
-                lo_j[r] = if nt > 0 { cm[jlo] as i64 } else { -1 };
-                lo_o[r] = o_[jlo]; lo_w[r] = w_[jlo]; lo_e[r] = e_[jlo]; lo_f[r] = bf[jlo]; lo_p[r] = lpl(jlo);
-                dm_r[r] = dmask[g];
+                let lo_j = if nt > 0 { cm[jlo] as i64 } else { -1 };
+                let dm = dmask[g];
                 let fh = (0..bk).filter(|&j| bt[j] && bhi[j] < logbar).count() as f64;
-                if fh > nt as f64 / 2.0 && nt >= BS_MIN && !dm_r[r] { bad_r[g] = true; }
                 let tb = logbar - lnb(nt);
-                cfail[r] = (0..bk).filter(|&j| bt[j] && blo[j] < tb).count() as i64;
-                score[r] = (0..bk).filter(|&j| bt[j] && blo[j] < lean_).count() as i64;        // the too-divergent half is added in pass B
-                a_e[r] = (if exm_full[g].is_finite() { exm_full[g] } else { 0.0 }).abs();
-                b_e[r] = { let jx = lo_j[r].max(0) as usize; (if lo_j[r] >= 0 && exm_full[jx].is_finite() { exm_full[jx] } else { 0.0 }).abs() };
                 let az = |j: usize| if bt[j] && zhi[j].is_finite() { zhi[j].abs() } else { f64::NEG_INFINITY };
                 let jr = first_argmax((0..bk).map(az));
-                rep_[r] = if az(jr).is_finite() { cm[jr] as i64 } else { -1 };                 // the called side's partner replaces it in pass B
-                medoe[r] = nmed(&ratio, bt); obs_pct[r] = nmed(&obs_v, bt); exp_pct[r] = nmed(&dexp, bt);
-                hi_off.push(hi_val.len());
-                for j in 0..bk { if bhi[j] != 0.0 { hi_val.push((j as u32, bhi[j])); } }
+                RowA { nt, lo_stat: if nt > 0 { npmin(lpl(jlo) + lnb(nt), 0.0) } else { 0.0 }, lo_j, lo_o: o_[jlo], lo_w: w_[jlo], lo_e: e_[jlo], lo_f: bf[jlo], lo_p: lpl(jlo), dm,
+                       bad: fh > nt as f64 / 2.0 && nt >= BS_MIN && !dm,
+                       cfail: (0..bk).filter(|&j| bt[j] && blo[j] < tb).count() as i64,
+                       score: (0..bk).filter(|&j| bt[j] && blo[j] < lean_).count() as i64,        // the too-divergent half is added in pass B
+                       a_e: (if exm_full[g].is_finite() { exm_full[g] } else { 0.0 }).abs(),
+                       b_e: { let jx = lo_j.max(0) as usize; (if lo_j >= 0 && exm_full[jx].is_finite() { exm_full[jx] } else { 0.0 }).abs() },
+                       rep: if az(jr).is_finite() { cm[jr] as i64 } else { -1 },                  // the called side's partner replaces it in pass B
+                       medoe: nmed(ratio, bt), obs_pct: nmed(obs_v, bt), exp_pct: nmed(dexp, bt),
+                       hi: (0..bk).filter(|&j| bhi[j] != 0.0).map(|j| (j as u32, bhi[j])).collect() }
+            }).collect();
+            let mut hi_off: Vec<usize> = Vec::with_capacity(nr + 1); let mut hi_val: Vec<(u32, f64)> = Vec::new();
+            let mut bnt = vec![0i64; nr]; let mut lo_stat = vec![0.0f64; nr]; let mut lo_j = vec![-1i64; nr];
+            let (mut lo_o, mut lo_w, mut lo_e, mut lo_f, mut lo_p) = (vec![0.0f64; nr], vec![0.0f64; nr], vec![0.0f64; nr], vec![0.0f64; nr], vec![0.0f64; nr]);
+            let mut dm_r = vec![false; nr]; let mut cfail = vec![0i64; nr]; let mut score = vec![0i64; nr]; let mut a_e = vec![0.0f64; nr]; let mut b_e = vec![0.0f64; nr];
+            let mut rep_ = vec![-1i64; nr]; let (mut medoe, mut obs_pct, mut exp_pct) = (vec![0.0f64; nr], vec![0.0f64; nr], vec![0.0f64; nr]);
+            let mut bad_r = vec![false; n];
+            for (r, x) in rows_a.into_iter().enumerate() {
+                bnt[r] = x.nt; lo_stat[r] = x.lo_stat; lo_j[r] = x.lo_j; lo_o[r] = x.lo_o; lo_w[r] = x.lo_w; lo_e[r] = x.lo_e; lo_f[r] = x.lo_f; lo_p[r] = x.lo_p;
+                dm_r[r] = x.dm; if x.bad { bad_r[rows_bs[r]] = true; }
+                cfail[r] = x.cfail; score[r] = x.score; a_e[r] = x.a_e; b_e[r] = x.b_e; rep_[r] = x.rep; medoe[r] = x.medoe; obs_pct[r] = x.obs_pct; exp_pct[r] = x.exp_pct;
+                hi_off.push(hi_val.len()); hi_val.extend(x.hi);
             }
             hi_off.push(hi_val.len());
-            // ---- pass B
-            let mut ntr = vec![0i64; nr]; let mut nfail = vec![0i64; nr]; let mut hi_j = vec![-1i64; nr]; let mut p_red = vec![0.0f64; nr]; let mut bcall = vec![0i8; nr];
-            let (mut hi_o, mut hi_w, mut hi_e, mut hi_p) = (vec![0.0f64; nr], vec![0.0f64; nr], vec![0.0f64; nr], vec![0.0f64; nr]);
-            let mut lph = vec![0.0f64; bk];
-            for (r, &g) in rows_bs.iter().enumerate() {
+            // ---- pass B: with every row's own failure known (bad_r), the rows in parallel again
+            struct RowB { ntr: i64, nfail: i64, sc2: i64, hi_j: i64, p_red: f64, call: i8, rep: i64, hi_o: f64, hi_w: f64, hi_e: f64, hi_p: f64 }
+            let rows_b: Vec<RowB> = rows_bs.par_iter().enumerate().with_min_len(64).map_init(|| (vec![0.0f64; bk], vec![0.0f64; bk]), |(lph, bhi), (r, &g)| {
                 let cm = &comp[r * bk..(r + 1) * bk]; let bt = &btested[r * bk..(r + 1) * bk];
                 bhi.fill(0.0); for &(j, v) in &hi_val[hi_off[r]..hi_off[r + 1]] { bhi[j as usize] = v; }
                 let (mut nt, mut nf_, mut sc2) = (0i64, 0i64, 0i64);
@@ -624,20 +645,25 @@ pub fn process_locus(cx: &Ctx, li: usize) -> LocusOut {
                     lph[j] = if tr { bhi[j] } else { f64::INFINITY };
                     if tr { nt += 1; if bhi[j] < logbar { nf_ += 1; } if bhi[j] < lean_ { sc2 += 1; } }
                 }
-                ntr[r] = nt; nfail[r] = nf_; score[r] += sc2;
                 let red = nf_ as f64 > nt as f64 / 2.0 && nt >= BS_MIN && !dm_r[r];
                 let jhi = first_argmin(lph.iter().copied());
-                hi_j[r] = if nt > 0 { cm[jhi] as i64 } else { -1 };
-                p_red[r] = if nt > 0 { let mut srt = lph.clone(); sort_f64(&mut srt); npmin(srt[((nt / 2) as usize).min(bk - 1)], 0.0) } else { 0.0 };
+                let hi_j = if nt > 0 { cm[jhi] as i64 } else { -1 };
+                let p_red = if nt > 0 { let mut srt = lph.clone(); sort_f64(&mut srt); npmin(srt[((nt / 2) as usize).min(bk - 1)], 0.0) } else { 0.0 };
                 let bclose = lo_stat[r] < logbar && bnt[r] >= BS_MIN;
-                if bclose { bcall[r] = 1; }
-                if red && !bclose { bcall[r] = -1; }
-                if bclose && red { bcall[r] = if lo_stat[r] <= p_red[r] { 1 } else { -1 }; }
-                if bcall[r] == 1 { rep_[r] = lo_j[r]; } else if bcall[r] == -1 { rep_[r] = hi_j[r]; }
+                let mut call = 0i8;
+                if bclose { call = 1; }
+                if red && !bclose { call = -1; }
+                if bclose && red { call = if lo_stat[r] <= p_red { 1 } else { -1 }; }
+                let rep = if call == 1 { lo_j[r] } else if call == -1 { hi_j } else { rep_[r] };
                 // the member behind the too-divergent side: its counts and expectation again
                 let c = cm[jhi] as usize; let mv0 = bs.mstar[g * pn + pos[r * bk + jhi] as usize]; let (w, o) = cnt(g, c);
-                hi_o[r] = o; hi_w[r] = w; hi_e[r] = vals(npmax(mv0, 1e-4), w).0; hi_p[r] = lph[jhi];
-                bsrep_full[g] = rep_[r];
+                RowB { ntr: nt, nfail: nf_, sc2, hi_j, p_red, call, rep, hi_o: o, hi_w: w, hi_e: vals(npmax(mv0, 1e-4), w).0, hi_p: lph[jhi] }
+            }).collect();
+            let mut ntr = vec![0i64; nr]; let mut nfail = vec![0i64; nr]; let mut hi_j = vec![-1i64; nr]; let mut p_red = vec![0.0f64; nr]; let mut bcall = vec![0i8; nr];
+            let (mut hi_o, mut hi_w, mut hi_e, mut hi_p) = (vec![0.0f64; nr], vec![0.0f64; nr], vec![0.0f64; nr], vec![0.0f64; nr]);
+            for (r, x) in rows_b.into_iter().enumerate() {
+                ntr[r] = x.ntr; nfail[r] = x.nfail; score[r] += x.sc2; hi_j[r] = x.hi_j; p_red[r] = x.p_red; bcall[r] = x.call; rep_[r] = x.rep;
+                hi_o[r] = x.hi_o; hi_w[r] = x.hi_w; hi_e[r] = x.hi_e; hi_p[r] = x.hi_p; bsrep_full[rows_bs[r]] = x.rep;
             }
             // ---- pass C: the direction of a too-close pair
             let mut score_full = vec![0i64; n]; for r in 0..nr { score_full[rows_bs[r]] = score[r]; }
@@ -666,58 +692,83 @@ pub fn process_locus(cx: &Ctx, li: usize) -> LocusOut {
     // ---- best match: per-site divergence compared on the same sites
     let rows_bm: Vec<usize> = if cx.bm_all { (0..ncell).collect() } else { (0..ncell).filter(|&q| fail_q[q]).collect() };
     let mut best_ = vec![-1i32; ncell]; let mut bident_ = vec![f32::NAN; ncell];
-    let bm: Vec<(usize, i32, f32)> = rows_bm.par_iter().map(|&q| {
-        let g = idx[q];
-        let mut wrow = vec![0.0f64; n]; let mut srow = vec![0.0f64; n];
-        for c in 0..n { let (w, s) = core.at(li, g, c); wrow[c] = w as f64; srow[c] = s as f64; }
-        let okc: Vec<bool> = (0..n).map(|c| wrow[c] >= BEST_MATCH_MIN_SITES && c != g).collect();
-        let dvg: Vec<f64> = (0..n).map(|c| if okc[c] { (wrow[c] - srow[c]) / wrow[c].max(1.0) } else { f64::INFINITY }).collect();
-        let mut mcache: HashMap<usize, f64> = HashMap::new();
-        let mut mb = |c: usize| -> f64 { let v = match &p.m_full { Some(m) => m[g * n + c], None => *mcache.entry(c).or_insert_with(|| p.pair_m(g, c).0) }; if v.is_finite() { v } else { f64::INFINITY } };
-        let wmax = (0..n).map(|c| if okc[c] { wrow[c] } else { -1.0 }).fold(f64::NEG_INFINITY, f64::max);
-        let dtier: Vec<f64> = (0..n).map(|c| if okc[c] && wrow[c] >= wmax { dvg[c] } else { f64::INFINITY }).collect();
-        let lo_t = dtier.iter().copied().fold(f64::INFINITY, f64::min);
-        let tied: Vec<usize> = (0..n).filter(|&c| dtier[c] == lo_t).collect();
-        let mut champ = tied.first().copied().unwrap_or(0);
-        if lo_t.is_finite() && tied.len() > 1 {
-            let tk: Vec<f64> = tied.iter().map(|&c| mb(c)).collect();
-            if tk.iter().any(|x| x.is_finite()) { champ = tied[first_argmin(tk.iter().copied())]; }
-        }
-        let okb = lo_t.is_finite();
-        if okb && dvg.iter().any(|d| *d < lo_t) {
-            let fx = xs(p, g, li); let mut c = champ;
-            let t0: Vec<usize> = (0..n).filter(|&t| dvg[t] < lo_t).collect();
-            let kw: Vec<f64> = t0.iter().map(|&t| -wrow[t]).collect(); let kd: Vec<f64> = t0.iter().map(|&t| dvg[t]).collect();
-            let mut gsz: HashMap<(u64, u64), usize> = HashMap::new();
-            for i in 0..t0.len() { *gsz.entry((kw[i].to_bits(), kd[i].to_bits())).or_insert(0) += 1; }
-            let km: Vec<f64> = (0..t0.len()).map(|i| if gsz[&(kw[i].to_bits(), kd[i].to_bits())] > 1 { mb(t0[i]) } else { 0.0 }).collect();
-            let mut ord: Vec<usize> = (0..t0.len()).collect();
-            ord.sort_by(|&x, &y| cmp_nan_last(&kw[x], &kw[y]).then(cmp_nan_last(&kd[x], &kd[y])).then(cmp_nan_last(&km[x], &km[y])));
-            let mut t: Vec<usize> = ord.iter().map(|&i| t0[i]).collect();
-            while !t.is_empty() {
-                let xc = xs(p, c, li); let mut win = None; let mut mc_: Option<f64> = None;
-                // every remaining challenger against the champion; the first that wins takes over
-                let stats: Vec<(u32, u32, u32)> = t.iter().map(|&tt| {
-                    let xt = xs(p, tt, li); let (mut common, mut dt_, mut dc_) = (0u32, 0u32, 0u32);
-                    for s in 0..fx.len() { if fx[s] >= 0 && xc[s] >= 0 && xt[s] >= 0 { common += 1; dt_ += (xt[s] != fx[s]) as u32; dc_ += (xc[s] != fx[s]) as u32; } }
-                    (common, dt_, dc_) }).collect();
-                for (i, &(common, dt_, dc_)) in stats.iter().enumerate() {
-                    let eqd = dt_ == dc_;
-                    let better = dt_ < dc_ || (eqd && { let mt = mb(t[i]); let mcv = *mc_.get_or_insert_with(|| mb(c)); mt < mcv });
-                    if common as f64 >= BEST_MATCH_MIN_SITES && better { win = Some(i); break; }
-                }
-                match win { None => break, Some(i) => { c = t[i]; t.drain(..=i); } }
+    // A cell against every taxon. The cells go in blocks: one pass over the taxa counts every cell of a block against
+    // each taxon (a taxon's planes at the locus are read once for the block), the counts kept as integers in buffers
+    // each thread keeps; the cells of a block then go in parallel, each reading its tiers and challengers from its
+    // own counts. The numbers are those of the whole-row expressions: okc = enough shared sites and not itself,
+    // dvg = mismatches / shared sites. A block is small where there are few cells, so that they spread over the threads
+    let bm_block = ((32usize << 20) / (8 * n.max(1))).clamp(1, 64).min(rows_bm.len().div_ceil(2 * rayon::current_num_threads().max(1))).max(1);
+    let bm: Vec<(usize, i32, f32)> = rows_bm.par_chunks(bm_block).map_init(|| (vec![0u32; bm_block * n], vec![0u32; bm_block * n]), |(wv, sv), qs| {
+        let gs: Vec<usize> = qs.iter().map(|&q| idx[q]).collect();
+        if core.slab.is_some() { for (bi, &g) in gs.iter().enumerate() { for c in 0..n { let (w, s) = core.at(li, g, c); wv[bi * n + c] = w; sv[bi * n + c] = s; } } }
+        else { lb.block(&gs, &core.keep, n, wv, sv); }
+        let (wv, sv, gs) = (&*wv, &*sv, &gs);
+        qs.par_iter().enumerate().map(|(bi, &q)| {
+            let g = gs[bi]; let (wr, sr) = (&wv[bi * n..(bi + 1) * n], &sv[bi * n..(bi + 1) * n]);
+            let okc = |c: usize| wr[c] as f64 >= BEST_MATCH_MIN_SITES && c != g;
+            let dvg = |c: usize| if okc(c) { (wr[c] as f64 - sr[c] as f64) / (wr[c] as f64).max(1.0) } else { f64::INFINITY };
+            let mut mcache: HashMap<usize, f64> = HashMap::new();
+            let mut mb = |c: usize| -> f64 { let v = match &p.m_full { Some(m) => m[g * n + c], None => *mcache.entry(c).or_insert_with(|| p.pair_m_any(g, c)) }; if v.is_finite() { v } else { f64::INFINITY } };
+            // the tier of the most shared sites, and the lowest divergence in it
+            let wmax = (0..n).map(|c| if okc(c) { wr[c] as f64 } else { -1.0 }).fold(f64::NEG_INFINITY, f64::max);
+            let lo_t = (0..n).map(|c| if okc(c) && wr[c] as f64 >= wmax { dvg(c) } else { f64::INFINITY }).fold(f64::INFINITY, f64::min);
+            if !lo_t.is_finite() { return (q, -1, f32::NAN); }                 // no taxon shares enough sites
+            // the tier's taxa at that divergence, and the taxa outside it with a lower one (the challengers)
+            let mut tied: Vec<usize> = vec![]; let mut t0: Vec<usize> = vec![];
+            for c in 0..n { if !okc(c) { continue; } let d = dvg(c); if wr[c] as f64 >= wmax && d == lo_t { tied.push(c); } if d < lo_t { t0.push(c); } }
+            let mut champ = tied.first().copied().unwrap_or(0);
+            if tied.len() > 1 {
+                let tk: Vec<f64> = tied.iter().map(|&c| mb(c)).collect();
+                if tk.iter().any(|x| x.is_finite()) { champ = tied[first_argmin(tk.iter().copied())]; }
             }
-            champ = c;
-        }
-        (q, if okb { champ as i32 } else { -1 }, if okb { (100.0 * (1.0 - dvg[champ])) as f32 } else { f32::NAN })
-    }).collect();
+            if !t0.is_empty() {
+                // The challengers in order of more shared sites, then lower divergence, then (among those equal in
+                // both) lower pair divergence m, then taxon; each in turn against the champion on the sites all three
+                // have (counted on the planes: the sites, where the challenger differs from the focal, where the
+                // champion does), the first that wins taking over and the ones after it going on against it.
+                // Taken a group of equals at a time: a group in which nobody wins is passed whatever its order, so
+                // the m that orders a group (a pair kernel for each member) is computed only for a group with a
+                // winner. The outcome is that of the whole list sorted and walked
+                let mut c = champ; let mut mc_: Option<f64> = None;
+                let kw: Vec<f64> = t0.iter().map(|&t| -(wr[t] as f64)).collect(); let kd: Vec<f64> = t0.iter().map(|&t| dvg(t)).collect();
+                let mut ord: Vec<usize> = (0..t0.len()).collect();
+                ord.sort_by(|&x, &y| cmp_nan_last(&kw[x], &kw[y]).then(cmp_nan_last(&kd[x], &kd[y])));
+                let mut i0 = 0usize;
+                while i0 < ord.len() {
+                    let mut i1 = i0 + 1;
+                    while i1 < ord.len() && kw[ord[i1]].to_bits() == kw[ord[i0]].to_bits() && kd[ord[i1]].to_bits() == kd[ord[i0]].to_bits() { i1 += 1; }
+                    let single = i1 - i0 == 1;
+                    let mut rem: Vec<usize> = ord[i0..i1].iter().map(|&x| t0[x]).collect();          // the group's taxa still to come, ascending
+                    let mut km: Option<Vec<f64>> = None;                                                // their m, once the order is needed
+                    while !rem.is_empty() {
+                        let mut wins: Vec<usize> = vec![];
+                        for (pos, &t) in rem.iter().enumerate() {
+                            let (common, dt_, dc_) = lb.three(g, c, t);
+                            if (common as f64) < BEST_MATCH_MIN_SITES { continue; }
+                            if dt_ < dc_ || (dt_ == dc_ && { let mt = mb(t); let mcv = *mc_.get_or_insert_with(|| mb(c)); mt < mcv }) { wins.push(pos); }
+                        }
+                        if wins.is_empty() { break; }
+                        if single { c = rem[0]; mc_ = None; break; }
+                        let kmv = match km.take() { Some(v) => v, None => rem.iter().map(|&t| mb(t)).collect() };
+                        let after = |a: usize, b: usize| cmp_nan_last(&kmv[a], &kmv[b]).then(rem[a].cmp(&rem[b]));
+                        let w = wins.iter().copied().min_by(|&a, &b| after(a, b)).unwrap();
+                        let stay: Vec<usize> = (0..rem.len()).filter(|&x| after(x, w) == std::cmp::Ordering::Greater).collect();
+                        c = rem[w]; mc_ = None;
+                        km = Some(stay.iter().map(|&x| kmv[x]).collect()); rem = stay.iter().map(|&x| rem[x]).collect();
+                    }
+                    i0 = i1;
+                }
+                champ = c;
+            }
+            (q, champ as i32, (100.0 * (1.0 - dvg(champ))) as f32)
+        }).collect::<Vec<_>>()
+    }).flatten().collect();
     for (q, b, bi) in bm { best_[q] = b; bident_[q] = bi; }
 
     let codes_out = if rep_q.iter().any(|x| *x) {
         let qs: Vec<usize> = (0..ncell).filter(|&q| rep_q[q]).collect();
         let cells: Vec<(usize, i64)> = qs.iter().map(|&q| (idx[q], if copy_q[q] || src_q[q] { partner_[q] as i64 } else { -1 })).collect();
-        Some((qs.iter().map(|&q| idx[q] as i32).collect::<Vec<i32>>(), site_codes(cx, li, &cells)))
+        Some((qs.iter().map(|&q| idx[q] as i32).collect::<Vec<i32>>(), site_codes(cx, lb, li, &cells)))
     } else { None };
     let trees_out = if masked_q.iter().any(|x| *x) {
         let mut cells_t = vec![];
@@ -727,7 +778,7 @@ pub fn process_locus(cx: &Ctx, li: usize) -> LocusOut {
             for t_ in [partner_[q] as i64, lclos_[q] as i64, bsrep_full[g]] { if t_ >= 0 && !tips.contains(&(t_ as usize)) { tips.push(t_ as usize); } }
             if tips.len() >= 2 { cells_t.push((g, tips)); }
         }
-        build_trees(cx, li, cells_t, p_, rate_c)
+        build_trees(cx, lb, li, cells_t, p_, rate_c)
     } else { None };
     let seq_out = if cx.seq_policy != "none" {
         let rows_s: Vec<usize> = if cx.seq_policy == "all" { (0..n).filter(|&g| sel.nres[g] > 0).collect() } else {
@@ -856,7 +907,7 @@ fn bs_locus_b(cx: &Ctx, rep: &Rep, b: &BsBlk, li: usize, near_ln: f64) -> Option
     retree.extend(out.lean.iter().filter(|x| x.3 >= 0 && side_at(x.0) & 3 != 0 && !in_tc.contains(&x.0)).map(|x| (x.0, x.3)));
     if !tree_cells.is_empty() {
         let cells: Vec<(usize, i64)> = tree_cells.iter().map(|&(g, pt, cc)| (g, if cc { pt } else { -1 })).collect();
-        out.codes = Some((tree_cells.iter().map(|x| x.0 as i32).collect(), site_codes(cx, li, &cells)));
+        out.codes = Some((tree_cells.iter().map(|x| x.0 as i32).collect(), site_codes(cx, &cx.p.core.bits.locus(li, cx.p.n()), li, &cells)));
     }
     if !tree_cells.is_empty() || !retree.is_empty() {
         let mut cells_t = vec![];
@@ -867,7 +918,7 @@ fn bs_locus_b(cx: &Ctx, rep: &Rep, b: &BsBlk, li: usize, near_ln: f64) -> Option
             for t_ in [pt, lc, extra] { if t_ >= 0 && !tips.contains(&(t_ as usize)) { tips.push(t_ as usize); } }
             if tips.len() >= 2 { cells_t.push((g, tips)); }
         }
-        out.trees = build_trees(cx, li, cells_t, p_, rate_c);
+        out.trees = build_trees(cx, &cx.p.core.bits.locus(li, cx.p.n()), li, cells_t, p_, rate_c);
         if cx.seq_policy != "none" && cx.seq_policy != "all" {
             let mut rs: HashSet<usize> = HashSet::new();
             for &(g, partner, _) in &tree_cells { rs.insert(g); for j in 0..k { let c = top[g * k + j]; if c >= 0 { rs.insert(c as usize); } } if partner >= 0 { rs.insert(partner as usize); } }
@@ -886,10 +937,12 @@ pub fn run_z(a: &Args, names: &[String], loci: &Loci, p: &mut Prep, masked: &mut
              seq_policy: &str, codes_policy: &str, uncovered: usize) -> (Rep, usize) {
     let n = names.len(); let nloc = loci.len(); let k = k_eff; let prog = crate::log::prog();
     let mask_hi = !a.mask_similar_only; let mask_lo = !a.mask_different_only;
+    let from_sweep = p.bs_pre.is_some();
     let bs = if a.no_broad_sample { None } else { bs_prepare(p, k_eff) };
     if let Some(b) = &bs {
         log!("broad sample: {} per sequence per locus, drawn from each taxon's pool of {}{}", b.k, b.pn,
-             if p.m_full.is_some() { String::new() } else { format!(" (the pools' pair divergences computed: {} pairs)", commas((n * b.pn) as i64)) });
+             if p.m_full.is_some() { String::new() } else if from_sweep { " (the pools' pair divergences from sweep 2)".to_string() }
+             else { format!(" (the pools' pair divergences computed: {} pairs)", commas((n * b.pn) as i64)) });
     }
     // ---- comparators
     prog.start("comparators", nloc);
@@ -899,13 +952,24 @@ pub fn run_z(a: &Args, names: &[String], loci: &Loci, p: &mut Prep, masked: &mut
     if !exhausted.is_empty() {
         let t1 = std::time::Instant::now();
         let e = sweep(&p.core, Some(&p.rr), Some(&p.ok_r), Key::Mj, n, a.fit_overlap, false, false, Some(&exhausted), None);
-        for (kk, &g) in exhausted.iter().enumerate() { p.ext.insert(g, e.rows[kk].clone()); }
+        for (&g, row) in exhausted.iter().zip(e.rows) { p.ext.insert(g, row); }
         let pr: &Prep = p;
         let redo: Vec<Sel> = (0..nloc).into_par_iter().map(|li| choose_comparators(pr, a.fit_overlap, k, li, Some(&exhausted))).collect();
         for li in 0..nloc {
             for &g in &exhausted {
                 sel[li].top[g * k..(g + 1) * k].copy_from_slice(&redo[li].top[g * k..(g + 1) * k]);
                 sel[li].cnt[g] = redo[li].cnt[g]; sel[li].nres[g] = redo[li].nres[g]; sel[li].closest[g] = redo[li].closest[g]; sel[li].fork[g] = redo[li].fork[g];
+            }
+        }
+        // A full row is every other taxon, and what is read from it from here on are the comparators just chosen
+        // (their m, for the tests) and its first five entries (the report's closest taxa): the rest goes. Any other
+        // pair of the taxon is computed where it is asked for (Prep::pair_m_any), the same number
+        for &g in &exhausted {
+            let used: HashSet<i64> = sel.iter().flat_map(|s| s.top[g * k..(g + 1) * k].iter().filter(|c| **c >= 0).map(|c| *c as i64)).collect();
+            if let Some(row) = p.ext.get_mut(&g) {
+                let keep: Vec<usize> = (0..row.cand.len()).filter(|&j| j < 5 || used.contains(&row.cand[j])).collect();
+                row.cand = keep.iter().map(|&j| row.cand[j]).collect(); row.key = keep.iter().map(|&j| row.key[j]).collect();
+                row.m = keep.iter().map(|&j| row.m[j]).collect(); row.mfl = keep.iter().map(|&j| row.mfl[j]).collect();
             }
         }
         log!("comparators: {} taxa ran out of their {} candidates at some locus: full rows computed and walked ({:.0}s)", exhausted.len(), p.c_len, t1.elapsed().as_secs_f64());
@@ -921,7 +985,7 @@ pub fn run_z(a: &Args, names: &[String], loci: &Loci, p: &mut Prep, masked: &mut
     if ndist_l.iter().sum::<i64>() == 0 && npt_l.iter().sum::<i64>() == 0 {
         let mut reasons: Vec<(String, usize)> = vec![];
         for li in 0..nloc {
-            let st = match locus_pairs(a, p, &sel[li], k, li) { LP::Skip(s) => s, LP::Ok(_) => "tested".to_string() };
+            let st = match locus_pairs(a, p, &sel[li], k, li, None) { LP::Skip(s) => s, LP::Ok(_) => "tested".to_string() };
             if let Some(e) = reasons.iter_mut().find(|x| x.0 == st) { e.1 += 1; } else { reasons.push((st, 1)); }
         }
         reasons.sort();
@@ -984,8 +1048,10 @@ pub fn run_z(a: &Args, names: &[String], loci: &Loci, p: &mut Prep, masked: &mut
     let mut sparse_at: HashMap<usize, HashSet<usize>> = HashMap::new();
     let ncmp_l: Vec<usize> = sel.iter().map(|s| s.cnt.iter().map(|c| *c as usize).sum()).collect();
     let target = 50_000usize; let mut batches: Vec<Vec<usize>> = vec![]; { let mut cur = vec![]; let mut acc = 0; for li in 0..nloc { cur.push(li); acc += ncmp_l[li]; if acc >= target { batches.push(std::mem::take(&mut cur)); acc = 0; } } if !cur.is_empty() { batches.push(cur); } }
-    // group batches so that every thread has work, the results consumed in locus order
-    let group = rayon::current_num_threads().max(1);
+    // A few batches at a time, the results consumed in locus order. A locus spreads its own work over the threads
+    // (its pairs, its rows of the broad sample, its cells), so the batches in flight are few: each holds working
+    // arrays in proportion to the taxa, and the stage's memory no longer grows with the thread count
+    let group = rayon::current_num_threads().clamp(1, TEST_LOCI_IN_FLIGHT);
     prog.start_extra("test", nloc, "0 too divergent, 0 copied");
     macro_rules! mk_ctx { ($rows:expr) => { Ctx { a, names, loci, p, sel: &sel, bs: bs.as_ref(), k, m_eff, phi_l: &phi_l, logbar, ladj, ladj10, ln10, lf: &lf, rows: $rows, l, every, mask_hi, mask_lo, codes_policy, seq_policy, bm_all, dense } }; }
     for chunk in batches.chunks(group) {

@@ -71,7 +71,7 @@ def make_case(rng, d):
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--cases", type=int, default=40); ap.add_argument("--seed", type=int, default=1); ap.add_argument("--keep")
     ap.add_argument("--rust", default=os.path.join(os.path.dirname(ROOT), "target", "release", "locusmasker")); ap.add_argument("--python", default=sys.executable)
-    a = ap.parse_args(); work = a.keep or tempfile.mkdtemp(prefix="lm_fuzz_"); bad = 0; ran = 0; stopped = 0; why = {}
+    a = ap.parse_args(); work = a.keep or tempfile.mkdtemp(prefix="lm_fuzz_"); bad = 0; ran = 0; stopped = 0; crashed = 0; why = {}
     for c in range(a.cases):
         rng = np.random.default_rng([a.seed, c]); d = os.path.join(work, f"case{c}"); shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
         args, consts = make_case(rng, d); res = []
@@ -80,6 +80,10 @@ def main():
         for tool, cmd in (("py", [a.python, "-c", patch] if consts else [a.python, os.path.join(ROOT, "locusmasker.py")]), ("rs", [a.rust])):
             res.append(subprocess.run(cmd + args + ["--out", os.path.join(d, tool)], capture_output=True, text=True, env=env if tool == "rs" else None))
         py, rs = res; last = lambda r: (r.stderr.strip().splitlines() or [""])[-1]
+        # a known crash of the script, not a difference: with the sparse report (DENSE_CELLS_MAX forced low) and no
+        # failing cell, its report writer indexes an empty array (at_cells) where the Rust program writes the report
+        if py.returncode != 0 and rs.returncode == 0 and "DENSE_CELLS_MAX" in consts and last(py).startswith("IndexError: index -1 is out of bounds for axis 0 with size 0"):
+            crashed += 1; continue
         if py.returncode != rs.returncode or (py.returncode != 0 and last(py) != last(rs)):
             bad += 1; print(f"case {c}: exit {py.returncode} / {rs.returncode}\n   python: {last(py)[:300]}\n   rust:   {last(rs)[:300]}\n   {' '.join(args)}"); continue
         if py.returncode != 0: stopped += 1; why[last(py)[:60]] = why.get(last(py)[:60], 0) + 1; continue      # both stopped with the same message
@@ -87,6 +91,7 @@ def main():
         if diff: bad += 1; print(f"case {c}: {len(diff)} of {n} members differ\n   {' '.join(args)} {consts}"); compare(os.path.join(d, "py"), os.path.join(d, "rs"))
     if not a.keep: shutil.rmtree(work, ignore_errors=True)
     for k, v in sorted(why.items(), key=lambda x: -x[1]): print(f"   {v} stopped: {k}...")
+    if crashed: print(f"   {crashed} not compared: the script crashed writing a sparse report with no failing cell (a known fault of the script)")
     print(f"{a.cases} cases: {ran} ran to the end and {stopped} stopped with the same message in both tools; " + ("all identical" if not bad else f"{bad} differ")); sys.exit(1 if bad else 0)
 
 

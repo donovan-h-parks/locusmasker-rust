@@ -47,6 +47,29 @@ pub fn median(v: &[f64]) -> f64 {
     if n % 2 == 1 { s[n / 2] } else { (s[n / 2 - 1] + s[n / 2]) / 2.0 }
 }
 
+/// the k-th smallest of s (which is rearranged) and the smallest above it: the order statistics k and k + 1
+fn two_order_stats(s: &mut [f64], k: usize) -> (f64, f64) {
+    let (_, a, right) = s.select_nth_unstable_by(k, cmp_nan_last);
+    (*a, right.iter().copied().fold(f64::INFINITY, f64::min))
+}
+/// np.median by selection, for values without NaN and without negative zeros (where the value of an order statistic
+/// does not depend on how equal elements are arranged): the number median() gives, without the sort
+pub fn median_of(mut s: Vec<f64>) -> f64 {
+    let n = s.len(); if n == 0 { return f64::NAN; }
+    if n % 2 == 1 { *s.select_nth_unstable_by(n / 2, cmp_nan_last).1 } else { let (a, b) = two_order_stats(&mut s, n / 2 - 1); (a + b) / 2.0 }
+}
+/// np.percentile by selection, under the same conditions: the number percentile() gives
+pub fn percentile_of(s: &mut [f64], q: f64) -> f64 {
+    let n = s.len(); if n == 0 { return f64::NAN; }
+    let vi = (n - 1) as f64 * (q / 100.0);
+    let (a, b, t);
+    if vi >= (n - 1) as f64 { let m = s.iter().copied().fold(f64::NEG_INFINITY, f64::max); a = m; b = m; t = vi + 1.0; }
+    else if vi < 0.0 { let m = s.iter().copied().fold(f64::INFINITY, f64::min); a = m; b = m; t = vi; }
+    else { let p = vi.floor(); let (x, y) = two_order_stats(s, p as usize); a = x; b = y; t = vi - p; }
+    let diff = b - a;
+    if t >= 0.5 { b - diff * (1.0 - t) } else { a + diff * t }
+}
+
 /// np.nanmedian of a 1-D array
 pub fn nanmedian(v: &[f64]) -> f64 {
     let mut s: Vec<f64> = v.iter().copied().filter(|x| !x.is_nan()).collect();
@@ -226,10 +249,19 @@ pub fn hash_draw(key: u64, m: usize, need: usize) -> Vec<i64> {
     let mut start = 0usize;
     loop {
         let mut out: Vec<i64> = Vec::with_capacity(need);
-        let mut seen = std::collections::HashSet::with_capacity(2 * need);
-        for slot in start..start + s {
-            let v = (sm64(key ^ slot as u64) % m as u64) as i64;
-            if seen.insert(v) { out.push(v); if out.len() == need { return out; } }
+        if m <= 4096 {
+            // the values seen so far as a bit each (the broad sample draws from pools of a few hundred, per sequence)
+            let mut seen = [0u64; 64];
+            for slot in start..start + s {
+                let v = (sm64(key ^ slot as u64) % m as u64) as usize; let (w, b) = (v / 64, 1u64 << (v % 64));
+                if seen[w] & b == 0 { seen[w] |= b; out.push(v as i64); if out.len() == need { return out; } }
+            }
+        } else {
+            let mut seen = std::collections::HashSet::with_capacity(2 * need);
+            for slot in start..start + s {
+                let v = (sm64(key ^ slot as u64) % m as u64) as i64;
+                if seen.insert(v) { out.push(v); if out.len() == need { return out; } }
+            }
         }
         start += s; s *= 2;
         if start > (1 << 20) { panic!("broad-sample draw could not find {need} distinct of {m}"); }

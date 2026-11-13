@@ -177,21 +177,22 @@ The repository is an ordinary Cargo project: the source is in `src/`, the report
 
 Nearly all of the time on a big alignment goes into comparing every pair of taxa, so the number of taxa is what matters most:
 
-- **Running time** grows with the square of the number of taxa and in proportion to the length of the alignment: twice the taxa takes about four times as long, twice the sites about twice as long. The tests that follow the pair comparisons grow only in proportion to the number of sequences (taxa x loci), and are the smaller part of the run beyond a few thousand taxa.
-- **Threads** divide the running time almost evenly up to the number of physical cores (from 8 to 32 threads the pair comparisons below ran four times as fast); hyperthreads beyond that add a little.
-- **Peak memory** grows in proportion to the size of the alignment (taxa x sites, which is held about three times over) and to the number of sequences. Up to 20,000 taxa a matrix of every pair's divergence is kept as well (16 bytes per pair, so 6 GiB at 20,000 taxa), and filling it costs time too, which is why the 10,424-taxon run below takes more than a quarter of the time of the 20,847-taxon one. Above 20,000 taxa the matrix is not kept, and memory no longer grows with the square of anything. More threads cost more memory, because more loci are tested at once: in the runs below, about 5 GiB at 8 threads and about 8 GiB at 96.
+- **Running time** grows with the square of the number of taxa and in proportion to the length of the alignment: twice the taxa takes about four times as long, twice the sites about twice as long. The tests that follow the pair comparisons are the smaller part of the run beyond a few thousand taxa (about 3 of the 50 minutes of the largest run below).
+- **Threads**: doubling them cuts the running time by 40 to 45% up to the number of physical cores (the table below); hyperthreads beyond that add less.
+- **Peak memory** grows in proportion to the size of the alignment (taxa x sites: its letters, and its residues again as bit planes at a little under a byte per site for amino acids) and to the number of sequences. Up to 20,000 taxa a matrix of every pair's divergence is kept as well (16 bytes per pair, so 6 GiB at 20,000 taxa), and filling it costs time too. Above 20,000 taxa the matrix is not kept, and memory no longer grows with the square of anything. More threads cost a little more memory; at most eight loci are tested at a time, whatever the thread count.
 
-Measured on an amino-acid alignment of 120 loci and 41,084 sites, on a machine with 48 cores (96 hardware threads):
+Measured on amino-acid alignments of 120 loci and 41,084 sites, on a machine with 48 cores (96 hardware threads):
 
 | Taxa | Threads | Running time | Peak memory |
 | ---: | ---: | ---: | ---: |
-| 10,424 | 32 | 54 s | 5.8 GiB |
-| 20,847 | 8 | 7 min 48 s | 5.3 GiB |
-| 20,847 | 16 | 4 min 27 s | 5.6 GiB |
-| 20,847 | 32 | 2 min 27 s | 5.9 GiB |
-| 20,847 | 96 | 1 min 50 s | 8.4 GiB |
+| 10,424 | 32 | 31 s | 4.0 GiB |
+| 20,847 | 8 | 3 min 9 s | 3.7 GiB |
+| 20,847 | 16 | 1 min 42 s | 4.0 GiB |
+| 20,847 | 32 | 1 min 0 s | 4.4 GiB |
+| 20,847 | 96 | 47 s | 5.5 GiB |
+| 229,307 | 64 | 50 min 3 s | 41.4 GiB |
 
-By the square rule, ten times as many taxa as the largest of these (about 200,000) would take about a hundred times as long in the pair comparisons: hours rather than minutes. That size has not been timed. The start of `run.log` gives an estimate of the memory the run's long-lived data needs; the peak is higher, as the table shows, by what the tests use while they run.
+The largest of these was read from a gzip-compressed file. The start of `run.log` gives an estimate of the memory the run's long-lived data needs; the peak is higher, as the table shows, by what the tests use while they run.
 
 # License
 

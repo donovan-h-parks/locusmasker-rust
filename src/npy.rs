@@ -52,6 +52,24 @@ impl<W: Write + Seek> Zip<W> {
     pub fn finish(self) -> std::io::Result<W> { self.zw.finish().map_err(std::io::Error::other) }
 }
 
+/// a member of an archive whose bytes are made when asked for
+pub type Member<'a> = (String, Box<dyn Fn() -> Vec<u8> + Sync + Send + 'a>);
+
+/// A ZIP of members deflated in parallel: each is made and compressed on its own (into a one-member archive in
+/// memory), and the compressed members are then copied into the file in order. At most a thread's worth of
+/// uncompressed members exist at a time
+pub fn zip_parallel<W: Write + Seek>(w: W, members: &[Member]) -> std::io::Result<W> {
+    use rayon::prelude::*;
+    let other = |e: zip::result::ZipError| std::io::Error::other(e);
+    let parts: Vec<std::io::Result<Vec<u8>>> = members.par_iter().map(|(name, make)| {
+        let data = make(); let mut z = Zip::new(std::io::Cursor::new(Vec::new()));
+        z.put(name, &data)?; Ok(z.finish()?.into_inner())
+    }).collect();
+    let mut zw = zip::ZipWriter::new(w);
+    for part in parts { zw.merge_archive(zip::ZipArchive::new(std::io::Cursor::new(part?)).map_err(other)?).map_err(other)?; }
+    zw.finish().map_err(other)
+}
+
 pub fn zip_bytes(members: &[(String, Vec<u8>)]) -> Vec<u8> {
     let mut z = Zip::new(std::io::Cursor::new(Vec::new()));
     for (n, d) in members { z.put(n, d).expect("zip in memory"); }
