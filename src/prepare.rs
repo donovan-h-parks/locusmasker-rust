@@ -26,11 +26,12 @@ pub const FULL_M_MAX_TAXA: usize = 20000;
 pub const BAND_SLOTS: usize = 4;
 const SWEEP_CHUNK_BYTES: usize = 512 << 10;       // the planes of a chunk of rows: about a core's share of the cache
 
-/// the residues by locus (each taxon's row holds the loci one after another) and, up to SWEEP_BLOCK_MIN taxa, the
-/// counts of every pair at every locus
+/// the residues by locus as bit planes (each taxon's row holds the loci one after another) and, up to
+/// SWEEP_BLOCK_MIN taxa, the counts of every pair at every locus. The planes are the only copy of the residue
+/// codes: a sequence's codes are read back from them where the tests look at single sites (LocusBits::seq)
 pub struct Core {
-    pub n: usize, pub nloc: usize, pub lt: usize,
-    pub xl: Vec<i8>, pub off: Vec<usize>, pub keep: Vec<bool>, pub a_: usize,
+    pub n: usize, pub nloc: usize,
+    pub off: Vec<usize>, pub keep: Vec<bool>,
     pub slab: Option<Slab>, pub bits: Bits,
 }
 
@@ -39,10 +40,47 @@ pub struct Core {
 /// code plane agrees: two popcounts per 64 sites, the same integers as counting site by site
 pub struct Bits { pub planes: usize, pub wpr: usize, pub woff: Vec<usize>, pub data: Vec<u64>, popcnt: bool, avx2: bool }
 impl Bits {
-    fn build(n: usize, xl: &[i8], lt: usize, off: &[usize], a_: usize) -> Bits {
+    /// the layout: the planes of a code, each locus's first word, the words of a row
+    fn layout(off: &[usize], a_: usize) -> (usize, Vec<usize>, usize) {
         let planes = if a_ <= 4 { 2 } else { 5 }; let nloc = off.len() - 1;
         let mut woff = Vec::with_capacity(nloc + 1); let mut acc = 0; for li in 0..nloc { woff.push(acc); acc += (off[li + 1] - off[li]).div_ceil(64); } woff.push(acc);
-        let wpr = acc; let stride = (planes + 1) * wpr; let mut data = vec![0u64; n * stride];
+        (planes, woff, acc)
+    }
+    fn finish(planes: usize, wpr: usize, woff: Vec<usize>, data: Vec<u64>) -> Bits {
+        #[cfg(target_arch = "x86_64")]
+        let (popcnt, avx2) = (std::is_x86_feature_detected!("popcnt"), std::is_x86_feature_detected!("popcnt") && std::is_x86_feature_detected!("avx2") && std::env::var_os("LOCUSMASKER_NO_AVX2").is_none());
+        #[cfg(not(target_arch = "x86_64"))]
+        let (popcnt, avx2) = (false, false);
+        Bits { planes, wpr, woff, data, popcnt, avx2 }
+    }
+    /// The planes straight from the alignment's letters (rows: n x l bytes; lut: a letter's code or -1; loci: each
+    /// locus's sites), and how often each code occurs at each locus over all taxa (nloc x a_), for the plateaus
+    fn from_rows(n: usize, l: usize, rows: &[u8], lut: &[i8; 256], loci: &Loci, off: &[usize], a_: usize) -> (Bits, Vec<u64>) {
+        let (planes, woff, wpr) = Bits::layout(off, a_); let nloc = loci.len();
+        let stride = (planes + 1) * wpr; let mut data = vec![0u64; n * stride];
+        let counts = if stride > 0 {
+            data.par_chunks_mut(stride).enumerate().fold(|| vec![0u64; nloc * a_], |mut cnt, (g, row)| {
+                let src = &rows[g * l..(g + 1) * l];
+                for (li, (_, st)) in loci.iter().enumerate() {
+                    for (k, &site) in st.iter().enumerate() {
+                        let v = lut[src[site] as usize];
+                        if v < 0 { continue; }
+                        cnt[li * a_ + v as usize] += 1;
+                        let (w, b) = (woff[li] + k / 64, k % 64);
+                        row[w] |= 1u64 << b;
+                        for p in 0..planes { if (v as u8 >> p) & 1 == 1 { row[(p + 1) * wpr + w] |= 1u64 << b; } }
+                    }
+                }
+                cnt
+            }).reduce(|| vec![0u64; nloc * a_], |mut x, y| { for (p, q) in x.iter_mut().zip(&y) { *p += q; } x })
+        } else { vec![0u64; nloc * a_] };
+        (Bits::finish(planes, wpr, woff, data), counts)
+    }
+    /// the planes from residue codes laid out by locus (xl: n x lt)
+    #[cfg(test)]
+    fn build(n: usize, xl: &[i8], lt: usize, off: &[usize], a_: usize) -> Bits {
+        let (planes, woff, wpr) = Bits::layout(off, a_); let nloc = off.len() - 1;
+        let stride = (planes + 1) * wpr; let mut data = vec![0u64; n * stride];
         if stride > 0 {
             data.par_chunks_mut(stride).enumerate().for_each(|(g, row)| {
                 let x = &xl[g * lt..(g + 1) * lt];
@@ -56,11 +94,23 @@ impl Bits {
                 }
             });
         }
-        #[cfg(target_arch = "x86_64")]
-        let (popcnt, avx2) = (std::is_x86_feature_detected!("popcnt"), std::is_x86_feature_detected!("popcnt") && std::is_x86_feature_detected!("avx2") && std::env::var_os("LOCUSMASKER_NO_AVX2").is_none());
-        #[cfg(not(target_arch = "x86_64"))]
-        let (popcnt, avx2) = (false, false);
-        Bits { planes, wpr, woff, data, popcnt, avx2 }
+        Bits::finish(planes, wpr, woff, data)
+    }
+    /// a taxon's residue codes at a locus, read back from the planes (-1: no residue)
+    #[cfg(test)]
+    pub fn seq(&self, g: usize, li: usize, len: usize) -> Vec<i8> {
+        let stride = (self.planes + 1) * self.wpr; let row = &self.data[g * stride..(g + 1) * stride]; let w0 = self.woff[li];
+        (0..len).map(|k| {
+            let (w, b) = (w0 + k / 64, k % 64);
+            if (row[w] >> b) & 1 == 0 { return -1; }
+            let mut v = 0u8; for p in 0..self.planes { v |= (((row[(p + 1) * self.wpr + w] >> b) & 1) as u8) << p; }
+            v as i8
+        }).collect()
+    }
+    /// the residues a taxon has at a locus
+    pub fn present(&self, g: usize, li: usize) -> u32 {
+        let stride = (self.planes + 1) * self.wpr; let row = &self.data[g * stride..(g + 1) * stride];
+        row[self.woff[li]..self.woff[li + 1]].iter().map(|w| w.count_ones()).sum()
     }
     #[inline(always)]
     fn count_impl(&self, g: usize, c: usize, li: usize) -> (u32, u32) {
@@ -125,14 +175,110 @@ impl Bits {
 }
 pub struct Slab { pub w: Vec<u32>, pub s: Vec<u32> }                // [tri(g, c) * nloc + li], g <= c
 
+/// One locus's planes of every taxon, side by side (row g: the presence words, then each code plane's). The tests of
+/// a locus read every taxon's residues there many times over (a failing cell against every taxon, a sequence
+/// against its broad sample), and in the planes of the whole alignment those are a few words of every row, the rows
+/// tens of kilobytes apart: gathered, a locus is a few megabytes that stay in the cache
+pub struct LocusBits { wl: usize, planes: usize, data: Vec<u64>, popcnt: bool }
+impl Bits {
+    pub fn locus(&self, li: usize, n: usize) -> LocusBits {
+        let (w0, wl) = (self.woff[li], self.woff[li + 1] - self.woff[li]); let stride = (self.planes + 1) * self.wpr; let ls = (self.planes + 1) * wl;
+        let mut data = vec![0u64; n * ls];
+        if ls > 0 {
+            data.par_chunks_mut(ls).enumerate().with_min_len(256).for_each(|(g, row)| {
+                let src = &self.data[g * stride..(g + 1) * stride];
+                for p in 0..=self.planes { row[p * wl..(p + 1) * wl].copy_from_slice(&src[p * self.wpr + w0..p * self.wpr + w0 + wl]); }
+            });
+        }
+        LocusBits { wl, planes: self.planes, data, popcnt: self.popcnt }
+    }
+}
+impl LocusBits {
+    #[inline(always)]
+    fn count_impl(&self, g: usize, c: usize) -> (u32, u32) {
+        let ls = (self.planes + 1) * self.wl; let (rg, rc) = (&self.data[g * ls..(g + 1) * ls], &self.data[c * ls..(c + 1) * ls]);
+        let (mut sh, mut sm) = (0u32, 0u32);
+        for w in 0..self.wl {
+            let pa = rg[w] & rc[w]; let mut eq = pa;
+            for p in 1..=self.planes { eq &= !(rg[p * self.wl + w] ^ rc[p * self.wl + w]); }
+            sh += pa.count_ones(); sm += eq.count_ones();
+        }
+        (sh, sm)
+    }
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "popcnt")]
+    unsafe fn count_popcnt(&self, g: usize, c: usize) -> (u32, u32) { self.count_impl(g, c) }
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "popcnt")]
+    unsafe fn block_popcnt(&self, gs: &[usize], keep: &[bool], n: usize, w: &mut [u32], s: &mut [u32]) { self.block_impl(gs, keep, n, w, s) }
+    #[inline(always)]
+    fn block_impl(&self, gs: &[usize], keep: &[bool], n: usize, w: &mut [u32], s: &mut [u32]) {
+        for c in 0..n {
+            for (bi, &g) in gs.iter().enumerate() { let (a, b) = if keep[g] && keep[c] { self.count_impl(g, c) } else { (0, 0) }; w[bi * n + c] = a; s[bi * n + c] = b; }
+        }
+    }
+    #[inline(always)]
+    fn three_impl(&self, f: usize, c: usize, t: usize) -> (u32, u32, u32) {
+        let ls = (self.planes + 1) * self.wl; let wl = self.wl;
+        let (rf, rc, rt) = (&self.data[f * ls..(f + 1) * ls], &self.data[c * ls..(c + 1) * ls], &self.data[t * ls..(t + 1) * ls]);
+        let (mut common, mut dt, mut dc) = (0u32, 0u32, 0u32);
+        for w in 0..wl {
+            let m = rf[w] & rc[w] & rt[w]; let (mut xt, mut xc) = (0u64, 0u64);
+            for p in 1..=self.planes { xt |= rf[p * wl + w] ^ rt[p * wl + w]; xc |= rf[p * wl + w] ^ rc[p * wl + w]; }
+            common += m.count_ones(); dt += (m & xt).count_ones(); dc += (m & xc).count_ones();
+        }
+        (common, dt, dc)
+    }
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "popcnt")]
+    unsafe fn three_popcnt(&self, f: usize, c: usize, t: usize) -> (u32, u32, u32) { self.three_impl(f, c, t) }
+    /// Three taxa at the locus, on the sites all three have: how many there are, at how many t differs from f, and
+    /// at how many c differs from f (the best match compares a challenger and the champion with the focal sequence
+    /// on the same sites)
+    #[inline] pub fn three(&self, f: usize, c: usize, t: usize) -> (u32, u32, u32) {
+        #[cfg(target_arch = "x86_64")]
+        if self.popcnt { return unsafe { self.three_popcnt(f, c, t) }; }
+        self.three_impl(f, c, t)
+    }
+    /// shared sites and same residues of two taxa at the locus: the integers of Bits::count
+    #[inline] pub fn count(&self, g: usize, c: usize) -> (u32, u32) {
+        #[cfg(target_arch = "x86_64")]
+        if self.popcnt { return unsafe { self.count_popcnt(g, c) }; }
+        self.count_impl(g, c)
+    }
+    /// A few taxa against every taxon: shared sites and same residues (0 of each where either is excluded), w and s
+    /// as gs.len() rows of n. The taxa of the locus are the outer loop, so each one's planes are read once for the
+    /// whole block (one taxon at a time would read the locus through once per taxon)
+    pub fn block(&self, gs: &[usize], keep: &[bool], n: usize, w: &mut [u32], s: &mut [u32]) {
+        #[cfg(target_arch = "x86_64")]
+        if self.popcnt { return unsafe { self.block_popcnt(gs, keep, n, w, s) }; }
+        self.block_impl(gs, keep, n, w, s)
+    }
+    /// a taxon's residue codes at the locus (-1: no residue)
+    pub fn seq(&self, g: usize, len: usize) -> Vec<i8> {
+        let ls = (self.planes + 1) * self.wl; let row = &self.data[g * ls..(g + 1) * ls];
+        (0..len).map(|k| {
+            let (w, b) = (k / 64, k % 64);
+            if (row[w] >> b) & 1 == 0 { return -1; }
+            let mut v = 0u8; for p in 0..self.planes { v |= (((row[(p + 1) * self.wl + w] >> b) & 1) as u8) << p; }
+            v as i8
+        }).collect()
+    }
+}
+
 impl Core {
-    #[inline] pub fn seq(&self, g: usize, li: usize) -> &[i8] { &self.xl[g * self.lt + self.off[li]..g * self.lt + self.off[li + 1]] }
     #[inline] pub fn tri(&self, g: usize, c: usize) -> usize { let (a, b) = if g <= c { (g, c) } else { (c, g) }; a * self.n - a * a.saturating_sub(1) / 2 + (b - a) }
     /// shared sites and same residues of a pair at a locus; a pair with an excluded member counts 0 of each
     #[inline] pub fn at(&self, li: usize, g: usize, c: usize) -> (u32, u32) {
         if let Some(sl) = &self.slab { let k = self.tri(g, c) * self.nloc + li; return (sl.w[k], sl.s[k]); }
         if !(self.keep[g] && self.keep[c]) { return (0, 0); }
         self.bits.count(g, c, li)
+    }
+    /// the same from a locus's gathered planes
+    #[inline] pub fn at_l(&self, lb: &LocusBits, li: usize, g: usize, c: usize) -> (u32, u32) {
+        if let Some(sl) = &self.slab { let k = self.tri(g, c) * self.nloc + li; return (sl.w[k], sl.s[k]); }
+        if !(self.keep[g] && self.keep[c]) { return (0, 0); }
+        lb.count(g, c)
     }
     /// the counts of a pair at every locus
     fn pair_counts(&self, g: usize, c: usize, w: &mut [u32], s: &mut [u32], pa: &mut [u64], eq: &mut [u64]) {
@@ -171,6 +317,7 @@ pub struct Prep {
     pub cl_win: Vec<i64>, pub cl_dmin: Vec<f64>,                                  // n x nloc
     pub m_full: Option<Vec<f64>>, pub mfl_full: Option<Vec<f64>>,                 // n x n
     pub fin_pairs: i64, pub ext: HashMap<usize, RowList>, pub n_starved: usize,
+    pub bs_pre: Option<BsPools>,                                                  // the broad-sample pools, when sweep 2 filled them
     pub restart: Option<(String, String)>,
 }
 
@@ -396,7 +543,7 @@ fn sweep_chunk(core: &Core, rows: &[usize], rr: Option<&[f64]>, ok_r: Option<&[b
 #[allow(clippy::too_many_arguments)]
 pub fn sweep(core: &Core, rr: Option<&[f64]>, ok_r: Option<&[bool]>, key: Key, cmax: usize, fit: i64, want_closest: bool, want_full: bool, rows: Option<&[usize]>, stage: Option<&str>) -> SweepOut {
     // every row against every column: each pair is computed once and serves both of its rows
-    if rows.is_none() && std::env::var_os("LOCUSMASKER_NO_PAIRS_ONCE").is_none() { return sweep_pairs_once(core, rr, ok_r, key, cmax, fit, want_closest, want_full, stage); }
+    if rows.is_none() && std::env::var_os("LOCUSMASKER_NO_PAIRS_ONCE").is_none() { return sweep_pairs_once(core, rr, ok_r, key, cmax, fit, want_closest, want_full, stage, None); }
     sweep_rows(core, rr, ok_r, key, cmax, fit, want_closest, want_full, rows, stage)
 }
 
@@ -511,6 +658,26 @@ unsafe impl Sync for SharedF64 {}
 impl SharedF64 {
     /// SAFETY: no two threads write the same element, and nothing reads until the writers are done
     #[inline] unsafe fn set(&self, i: usize, v: f64) { *(*self.0.get()).as_mut_ptr().add(i) = v; }
+}
+
+/// The broad-sample pools as sweep 2 fills them: each taxon's pool members by column (cols, ascending) with the slot
+/// each has in the pool as drawn (slots), and the pool's pair divergences in drawn order (out: n x pn), each written
+/// once, by the task that holds the pair
+pub struct PoolIndex { pub pn: usize, pub cols: Vec<u32>, pub slots: Vec<u32>, out: SharedF64 }
+impl PoolIndex {
+    /// every taxon's pool (pool: n x pn as drawn, bs_pool_of)
+    pub fn new(n: usize, pn: usize, pool: &[i32]) -> PoolIndex {
+        let mut cols = vec![0u32; n * pn]; let mut slots = vec![0u32; n * pn];
+        if pn > 0 {
+            cols.par_chunks_mut(pn).zip(slots.par_chunks_mut(pn)).enumerate().for_each(|(g, (cg, sg))| {
+                let mut v: Vec<(u32, u32)> = pool[g * pn..(g + 1) * pn].iter().enumerate().map(|(j, c)| (*c as u32, j as u32)).collect();
+                v.sort_unstable();
+                for (k, (c, j)) in v.into_iter().enumerate() { cg[k] = c; sg[k] = j; }
+            });
+        }
+        PoolIndex { pn, cols, slots, out: SharedF64(std::cell::UnsafeCell::new(vec![f64::NAN; n * pn])) }
+    }
+    pub fn into_mstar(self) -> Vec<f64> { self.out.0.into_inner() }
 }
 
 /// What the two directions of a pair share, from its counts: per locus that votes (a rate, shared sites), the
@@ -646,7 +813,7 @@ fn band_hit(a: &[f64], om: &[f64], lim1: &[f64], avx2: bool) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn sweep_pairs_once(core: &Core, rr: Option<&[f64]>, ok_r: Option<&[bool]>, key: Key, cmax: usize, fit: i64, want_closest: bool, want_full: bool, stage: Option<&str>) -> SweepOut {
+fn sweep_pairs_once(core: &Core, rr: Option<&[f64]>, ok_r: Option<&[bool]>, key: Key, cmax: usize, fit: i64, want_closest: bool, want_full: bool, stage: Option<&str>, pools: Option<&PoolIndex>) -> SweepOut {
     use std::sync::atomic::{AtomicI64, AtomicU64, Ordering::Relaxed};
     use std::sync::Mutex;
     let (n, nloc) = (core.n, core.nloc); let prog = crate::log::prog();
@@ -678,8 +845,18 @@ fn sweep_pairs_once(core: &Core, rr: Option<&[f64]>, ok_r: Option<&[bool]>, key:
         // this chunk's rows: their cuts as last seen (other threads tighten them too; refreshed every few columns)
         let mut lthr = vec![f64::INFINITY; nr]; let mut llim = if want_closest { vec![f64::INFINITY; nr * nloc] } else { vec![] };
         let mut own_nfin = vec![0i64; nr]; let mut clim = if want_closest { vec![f64::INFINITY; nloc] } else { vec![] };
+        // the broad-sample pools: for each of this chunk's rows, where it stands among its pool's columns (they come in
+        // ascending order); for a column, which of the chunk's rows are in its pool
+        let pn = pools.map_or(0, |p| p.pn);
+        let mut pcur: Vec<usize> = match pools { Some(p) => (a..b).map(|g| p.cols[g * pn..(g + 1) * pn].partition_point(|x| (*x as usize) <= g)).collect(), None => vec![] };
+        let mut cmem: Vec<(usize, usize)> = vec![];           // (row of the chunk, slot in the column's pool)
         for c in a + 1..n {
             let gmax = b.min(c);
+            if let Some(p) = pools {
+                cmem.clear(); let pc = &p.cols[c * pn..(c + 1) * pn];
+                let mut i = pc.partition_point(|x| (*x as usize) < a);
+                while i < pn && (pc[i] as usize) < gmax { cmem.push((pc[i] as usize - a, p.slots[c * pn + i] as usize)); i += 1; }
+            }
             if (c - a) & 7 == 1 {
                 for ri in 0..nr { lthr[ri] = f64::from_bits(thr[a + ri].load(Relaxed)); }
                 if want_closest { for (k, v) in llim.iter_mut().enumerate() { *v = f64::from_bits(lim1[a * nloc + k].load(Relaxed)); } }
@@ -709,6 +886,18 @@ fn sweep_pairs_once(core: &Core, rr: Option<&[f64]>, ok_r: Option<&[bool]>, key:
                     (r.2, mm.is_finite())
                 };
                 if core.keep[g] && core.keep[c] { counters.1 += 1; if nl < MIN_LOCI_FOR_M { counters.0 += 1; } if m_fin { counters.2 += 1; } }
+                if let Some(p) = pools {
+                    // a pair of a broad-sample pool (c in g's, g in c's): its divergence as Prep::pair_m gives it
+                    let own = pcur[ri] < pn && p.cols[g * pn + pcur[ri]] as usize == c;
+                    let col = cmem.iter().find(|x| x.0 == ri).map(|x| x.1);
+                    if own || col.is_some() {
+                        if !have_m { mm = median_m(&sc.w, &sc.s, rr, ok_r, &mut sc.v, &mut sc.wv).0; have_m = true; }
+                        if !have_f { mf = median_floor(&sc.w, rr, ok_r, &mut sc.f, &mut sc.wf); have_f = true; }
+                        let v = if mf.is_finite() { mm.max(mf) } else { mm };
+                        if own { unsafe { p.out.set(g * pn + p.slots[g * pn + pcur[ri]] as usize, v); } pcur[ri] += 1; }
+                        if let Some(slot) = col { unsafe { p.out.set(c * pn + slot, v); } }
+                    }
+                }
                 if !m_fin || is_ident { continue; }                  // no finite mj: the pair enters no list and no band
                 let base = (100.0 - 100.0 * tot_same as f64 / tot_shared as f64) * 1e-9;
                 if key == Key::Mj { own_nfin[ri] += 1; c_nfin += 1; }
@@ -802,33 +991,27 @@ pub fn classes_from_pairs(n: usize, pairs: &[(usize, usize)]) -> Vec<usize> {
     }
 }
 
-pub fn encode_alignment(n: usize, l: usize, rows: &[u8], dtype: &str, loci: &Loci) -> (Vec<i8>, Vec<usize>) {
+/// a letter's residue code (-1: not a residue), each locus's offset in a row laid out by locus, and the warning when
+/// many letters are ambiguity codes
+pub fn alphabet_lut(rows: &[u8], dtype: &str, loci: &Loci) -> ([i8; 256], Vec<usize>) {
     let alphabet = if dtype == "dna" { crate::input::DNA } else { crate::input::PROTEIN };
     let mut lut = [-1i8; 256];
     for (i, c) in alphabet.bytes().enumerate() { lut[c as usize] = i as i8; lut[c.to_ascii_lowercase() as usize] = i as i8; }
     if dtype == "dna" { lut[b'U' as usize] = 3; lut[b'u' as usize] = 3; }
-    let mut letters = [0i64; 256];
-    for &b in rows { letters[b as usize] += 1; }
+    let letters = crate::input::byte_counts(rows);
     let (mut n_letters, mut n_in) = (0i64, 0i64);
     for c in (65..91).chain(97..123) { n_letters += letters[c]; if lut[c] >= 0 { n_in += letters[c]; } }
     if n_letters != 0 && (n_in as f64) < 0.95 * n_letters as f64 {
         log!("WARNING: {} of the {} letters ({:.1}%) are ambiguity codes and count as missing data", commas(n_letters - n_in), commas(n_letters), 100.0 * (n_letters - n_in) as f64 / n_letters as f64);
     }
     let mut off = Vec::with_capacity(loci.len() + 1); let mut acc = 0; for (_, st) in loci { off.push(acc); acc += st.len(); } off.push(acc);
-    let lt = acc; let mut xl = vec![-1i8; n * lt];
-    xl.par_chunks_mut(lt.max(1)).enumerate().for_each(|(g, row)| {
-        if lt == 0 { return; }
-        let src = &rows[g * l..(g + 1) * l]; let mut k = 0;
-        for (_, st) in loci { for &site in st { row[k] = lut[src[site] as usize]; k += 1; } }
-    });
-    (xl, off)
+    (lut, off)
 }
 
-pub fn locus_plateaus(core: &Core) -> Vec<f64> {
-    (0..core.nloc).into_par_iter().map(|li| {
-        let mut cnt = vec![0u64; core.a_];
-        for g in 0..core.n { for &x in core.seq(g, li) { if x >= 0 { cnt[x as usize] += 1; } } }
-        let cntf: Vec<f64> = cnt.iter().map(|c| *c as f64).collect();
+/// each locus's plateau from how often each residue occurs there (counts: nloc x a_)
+pub fn locus_plateaus(counts: &[u64], nloc: usize, a_: usize) -> Vec<f64> {
+    (0..nloc).map(|li| {
+        let cntf: Vec<f64> = counts[li * a_..(li + 1) * a_].iter().map(|c| *c as f64).collect();
         let tot = pymax(pairwise_sum(&cntf), 1.0);
         let f2: Vec<f64> = cntf.iter().map(|c| { let f = c / tot; f * f }).collect();
         pymax(100.0 * (1.0 - pairwise_sum(&f2)), 1.0)
@@ -859,18 +1042,40 @@ impl Prep {
         if let Some(e) = self.ext.get(&g) { if let Some(p) = e.cand.iter().position(|x| *x == c as i64) { return (e.m[p], e.mfl[p]); } }
         (f64::NAN, f64::NAN)
     }
+    /// m for any pair: from either taxon's list or extended row when the pair is there (the value the sweep computed:
+    /// the same bits), else by the kernel on the pair's counts, a read of both taxa's planes
+    pub fn pair_m_any(&self, g: usize, c: usize) -> f64 {
+        if let Some(m) = &self.m_full { return m[g * self.core.n + c]; }
+        for (a, b) in [(g, c), (c, g)] {
+            let l = &self.lists[a];
+            if let Some(p) = l.cand.iter().position(|x| *x == b as i64) { return l.m[p]; }
+            if let Some(e) = self.ext.get(&a) { if let Some(p) = e.cand.iter().position(|x| *x == b as i64) { return e.m[p]; } }
+        }
+        self.pair_m_only(g, c)
+    }
+    /// m alone for a pair by the kernel (pair_m's m, without the floor's median)
+    fn pair_m_only(&self, g: usize, c: usize) -> f64 {
+        if g == c { return f64::NAN; }
+        thread_local! { static SC: std::cell::RefCell<Option<Scratch>> = const { std::cell::RefCell::new(None) }; }
+        SC.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            if slot.as_ref().map_or(true, |sc| sc.w.len() != self.core.nloc || sc.pa.len() != self.core.bits.wpr) { *slot = Some(Scratch::new(&self.core)); }
+            let sc = slot.as_mut().unwrap();
+            self.core.pair_counts(g, c, &mut sc.w, &mut sc.s, &mut sc.pa, &mut sc.eq);
+            median_m(&sc.w, &sc.s, Some(&self.rr), Some(&self.ok_r), &mut sc.v, &mut sc.wv).0
+        })
+    }
     /// the candidates of a taxon in order of pair divergence: its extended row when it has one, else its list
     pub fn row_cands(&self, g: usize) -> &[i64] { match self.ext.get(&g) { Some(e) => &e.cand, None => &self.lists[g].cand } }
 }
 
 pub fn prepare(a: &Args, names: &[String], n: usize, l: usize, rows: &[u8], loci: &Loci, dtype: &str, k_eff: usize, t0: std::time::Instant) -> Prep {
     let a_ = if dtype == "dna" { 4 } else { 20 }; let nloc = loci.len();
-    let (xl, off) = encode_alignment(n, l, rows, dtype, loci);
-    let lt = *off.last().unwrap();
-    let bits = Bits::build(n, &xl, lt, &off, a_);
-    let mut core = Core { n, nloc, lt, xl, off, keep: vec![true; n], a_, slab: None, bits };
+    let (lut, off) = alphabet_lut(rows, dtype, loci);
+    let (bits, counts) = Bits::from_rows(n, l, rows, &lut, loci, &off, a_);
+    let mut core = Core { n, nloc, off, keep: vec![true; n], slab: None, bits };
     let mut focal_sites = vec![0u32; n * nloc];
-    focal_sites.par_chunks_mut(nloc).enumerate().for_each(|(g, fs)| { for li in 0..nloc { fs[li] = core.seq(g, li).iter().filter(|x| **x >= 0).count() as u32; } });
+    focal_sites.par_chunks_mut(nloc).enumerate().for_each(|(g, fs)| { for li in 0..nloc { fs[li] = core.bits.present(g, li); } });
     let present: Vec<i64> = (0..n).map(|g| focal_sites[g * nloc..(g + 1) * nloc].iter().filter(|x| **x as i64 >= a.fit_overlap).count() as i64).collect();
     let thin: Vec<usize> = (0..n).filter(|&g| present[g] < MIN_LOCI_PER_TAXON).collect();
     for &g in &thin { core.keep[g] = false; }
@@ -879,7 +1084,7 @@ pub fn prepare(a: &Args, names: &[String], n: usize, l: usize, rows: &[u8], loci
              thin.iter().take(20).map(|&i| names[i].as_str()).collect::<Vec<_>>().join(", "),
              if thin.len() > 20 { format!(" and {} more (the report lists them)", thin.len() - 20) } else { String::new() });
     }
-    let plateaus = locus_plateaus(&core);
+    let plateaus = locus_plateaus(&counts, nloc, a_); drop(counts);
     let longest = loci.iter().map(|x| x.1.len()).max().unwrap_or(0);
     assert!(longest < (1 << 24), "a locus of 2^24 sites or more: the float32 products would not be exact");
     let c = a.candidates.unwrap_or(CANDIDATES).max(1);
@@ -896,7 +1101,7 @@ pub fn prepare(a: &Args, names: &[String], n: usize, l: usize, rows: &[u8], loci
     let pt2 = crate::restart::read(a, "pairs", &header, &pair_names);
     let pt1 = if pt2.is_none() { crate::restart::read(a, "rates", &header, &["ident", "rate", "ok_r"]) } else { None };
     let c_len = c.min(n);
-    let mut restart = None; let mut n_starved = 0usize;
+    let mut restart = None; let mut n_starved = 0usize; let mut bs_pre: Option<BsPools> = None;
     let (ident, mut rate, ok_r): (Vec<(usize, usize)>, Vec<f64>, Vec<bool>);
     let from_point = pt2.as_ref().or(pt1.as_ref());
     if let Some(pt) = from_point {
@@ -980,7 +1185,17 @@ pub fn prepare(a: &Args, names: &[String], n: usize, l: usize, rows: &[u8], loci
         SweepOut { rows, cl_win: pt.i64s("cl_win"), cl_dmin: pt.f64s("cl_dmin"), ident: vec![], counters: (cn[0], cn[1], cn[2]), full: if full { Some((pt.f64s("m_full"), pt.f64s("mfl_full"))) } else { None }, overflow: 0 }
     } else {
         // ---- sweep 2: the rate-normalised divergences, the lists, the closest match at every locus
-        let s2 = sweep(&core, Some(&rr), Some(&ok_r), Key::Mj, c, a.fit_overlap, true, full, None, Some("pairs"));
+        // the broad-sample pools' pair divergences come out of this sweep when the full matrix is not kept: the pairs
+        // go by anyway (computed afterwards they are a read of a column from memory each)
+        let pools = match bs_sizes(n, k_eff) {
+            Some((k, pn)) if !a.no_broad_sample && !full && std::env::var_os("LOCUSMASKER_NO_PAIRS_ONCE").is_none() => { let pool = bs_pools(n, pn); Some((k, PoolIndex::new(n, pn, &pool), pool)) }
+            _ => None,
+        };
+        let s2 = match &pools {
+            Some((_, ix, _)) => sweep_pairs_once(&core, Some(&rr), Some(&ok_r), Key::Mj, c, a.fit_overlap, true, full, Some("pairs"), Some(ix)),
+            None => sweep(&core, Some(&rr), Some(&ok_r), Key::Mj, c, a.fit_overlap, true, full, None, Some("pairs")),
+        };
+        bs_pre = pools.map(|(k, ix, pool)| BsPools { k, pn: ix.pn, pool, mstar: ix.into_mstar() });
         let pad_i = |f: &dyn Fn(&RowList) -> &Vec<i64>| -> Vec<i64> { let mut v = vec![-1i64; n * c_len]; for g in 0..n { let x = f(&s2.rows[g]); v[g * c_len..g * c_len + x.len()].copy_from_slice(x); } v };
         let pad_f = |f: &dyn Fn(&RowList) -> &Vec<f64>, fill: f64| -> Vec<f64> { let mut v = vec![fill; n * c_len]; for g in 0..n { let x = f(&s2.rows[g]); v[g * c_len..g * c_len + x.len()].copy_from_slice(x); } v };
         let (cand, key, m, mfl) = (pad_i(&|r| &r.cand), pad_f(&|r| &r.key, f64::INFINITY), pad_f(&|r| &r.m, f64::NAN), pad_f(&|r| &r.mfl, f64::NAN));
@@ -1000,7 +1215,7 @@ pub fn prepare(a: &Args, names: &[String], n: usize, l: usize, rows: &[u8], loci
     if s2.overflow != 0 { log!("note: {} cells had more distinct closest-match rates within 1e-9 of the minimum than {} slots", commas(s2.overflow), BAND_SLOTS); }
     let (m_full, mfl_full) = match s2.full { Some((m, f)) => (Some(m), Some(f)), None => (None, None) };
     Prep { core, thin, present, focal_sites, plateaus, rate, rr, ok_r, cls, has_dup, lists: s2.rows, c_len, cl_win: s2.cl_win, cl_dmin: s2.cl_dmin,
-           m_full, mfl_full, fin_pairs, ext: HashMap::new(), n_starved, restart }
+           m_full, mfl_full, fin_pairs, ext: HashMap::new(), n_starved, bs_pre, restart }
 }
 
 // ------------------------------------------------------------------ the broad-sample pools
@@ -1012,22 +1227,42 @@ pub fn bs_keys_cell(g: usize, li: usize) -> u64 {
     sm64(sm64((g as u64).wrapping_add(1)) ^ mix ^ BS_SEED)
 }
 
-pub fn bs_prepare(p: &Prep, k_eff: usize) -> Option<BsPools> {
-    let n = p.n();
+/// the members drawn per sequence and the size of each taxon's pool, or None when there are too few taxa for the test
+pub fn bs_sizes(n: usize, k_eff: usize) -> Option<(usize, usize)> {
     let k = (BS_PER_COMP * k_eff).min(n - 1); let pn = (BS_POOL * k_eff).min(n - 1);
-    if (k as i64) < BS_MIN { return None; }
+    if (k as i64) < BS_MIN { None } else { Some((k, pn)) }
+}
+/// a taxon's pool, as drawn: pn of the other taxa
+pub fn bs_pool_of(g: usize, n: usize, pn: usize) -> Vec<i64> {
+    let mut pool: Vec<i64> = if pn >= n - 1 { (0..(n - 1) as i64).collect() } else { hash_draw(bs_keys_taxa(g), n - 1, pn) };
+    for v in pool.iter_mut() { if *v >= g as i64 { *v += 1; } }
+    pool
+}
+/// every taxon's pool (n x pn)
+fn bs_pools(n: usize, pn: usize) -> Vec<i32> {
+    let mut pool = vec![0i32; n * pn];
+    if pn > 0 { pool.par_chunks_mut(pn).enumerate().for_each(|(g, row)| { for (x, v) in row.iter_mut().zip(bs_pool_of(g, n, pn)) { *x = v as i32; } }); }
+    pool
+}
+
+/// The pools and their pair divergences. Sweep 2 has left them when it ran without the full matrix (Prep::bs_pre);
+/// otherwise they are read from the full matrix, or computed pair by pair (a run that starts after the sweeps)
+pub fn bs_prepare(p: &mut Prep, k_eff: usize) -> Option<BsPools> {
+    let n = p.n();
+    let (k, pn) = bs_sizes(n, k_eff)?;
+    if let Some(b) = p.bs_pre.take() { if b.k == k && b.pn == pn { return Some(b); } }
+    let p: &Prep = p;
     let prog = crate::log::prog(); let on_demand = p.m_full.is_none();
     if on_demand { prog.start("broad-sample pool m", n); }
-    let rows: Vec<(Vec<i32>, Vec<f64>)> = (0..n).into_par_iter().map(|g| {
-        let mut pool: Vec<i64> = if pn >= n - 1 { (0..(n - 1) as i64).collect() } else { hash_draw(bs_keys_taxa(g), n - 1, pn) };
-        for v in pool.iter_mut() { if *v >= g as i64 { *v += 1; } }
-        let ms: Vec<f64> = pool.iter().map(|&c| { let (m_, f_) = p.pair_m(g, c as usize); if f_.is_finite() { m_.max(f_) } else { m_ } }).collect();
-        if on_demand { prog.tick(); }
-        (pool.iter().map(|x| *x as i32).collect(), ms)
-    }).collect();
+    let pool = bs_pools(n, pn);
+    let mut mstar = vec![f64::NAN; n * pn];
+    if pn > 0 {
+        mstar.par_chunks_mut(pn).enumerate().for_each(|(g, ms)| {
+            for (j, m) in ms.iter_mut().enumerate() { let (m_, f_) = p.pair_m(g, pool[g * pn + j] as usize); *m = if f_.is_finite() { m_.max(f_) } else { m_ }; }
+            if on_demand { prog.tick(); }
+        });
+    }
     if on_demand { prog.finish(); }
-    let mut pool = Vec::with_capacity(n * pn); let mut mstar = Vec::with_capacity(n * pn);
-    for (a, b) in rows { pool.extend(a); mstar.extend(b); }
     Some(BsPools { k, pn, pool, mstar })
 }
 
@@ -1052,7 +1287,17 @@ mod tests {
         }
         for k in 0..lt { let v = xl[k]; xl[(n - 1) * lt + k] = v; }      // the last genome is a copy of the first
         let bits = Bits::build(n, &xl, lt, &off, a_);
-        Core { n, nloc, lt, xl, off, keep: (0..n).map(|g| g % 23 != 7).collect(), a_, slab: None, bits }
+        // a locus's gathered planes give the counts and the codes of the whole planes
+        for li in 0..nloc.min(4) { let lb = bits.locus(li, n); let len = off[li + 1] - off[li];
+            for f in (0..n).step_by(5) { for c in (1..n).step_by(11) { for t in (2..n).step_by(13) {
+                let (xf, xc, xt) = (lb.seq(f, len), lb.seq(c, len), lb.seq(t, len)); let (mut common, mut dt, mut dc) = (0u32, 0u32, 0u32);
+                for s in 0..len { if xf[s] >= 0 && xc[s] >= 0 && xt[s] >= 0 { common += 1; dt += (xt[s] != xf[s]) as u32; dc += (xc[s] != xf[s]) as u32; } }
+                assert_eq!(lb.three(f, c, t), (common, dt, dc));
+            } } } }
+        for li in 0..nloc { let lb = bits.locus(li, n); for g in 0..n { assert_eq!(lb.seq(g, off[li + 1] - off[li]), bits.seq(g, li, off[li + 1] - off[li])); for c in (0..n).step_by(7) { assert_eq!(lb.count(g, c), bits.count(g, c, li)); } } }
+        // the planes hold the codes: what is read back is what went in
+        for g in 0..n { for li in 0..nloc { assert_eq!(bits.seq(g, li, off[li + 1] - off[li]), &xl[g * lt + off[li]..g * lt + off[li + 1]]); assert_eq!(bits.present(g, li) as usize, xl[g * lt + off[li]..g * lt + off[li + 1]].iter().filter(|v| **v >= 0).count()); } }
+        Core { n, nloc, off, keep: (0..n).map(|g| g % 23 != 7).collect(), slab: None, bits }
     }
 
     fn same(a: &SweepOut, b: &SweepOut, nfin: bool) {
@@ -1080,11 +1325,32 @@ mod tests {
             let mut x = seed ^ 99; let rr: Vec<f64> = (0..nloc).map(|_| { x = sm64(x); 0.3 + (x % 1000) as f64 / 400.0 }).collect();
             let ok: Vec<bool> = (0..nloc).map(|l| l % 5 != 3).collect();
             // sweep 1 (the lazy M0 sweep's nfin is not compared: neither sweep counts every key there)
-            same(&sweep_rows(&core, None, None, Key::M0, cmax, 20, false, false, None, None), &sweep_pairs_once(&core, None, None, Key::M0, cmax, 20, false, false, None), false);
+            same(&sweep_rows(&core, None, None, Key::M0, cmax, 20, false, false, None, None), &sweep_pairs_once(&core, None, None, Key::M0, cmax, 20, false, false, None, None), false);
             // sweep 2, the medians where they are used
-            same(&sweep_rows(&core, Some(&rr), Some(&ok), Key::Mj, cmax, 20, true, false, None, None), &sweep_pairs_once(&core, Some(&rr), Some(&ok), Key::Mj, cmax, 20, true, false, None), true);
+            same(&sweep_rows(&core, Some(&rr), Some(&ok), Key::Mj, cmax, 20, true, false, None, None), &sweep_pairs_once(&core, Some(&rr), Some(&ok), Key::Mj, cmax, 20, true, false, None, None), true);
             // sweep 2 with the full matrix
-            same(&sweep_rows(&core, Some(&rr), Some(&ok), Key::Mj, cmax, 20, true, true, None, None), &sweep_pairs_once(&core, Some(&rr), Some(&ok), Key::Mj, cmax, 20, true, true, None), true);
+            same(&sweep_rows(&core, Some(&rr), Some(&ok), Key::Mj, cmax, 20, true, true, None, None), &sweep_pairs_once(&core, Some(&rr), Some(&ok), Key::Mj, cmax, 20, true, true, None, None), true);
+        }
+    }
+
+    /// the pools' pair divergences that sweep 2 leaves are those computed pair by pair, and the sweep's other results
+    /// are what they are without the pools
+    #[test]
+    fn pools_from_the_sweep_are_pair_m() {
+        for (seed, n, nloc, pn) in [(6u64, 70usize, 12usize, 9usize), (7, 45, 10, 44), (8, 120, 15, 30)] {
+            let core = random_core(seed, n, nloc, 20);
+            let rr: Vec<f64> = (0..nloc).map(|l| 0.5 + l as f64 / 9.0).collect(); let ok: Vec<bool> = (0..nloc).map(|l| l % 4 != 1).collect();
+            let pool = bs_pools(n, pn); let ix = PoolIndex::new(n, pn, &pool);
+            let with = sweep_pairs_once(&core, Some(&rr), Some(&ok), Key::Mj, 8, 20, true, false, None, Some(&ix));
+            same(&with, &sweep_pairs_once(&core, Some(&rr), Some(&ok), Key::Mj, 8, 20, true, false, None, None), true);
+            let got = ix.into_mstar(); let mut sc = Scratch::new(&core);
+            for g in 0..n { for j in 0..pn {
+                let c = pool[g * pn + j] as usize; assert_ne!(c, g);
+                core.pair_counts(g, c, &mut sc.w, &mut sc.s, &mut sc.pa, &mut sc.eq);
+                let (m, f, _) = pair_medians(&sc.w, &sc.s, Some(&rr), Some(&ok), &mut sc.v, &mut sc.wv, &mut sc.f, &mut sc.wf);
+                let want = if f.is_finite() { m.max(f) } else { m };
+                assert!(got[g * pn + j].to_bits() == want.to_bits() || (got[g * pn + j].is_nan() && want.is_nan()), "taxon {g}, pool member {c}: {} and {}", got[g * pn + j], want);
+            } }
         }
     }
 

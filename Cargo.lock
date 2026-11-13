@@ -190,6 +190,7 @@ dependencies = [
  "crc32fast",
  "flate2",
  "libc",
+ "memchr",
  "rayon",
  "regex",
  "sha2",

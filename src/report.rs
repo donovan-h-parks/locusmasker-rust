@@ -1,7 +1,7 @@
 //! report.npz, report.html (the viewer with the core data inline) and report_files/ (one chunk per block of loci and
 //! per block of taxa). The viewer's HTML, CSS, JavaScript, fonts and icons are embedded in the binary unchanged.
 use crate::input::Loci;
-use crate::npy::{b64, npy, npy1, zip_b64, Zip};
+use crate::npy::{b64, npy, npy1, zip_b64};
 use crate::pyfmt::{round, J};
 use crate::rep::*;
 use crate::{die, jdict, log, Args};
@@ -53,13 +53,14 @@ pub fn ranges(sites: &[usize]) -> Vec<[i64; 3]> {
     runs
 }
 
-pub fn sha256_file(path: &str) -> String {
+pub fn sha256_of(path: &str) -> std::io::Result<String> {
     use sha2::Digest; use std::io::Read;
-    let mut h = sha2::Sha256::new(); let mut f = std::fs::File::open(path).unwrap_or_else(|e| die!("cannot read {path}: {}", crate::input::os_err(&e)));
+    let mut h = sha2::Sha256::new(); let mut f = std::fs::File::open(path)?;
     let mut buf = vec![0u8; 1 << 20];
-    loop { let k = f.read(&mut buf).unwrap_or(0); if k == 0 { break; } h.update(&buf[..k]); }
-    h.finalize().iter().map(|b| format!("{:02x}", b)).collect()
+    loop { let k = f.read(&mut buf)?; if k == 0 { break; } h.update(&buf[..k]); }
+    Ok(h.finalize().iter().map(|b| format!("{:02x}", b)).collect())
 }
+pub fn sha256_file(path: &str) -> String { sha256_of(path).unwrap_or_else(|e| die!("cannot read {path}: {}", crate::input::os_err(&e))) }
 
 fn opt_round(v: f64, nd: usize) -> J { if v.is_finite() { J::Float(round(v, nd)) } else { J::Null } }
 
@@ -138,29 +139,32 @@ pub fn write_report(a: &Args, names: &[String], loci: &Loci, rep: &Rep, dtype: &
     {
         let part = format!("{npz}.part");
         let fh = std::fs::File::create(&part).unwrap_or_else(|e| die!("cannot write {}: {}", part, crate::input::os_err(&e)));
-        let mut z = Zip::new(std::io::BufWriter::with_capacity(1 << 20, fh));
-        let mut put = |name: &str, data: Vec<u8>| io(z.put(name, &data), &part);
-        put("cells/n_comp.npy", npy(&[n, nloc], &rep.n_comp)); put("cells/n_fail.npy", npy(&[n, nloc], &rep.n_fail)); put("cells/n_similar.npy", npy(&[n, nloc], &rep.n_similar));
-        put("cells/side.npy", npy(&[n, nloc], &rep.side)); put("cells/focal_sites.npy", npy(&[n, nloc], &rep.focal_sites));
+        // the members are listed here and made and deflated in parallel (zip_parallel), in this order in the file
+        let mut jobs: Vec<crate::npy::Member> = vec![];
+        let (cell_shape, with_k, taxa_json, loci_json, manifest) = (&cell_shape, &with_k, &taxa_json, &loci_json, &manifest);
+        macro_rules! put { ($name:expr, $data:expr) => { jobs.push(($name.to_string(), Box::new(move || $data))) }; }
+        put!("cells/n_comp.npy", npy(&[n, nloc], &rep.n_comp)); put!("cells/n_fail.npy", npy(&[n, nloc], &rep.n_fail)); put!("cells/n_similar.npy", npy(&[n, nloc], &rep.n_similar));
+        put!("cells/side.npy", npy(&[n, nloc], &rep.side)); put!("cells/focal_sites.npy", npy(&[n, nloc], &rep.focal_sites));
         if let Some(s2) = &rep.side2 {
-            put("cells/side2.npy", npy(&[n, nloc], s2));
+            put!("cells/side2.npy", npy(&[n, nloc], s2));
             if let Some(b) = &rep.bs_rows {
-                put("cells/bs_locus.npy", npy1(&b.locus)); put("cells/bs_taxon.npy", npy1(&b.taxon)); put("cells/bs_var_log10p.npy", npy1(&b.var_log10p));
-                put("cells/bs_lo_log10p.npy", npy1(&b.lo_log10p)); put("cells/bs_hi_log10p.npy", npy1(&b.hi_log10p)); put("cells/bs_partner.npy", npy1(&b.partner)); put("cells/bs_call.npy", npy1(&b.call));
+                put!("cells/bs_locus.npy", npy1(&b.locus)); put!("cells/bs_taxon.npy", npy1(&b.taxon)); put!("cells/bs_var_log10p.npy", npy1(&b.var_log10p));
+                put!("cells/bs_lo_log10p.npy", npy1(&b.lo_log10p)); put!("cells/bs_hi_log10p.npy", npy1(&b.hi_log10p)); put!("cells/bs_partner.npy", npy1(&b.partner)); put!("cells/bs_call.npy", npy1(&b.call));
             }
-            if let Some(bc) = &rep.bscols { for j in 0..4 { put(&format!("cells/{}.npy", BSCOLS[j].0), bc[j].npy(&[n, nloc])); } }
+            if let Some(bc) = &rep.bscols { for j in 0..4 { put!(&format!("cells/{}.npy", BSCOLS[j].0), bc[j].npy(&[n, nloc])); } }
         }
-        if !dense { put("cells/sparse_locus.npy", npy1(&rep.sparse_locus)); put("cells/sparse_taxon.npy", npy1(&rep.sparse_taxon)); }
-        for (j, (name, _, _)) in NUMCOLS.iter().enumerate() { put(&format!("cells/{name}.npy"), rep.cols[j].npy(&cell_shape)); }
-        put("cells/comparators.npy", npy(&with_k, &rep.comparators)); put("cells/comp_div_log10p.npy", npy(&with_k, &rep.comp_div)); put("cells/comp_sim_log10p.npy", npy(&with_k, &rep.comp_sim));
-        for (li, (cells_, blk)) in &rep.codes.0 { put(&format!("codes/{li}.npy"), npy(&[cells_.len(), loci[*li].1.len()], blk)); put(&format!("codes/{li}_cells.npy"), npy1(cells_)); }
-        for (li, t) in &trees_json { put(&format!("trees/{li}.json"), t.clone().into_bytes()); }
-        for (li, t) in &similar_json { put(&format!("similar/{li}.json"), t.clone().into_bytes()); }
-        for (li, t) in &broad_json { put(&format!("broadsample/{li}.json"), t.clone().into_bytes()); }
-        for (li, (rows_, blk)) in &rep.seqs.0 { put(&format!("seq/{li}.npy"), npy(&[rows_.len(), loci[*li].1.len()], blk)); put(&format!("seq/{li}_taxa.npy"), npy1(rows_)); }
-        put("taxa/closest.npy", npy(&[n, rep.taxa_closest_w], &rep.taxa_closest));
-        put("taxa.json", taxa_json.indent1().into_bytes()); put("loci.json", loci_json.indent1().into_bytes()); put("manifest.json", manifest.indent1().into_bytes());
-        match z.finish() { Ok(mut w) => { use std::io::Write; io(w.flush(), &part) } Err(e) => die!("cannot write {}: {}", part, crate::input::os_err(&e)) }
+        if !dense { put!("cells/sparse_locus.npy", npy1(&rep.sparse_locus)); put!("cells/sparse_taxon.npy", npy1(&rep.sparse_taxon)); }
+        for (j, (name, _, _)) in NUMCOLS.iter().enumerate() { put!(&format!("cells/{name}.npy"), rep.cols[j].npy(cell_shape)); }
+        put!("cells/comparators.npy", npy(with_k, &rep.comparators)); put!("cells/comp_div_log10p.npy", npy(with_k, &rep.comp_div)); put!("cells/comp_sim_log10p.npy", npy(with_k, &rep.comp_sim));
+        for (li, (cells_, blk)) in &rep.codes.0 { put!(&format!("codes/{li}.npy"), npy(&[cells_.len(), loci[*li].1.len()], blk)); put!(&format!("codes/{li}_cells.npy"), npy1(cells_)); }
+        for (li, t) in &trees_json { put!(&format!("trees/{li}.json"), t.clone().into_bytes()); }
+        for (li, t) in &similar_json { put!(&format!("similar/{li}.json"), t.clone().into_bytes()); }
+        for (li, t) in &broad_json { put!(&format!("broadsample/{li}.json"), t.clone().into_bytes()); }
+        for (li, (rows_, blk)) in &rep.seqs.0 { put!(&format!("seq/{li}.npy"), npy(&[rows_.len(), loci[*li].1.len()], blk)); put!(&format!("seq/{li}_taxa.npy"), npy1(rows_)); }
+        put!("taxa/closest.npy", npy(&[n, rep.taxa_closest_w], &rep.taxa_closest));
+        put!("taxa.json", taxa_json.indent1().into_bytes()); put!("loci.json", loci_json.indent1().into_bytes()); put!("manifest.json", manifest.indent1().into_bytes());
+        match crate::npy::zip_parallel(std::io::BufWriter::with_capacity(1 << 20, fh), &jobs) { Ok(mut w) => { use std::io::Write; io(w.flush(), &part) } Err(e) => die!("cannot write {}: {}", part, crate::input::os_err(&e)) }
+        drop(jobs);
         io(std::fs::rename(&part, &npz), &npz);
     }
     let size = std::fs::metadata(&npz).map(|m| m.len()).unwrap_or(0);

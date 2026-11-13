@@ -211,11 +211,18 @@ fn spaced(s: &str) -> String { s.replace('*', "").chars().map(|c| c.to_string())
 fn py_repr_opt(s: &Option<String>) -> String { match s { Some(x) => repr_str(x), None => "None".into() } }
 
 /// exit with every illegal character, how often it occurs and where it first occurs; warn when the data look like the other datatype
+/// how often each byte occurs in the alignment
+pub fn byte_counts(flat: &[u8]) -> [i64; 256] {
+    use rayon::prelude::*;
+    flat.par_chunks(1 << 22).map(|ch| { let mut c = [0i64; 256]; for &b in ch { c[b as usize] += 1; } c })
+        .reduce(|| [0i64; 256], |mut x, y| { for (p, q) in x.iter_mut().zip(y.iter()) { *p += q; } x })
+}
+
 pub fn check_characters(path: &str, names: &[String], rows: &[&[u8]], dtype: &str, gap: &Option<String>, missing: &Option<String>) {
     let mut legal: String = alphabet_chars(dtype).to_string(); legal = format!("{}{}-?{}{}", legal, legal.to_lowercase(), gap.clone().unwrap_or_default(), missing.clone().unwrap_or_default());
     let mut ok = [false; 256]; for c in legal.chars() { if (c as u32) < 256 { ok[c as usize] = true; } }
-    let mut counts = [0i64; 256];
-    for r in rows { for &b in r.iter() { counts[b as usize] += 1; } }
+    let counts = { use rayon::prelude::*;
+        rows.par_iter().map(|r| { let mut c = [0i64; 256]; for &b in r.iter() { c[b as usize] += 1; } c }).reduce(|| [0i64; 256], |mut x, y| { for (p, q) in x.iter_mut().zip(y.iter()) { *p += q; } x }) };
     let bad: Vec<usize> = (0..256).filter(|&c| counts[c] > 0 && !ok[c]).collect();
     let sumc = |s: &str| -> i64 { s.bytes().map(|c| counts[c as usize]).sum() };
     let letters = sumc("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"); let acgt = sumc("ACGTUNacgtun");
@@ -679,17 +686,69 @@ pub fn plain_name(path: &str, gz: bool) -> String {
     if gz && f.len() > 3 && f.to_ascii_lowercase().ends_with(".gz") { f[..f.len() - 3].to_string() } else { f }
 }
 
-pub fn read_input(path: &str, partitions: Option<&str>) -> Input {
-    let mut data: Vec<u8> = match std::fs::read(path) { Ok(b) => b, Err(e) => die!("cannot read the alignment {path}: {}", os_err(&e)) };
-    let gz = is_gzip(&data);
-    if gz {
-        use std::io::Read;
+/// the alignment file's text and whether the file is gzip-compressed: a compressed file is decompressed as it is
+/// read, so its compressed bytes are never held beside the text
+fn read_bytes(path: &str) -> (Vec<u8>, bool) {
+    use std::io::Read;
+    let mut f = match std::fs::File::open(path) { Ok(f) => f, Err(e) => die!("cannot read the alignment {path}: {}", os_err(&e)) };
+    let mut magic = [0u8; 2]; let mut got = 0;
+    while got < 2 {
+        match f.read(&mut magic[got..]) { Ok(0) => break, Ok(k) => got += k, Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}, Err(e) => die!("cannot read the alignment {path}: {}", os_err(&e)) }
+    }
+    if is_gzip(&magic[..got]) {
         let mut plain = Vec::new();
-        if let Err(e) = flate2::read::MultiGzDecoder::new(&data[..]).read_to_end(&mut plain) {
+        let src = std::io::BufReader::with_capacity(1 << 20, (&magic[..]).chain(f));
+        if let Err(e) = flate2::bufread::MultiGzDecoder::new(src).read_to_end(&mut plain) {
             die!("cannot read the alignment {path}: it starts as a gzip file but does not decompress ({e})");
         }
-        data = plain;
+        (plain, true)
+    } else {
+        let size = f.metadata().map(|m| m.len() as usize).unwrap_or(0);
+        let mut data = Vec::with_capacity(size.max(got) + 1); data.extend_from_slice(&magic[..got]);
+        if let Err(e) = f.read_to_end(&mut data) { die!("cannot read the alignment {path}: {}", os_err(&e)); }
+        (data, false)
     }
+}
+
+/// A FASTA file straight into the n x l matrix of its residues, the records in parallel: (names, rows, l). None when
+/// anything is out of the ordinary (text before the first header, a header without a name or with a name that is not
+/// UTF-8, sequences of different lengths or of none, blanks or non-ASCII bytes inside a sequence): read_fasta then
+/// reads the file record by record, which gives the same rows for a file that is in order and says what is wrong
+/// with one that is not
+pub fn read_fasta_flat(txt: &[u8]) -> Option<(Vec<String>, Vec<u8>, usize)> {
+    use rayon::prelude::*;
+    let body = lstrip(txt);
+    if body.first() != Some(&b'>') { return None; }
+    let body = &body[1..];
+    // the records: between a '>' at the start of a line and the next
+    let mut recs: Vec<(usize, usize)> = vec![]; let mut start = 0usize;
+    for c in memchr::memmem::find_iter(body, b"\n>") { recs.push((start, c)); start = c + 2; }
+    recs.push((start, body.len()));
+    let seq_of = |&(a, b): &(usize, usize)| -> (&[u8], &[u8]) { let rec = &body[a..b]; match memchr::memchr(b'\n', rec) { Some(p) => (&rec[..p], &rec[p + 1..]), None => (rec, &rec[rec.len()..]) } };
+    let l = seq_of(&recs[0]).1.iter().filter(|c| **c != b'\n' && **c != b'\r').count();
+    if l == 0 || recs.len().checked_mul(l).is_none() { return None; }
+    let mut flat = vec![0u8; recs.len() * l];
+    let names: Option<Vec<String>> = flat.par_chunks_mut(l).zip(recs.par_iter()).map(|(row, rec)| {
+        let (header, seq) = seq_of(rec);
+        let name = std::str::from_utf8(split1(header).first()?).ok()?.to_string();
+        let mut at = 0usize;
+        for line in seq.split(|c| *c == b'\n') {
+            let line = match line.last() { Some(b'\r') => &line[..line.len() - 1], _ => line };
+            if memchr::memchr(b'\r', line).is_some() {              // carriage returns inside a line: byte by byte
+                for &c in line { if c != b'\r' { if at == l { return None; } row[at] = c; at += 1; } }
+            } else {
+                if at + line.len() > l { return None; }
+                row[at..at + line.len()].copy_from_slice(line); at += line.len();
+            }
+        }
+        if at != l || row.iter().any(|&c| c >= 128 || c == b' ' || c == b'\t' || c == 0x0b || c == 0x0c) { return None; }
+        Some(name)
+    }).collect();
+    Some((names?, flat, l))
+}
+
+pub fn read_input(path: &str, partitions: Option<&str>) -> Input {
+    let (data, gz) = read_bytes(path);
     let raw: Vec<u8> = data[..data.len().min(64)].to_vec();
     if strip(&raw).is_empty() { die!("the alignment {path} is empty"); }
     let head: String = match std::str::from_utf8(&raw) {
@@ -698,6 +757,7 @@ pub fn read_input(path: &str, partitions: Option<&str>) -> Input {
     };
     let mut nexus: Option<NexusInfo> = None; let mut declared: Option<&'static str> = None;
     let names: Vec<String>; let rows: Vec<Vec<u8>>; let loci: Loci; let fmt: &'static str;
+    let mut ready: Option<(Vec<u8>, usize)> = None;          // the rows already as one matrix, and checked (a FASTA file in order)
     if head.starts_with("#NEXUS") {
         let nr = match read_nexus_fast(path, &data) { Ok(r) => r, Err(NexErr::Unsupported) => read_nexus_general(path, &data) };
         drop(data);
@@ -725,13 +785,17 @@ pub fn read_input(path: &str, partitions: Option<&str>) -> Input {
     } else {
         let Some(parts) = partitions else { die!("a FASTA or PHYLIP alignment needs --partitions") };
         if head.starts_with('>') {
-            let (nm, seqs) = read_fasta(&data); fmt = "fasta"; drop(data);
-            let empty: Vec<&String> = nm.iter().zip(&seqs).filter(|(_, s)| s.is_empty()).map(|(t, _)| t).collect();
-            if !empty.is_empty() {
-                die!("FASTA: {} record{} with no sequence under the header in {}: {}{}", empty.len(), if empty.len() > 1 { "s" } else { "" }, path,
-                     empty.iter().take(5).map(|s| s.as_str()).collect::<Vec<_>>().join(", "), if empty.len() > 5 { " ..." } else { "" });
+            fmt = "fasta";
+            if let Some((nm, flat, l)) = read_fasta_flat(&data) { drop(data); names = nm; rows = vec![]; ready = Some((flat, l)); }
+            else {
+                let (nm, seqs) = read_fasta(&data); drop(data);
+                let empty: Vec<&String> = nm.iter().zip(&seqs).filter(|(_, s)| s.is_empty()).map(|(t, _)| t).collect();
+                if !empty.is_empty() {
+                    die!("FASTA: {} record{} with no sequence under the header in {}: {}{}", empty.len(), if empty.len() > 1 { "s" } else { "" }, path,
+                         empty.iter().take(5).map(|s| s.as_str()).collect::<Vec<_>>().join(", "), if empty.len() > 5 { " ..." } else { "" });
+                }
+                names = nm; rows = seqs;
             }
-            names = nm; rows = seqs;
         } else {
             if !head.chars().next().map_or(false, |c| c.is_ascii_digit()) {
                 die!("cannot tell the format of {path}: a NEXUS file starts with #NEXUS, a FASTA file with '>', a PHYLIP file with its counts");
@@ -740,19 +804,21 @@ pub fn read_input(path: &str, partitions: Option<&str>) -> Input {
             let (nm, seqs) = read_phylip(&txt); fmt = "phylip";
             names = nm; rows = seqs.into_iter().map(|s| s.into_bytes()).collect();
         }
-        check_rows(path, &names, &rows);
-        loci = parse_raxml_partitions(parts, rows[0].len());
+        if ready.is_none() { check_rows(path, &names, &rows); }
+        loci = parse_raxml_partitions(parts, match &ready { Some((_, l)) => *l, None => rows[0].len() });
     }
-    check_rows(path, &names, &rows);
+    if ready.is_none() { check_rows(path, &names, &rows); }
     let mut cnt: HashMap<&String, usize> = HashMap::new(); for t in &names { *cnt.entry(t).or_insert(0) += 1; }
     let mut dup: Vec<&String> = cnt.iter().filter(|(_, c)| **c > 1).map(|(t, _)| *t).collect(); dup.sort();
     if !dup.is_empty() {
         die!("duplicate taxon names: [{}]{}", dup.iter().take(5).map(|s| repr_str(s)).collect::<Vec<_>>().join(", "), if dup.len() > 5 { " ..." } else { "" });
     }
     if loci.is_empty() { die!("no loci defined"); }
-    let n = names.len(); let l = rows[0].len();
-    let mut flat = Vec::with_capacity(n * l);
-    for r in rows { flat.extend_from_slice(&r); }
+    let n = names.len();
+    let (flat, l) = match ready {
+        Some(x) => x,
+        None => { let l = rows[0].len(); let mut flat = Vec::with_capacity(n * l); for r in rows { flat.extend_from_slice(&r); } (flat, l) }
+    };
     Input { names, n, l, rows: flat, loci, fmt, declared, nexus, gz }
 }
 

@@ -33,8 +33,20 @@ pub struct Args {
 }
 
 static SHA: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static SHA_JOB: std::sync::Mutex<Option<std::thread::JoinHandle<Option<String>>>> = std::sync::Mutex::new(None);
+/// start the input's sha256 on a thread of its own, while the alignment is read (a file that cannot be read is
+/// left to the reader to report)
+fn start_input_sha256(path: &str) {
+    let p = path.to_string();
+    *SHA_JOB.lock().unwrap() = Some(std::thread::spawn(move || report::sha256_of(&p).ok()));
+}
 /// the input's sha256, computed once
-pub fn input_sha256(a: &Args) -> String { SHA.get_or_init(|| report::sha256_file(&a.aln)).clone() }
+pub fn input_sha256(a: &Args) -> String {
+    SHA.get_or_init(|| {
+        let job = SHA_JOB.lock().unwrap().take();
+        job.and_then(|h| h.join().ok().flatten()).unwrap_or_else(|| report::sha256_file(&a.aln))
+    }).clone()
+}
 
 pub fn fmem(b: u64) -> String {
     if b >= (1 << 30) { format!("{:.1} GB", b as f64 / (1u64 << 30) as f64) } else { format!("{:.0} MB", b as f64 / (1u64 << 20) as f64) }
@@ -133,7 +145,9 @@ fn memory_estimate(a: &Args, n: usize, l: usize, loci: &input::Loci, c: Option<u
     let nloc = loci.len() as u64; let n64 = n as u64; let c = c.unwrap_or(prepare::CANDIDATES).min(n) as u64; let full = n <= a.full_m_max_taxa;
     let longest = loci.iter().map(|x| x.1.len()).max().unwrap_or(0);
     let slab = if n <= a.sweep_block_min { 2 * nloc * n64 * n64 * (if longest < 65536 { 2 } else { 4 }) } else { 0 };
-    let x = 2 * n64 * l as u64; let lists = n64 * c * 32; let closest = n64 * nloc * prepare::BAND_SLOTS as u64 * 24; let mfull = if full { 2 * n64 * n64 * 8 } else { 0 };
+    // the alignment's letters, and its residues as bit planes (a presence plane and the planes of the code, each locus from a word)
+    let planes: u64 = if a.datatype == "dna" { 3 } else { 6 }; let words: u64 = loci.iter().map(|x| x.1.len().div_ceil(64) as u64).sum();
+    let x = n64 * l as u64 + n64 * planes * words * 8; let lists = n64 * c * 32; let closest = n64 * nloc * prepare::BAND_SLOTS as u64 * 24; let mfull = if full { 2 * n64 * n64 * 8 } else { 0 };
     let mrc = if rc { n64 * ((prepare::BS_POOL * k_eff) as u64).min(n64.saturating_sub(1)) * 12 } else { 0 };
     [x + lists + closest + mfull + slab + mrc, x, lists, closest, mfull, slab, mrc]
 }
@@ -168,6 +182,7 @@ fn main() {
     if let Some(p) = &a.partitions { if !std::path::Path::new(p).is_file() { die!("the partition file {} does not exist", p); } }
     let prog = log::prog();
     prog.start("read", 1);
+    start_input_sha256(&a.aln);
     let mut inp = input::read_input(&a.aln, a.partitions.as_deref());
     prog.finish();
     let (n, l) = (inp.n, inp.l);
@@ -183,8 +198,8 @@ fn main() {
     if let Some(d) = inp.declared { if d != a.datatype { die!("--datatype {} was given but the NEXUS file declares {}", a.datatype, d); } }
     let dtype = a.datatype.clone();
     if inp.nexus.as_ref().map_or(true, |nx| nx.general) {
-        let rows: Vec<&[u8]> = (0..n).map(|i| &inp.rows[i * l..(i + 1) * l]).collect();
         let (gap, missing) = match &inp.nexus { Some(nx) => (nx.gap.clone(), nx.missing.clone()), None => (None, None) };
+        let rows: Vec<&[u8]> = (0..n).map(|i| &inp.rows[i * l..(i + 1) * l]).collect();
         input::check_characters(&a.aln, &inp.names, &rows, &dtype, &gap, &missing);
     }
     let nloc = inp.loci.len();
@@ -195,7 +210,7 @@ fn main() {
     if (k_eff as i64) < k_in { log!("n-comp shrunk to {} ({} taxa)", k_eff, n); }
     log!("{} taxa, {} sites, {} loci, {}, {}{}", n, l, nloc, dtype, inp.fmt, if inp.gz { ", gzip-compressed" } else { "" });
     let me = memory_estimate(&a, n, l, &inp.loci, a.candidates, k_eff, !a.no_broad_sample);
-    let parts = format!("{} of alignment (the rows and the residue codes), {} of candidate lists for {} taxa, {} of closest matches for {} taxa x {} loci{}{}{}",
+    let parts = format!("{} of alignment (the letters and the bit planes), {} of candidate lists for {} taxa, {} of closest matches for {} taxa x {} loci{}{}{}",
                         fmem(me[1]), fmem(me[2]), commas(n as i64), fmem(me[3]), commas(n as i64), commas(nloc as i64),
                         if me[4] != 0 { format!(", {} of the full m matrix (kept up to {} taxa)", fmem(me[4]), commas(a.full_m_max_taxa as i64)) } else { String::new() },
                         if me[5] != 0 { format!(", {} of pair counts at every locus (kept up to {} taxa)", fmem(me[5]), commas(a.sweep_block_min as i64)) } else { String::new() },
